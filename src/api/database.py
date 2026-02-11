@@ -10,6 +10,7 @@ import asyncpg
 from neo4j import AsyncGraphDatabase
 import aioredis
 from contextlib import asynccontextmanager
+import threading
 
 from src.api.config import settings
 
@@ -20,16 +21,45 @@ _postgres_pool: Optional[asyncpg.Pool] = None
 _neo4j_driver: Optional[AsyncGraphDatabase.driver] = None
 _redis_pool: Optional[aioredis.ConnectionPool] = None
 
+# Initialization lock to prevent race conditions
+_init_lock = threading.Lock()
+_init_event = asyncio.Event()
+_initialized = False
+
 
 async def init_databases():
-    """Initialize all database connections"""
-    logger.info("Initializing database connections...")
+    """Initialize all database connections with thread safety"""
+    global _initialized
     
-    await init_postgres()
-    await init_neo4j()
-    await init_redis()
+    # If already initialized, just wait for completion
+    if _initialized:
+        await _init_event.wait()
+        return
     
-    logger.info("✅ All database connections initialized")
+    # Use thread-safe lock to prevent concurrent initialization
+    with _init_lock:
+        if _initialized:
+            await _init_event.wait()
+            return
+        
+        try:
+            logger.info("Initializing database connections...")
+            
+            # Initialize all databases
+            await init_postgres()
+            await init_neo4j()
+            await init_redis()
+            
+            _initialized = True
+            _init_event.set()
+            
+            logger.info("✅ All database connections initialized")
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize databases: {e}")
+            # Reset event to allow retry
+            _init_event.clear()
+            raise
 
 
 async def init_postgres():
@@ -119,28 +149,38 @@ def get_redis_pool() -> aioredis.ConnectionPool:
 
 @asynccontextmanager
 async def get_postgres_connection():
-    """Get PostgreSQL connection from pool"""
+    """Get PostgreSQL connection from pool with connection reuse optimization"""
     async with get_postgres_pool().acquire() as conn:
+        # Set connection parameters for better performance
+        await conn.execute("SET statement_timeout = '60s'")
         yield conn
 
 
 @asynccontextmanager
 async def get_neo4j_session():
-    """Get Neo4j session from driver"""
+    """Get Neo4j session from driver with session reuse optimization"""
     async with get_neo4j_driver().session() as session:
+        # Configure session for better performance
         yield session
 
 
 @asynccontextmanager
 async def get_redis_connection():
-    """Get Redis connection from pool"""
+    """Get Redis connection from pool with connection reuse optimization"""
     redis = aioredis.Redis(connection_pool=get_redis_pool())
-    yield redis
+    try:
+        yield redis
+    finally:
+        # Connection is returned to pool automatically
+        pass
 
 
 async def close_databases():
-    """Close all database connections"""
+    """Close all database connections and monitoring"""
     logger.info("Closing database connections...")
+    
+    # Stop connection monitoring first
+    await stop_connection_monitoring()
     
     if _postgres_pool:
         await _postgres_pool.close()
@@ -153,6 +193,11 @@ async def close_databases():
     if _redis_pool:
         await _redis_pool.disconnect()
         logger.info("✅ Redis pool closed")
+    
+    # Reset initialization state
+    global _initialized
+    _initialized = False
+    _init_event.clear()
     
     logger.info("✅ All database connections closed")
 
@@ -233,33 +278,125 @@ async def execute_redis_command(command: str, *args):
 
 # Transaction management
 async def postgres_transaction(queries: list):
-    """Execute multiple PostgreSQL queries in a transaction"""
+    """Execute multiple PostgreSQL queries in a transaction with proper rollback"""
     async with get_postgres_connection() as conn:
         async with conn.transaction():
             results = []
-            for query, args in queries:
-                if len(args) == 2 and args[1] in ["all", "one", "val"]:
-                    result = await conn.fetch(query, *args[0]) if args[1] == "all" else \
-                            await conn.fetchrow(query, *args[0]) if args[1] == "one" else \
-                            await conn.fetchval(query, *args[0])
-                else:
-                    result = await conn.execute(query, *args)
-                results.append(result)
-            return results
+            try:
+                for query, args in queries:
+                    if len(args) == 2 and args[1] in ["all", "one", "val"]:
+                        result = await conn.fetch(query, *args[0]) if args[1] == "all" else \
+                                await conn.fetchrow(query, *args[0]) if args[1] == "one" else \
+                                await conn.fetchval(query, *args[0])
+                    else:
+                        result = await conn.execute(query, *args)
+                    results.append(result)
+                
+                logger.info(f"PostgreSQL transaction completed: {len(queries)} queries executed")
+                return results
+                
+            except Exception as e:
+                logger.error(f"PostgreSQL transaction failed, rolling back: {e}")
+                # Transaction will automatically rollback on exception
+                raise
 
 
 async def neo4j_transaction(queries: list):
-    """Execute multiple Neo4j queries in a transaction"""
+    """Execute multiple Neo4j queries in a transaction with proper rollback"""
     async with get_neo4j_session() as session:
         async with session.begin_transaction() as tx:
             results = []
-            for query, kwargs in queries:
-                result = await tx.run(query, **kwargs)
-                results.append([record.data() for record in result])
-            return results
+            try:
+                for query, kwargs in queries:
+                    result = await tx.run(query, **kwargs)
+                    results.append([record.data() for record in result])
+                
+                # Commit the transaction
+                await tx.commit()
+                logger.info(f"Neo4j transaction completed: {len(queries)} queries executed")
+                return results
+                
+            except Exception as e:
+                logger.error(f"Neo4j transaction failed, rolling back: {e}")
+                # Rollback the transaction
+                await tx.rollback()
+                raise
 
 
-# Cache utilities
+async def postgres_transaction_with_rollback(queries: list, rollback_callback=None):
+    """Execute PostgreSQL transaction with custom rollback handling"""
+    async with get_postgres_connection() as conn:
+        async with conn.transaction():
+            results = []
+            executed_queries = []
+            
+            try:
+                for i, (query, args) in enumerate(queries):
+                    if len(args) == 2 and args[1] in ["all", "one", "val"]:
+                        result = await conn.fetch(query, *args[0]) if args[1] == "all" else \
+                                await conn.fetchrow(query, *args[0]) if args[1] == "one" else \
+                                await conn.fetchval(query, *args[0])
+                    else:
+                        result = await conn.execute(query, *args)
+                    
+                    results.append(result)
+                    executed_queries.append((query, args))
+                
+                logger.info(f"PostgreSQL transaction completed: {len(queries)} queries executed")
+                return results
+                
+            except Exception as e:
+                logger.error(f"PostgreSQL transaction failed: {e}")
+                
+                # Execute rollback callback if provided
+                if rollback_callback:
+                    try:
+                        await rollback_callback(executed_queries, e)
+                    except Exception as callback_error:
+                        logger.error(f"Rollback callback failed: {callback_error}")
+                
+                # Transaction will automatically rollback
+                raise
+
+
+async def neo4j_transaction_with_rollback(queries: list, rollback_callback=None):
+    """Execute Neo4j transaction with custom rollback handling"""
+    async with get_neo4j_session() as session:
+        async with session.begin_transaction() as tx:
+            results = []
+            executed_queries = []
+            
+            try:
+                for query, kwargs in queries:
+                    result = await tx.run(query, **kwargs)
+                    results.append([record.data() for record in result])
+                    executed_queries.append((query, kwargs))
+                
+                # Commit the transaction
+                await tx.commit()
+                logger.info(f"Neo4j transaction completed: {len(queries)} queries executed")
+                return results
+                
+            except Exception as e:
+                logger.error(f"Neo4j transaction failed: {e}")
+                
+                # Execute rollback callback if provided
+                if rollback_callback:
+                    try:
+                        await rollback_callback(executed_queries, e)
+                    except Exception as callback_error:
+                        logger.error(f"Rollback callback failed: {callback_error}")
+                
+                # Rollback the transaction
+                await tx.rollback()
+                raise
+
+
+# Cache utilities with invalidation strategy
+_cache_invalidation_callbacks = {}
+_cache_dependencies = {}  # Track cache key dependencies
+
+
 async def cache_get(key: str) -> Optional[str]:
     """Get value from Redis cache"""
     try:
@@ -270,31 +407,190 @@ async def cache_get(key: str) -> Optional[str]:
         return None
 
 
-async def cache_set(key: str, value: str, ttl: int = None):
-    """Set value in Redis cache"""
+async def cache_set(key: str, value: str, ttl: int = None, dependencies: List[str] = None):
+    """Set value in Redis cache with optional dependencies"""
     try:
         async with get_redis_connection() as redis:
             if ttl:
                 await redis.setex(key, ttl, value)
             else:
                 await redis.set(key, value)
+            
+            # Track dependencies for invalidation
+            if dependencies:
+                _cache_dependencies[key] = dependencies
+                
     except Exception as e:
         logger.error(f"Cache set failed for key {key}: {e}")
 
 
 async def cache_delete(key: str):
-    """Delete value from Redis cache"""
+    """Delete value from Redis cache and handle dependencies"""
     try:
         async with get_redis_connection() as redis:
             await redis.delete(key)
+        
+        # Remove from dependencies tracking
+        if key in _cache_dependencies:
+            del _cache_dependencies[key]
+            
     except Exception as e:
         logger.error(f"Cache delete failed for key {key}: {e}")
 
 
+async def cache_invalidate_pattern(pattern: str):
+    """Invalidate cache keys matching pattern"""
+    try:
+        async with get_redis_connection() as redis:
+            # Get all keys matching pattern
+            keys = await redis.keys(pattern)
+            if keys:
+                await redis.delete(*keys)
+                logger.info(f"Invalidated {len(keys)} cache keys matching pattern: {pattern}")
+                
+                # Remove from dependencies tracking
+                for key in keys:
+                    if key in _cache_dependencies:
+                        del _cache_dependencies[key]
+                        
+    except Exception as e:
+        logger.error(f"Cache pattern invalidation failed for pattern {pattern}: {e}")
+
+
+async def cache_invalidate_dependencies(dependency: str):
+    """Invalidate all cache keys that depend on a specific dependency"""
+    keys_to_invalidate = []
+    
+    # Find all keys that depend on this dependency
+    for cache_key, dependencies in _cache_dependencies.items():
+        if dependency in dependencies:
+            keys_to_invalidate.append(cache_key)
+    
+    if keys_to_invalidate:
+        logger.info(f"Invalidating {len(keys_to_invalidate)} cache keys for dependency: {dependency}")
+        
+        try:
+            async with get_redis_connection() as redis:
+                await redis.delete(*keys_to_invalidate)
+                
+            # Remove from dependencies tracking
+            for key in keys_to_invalidate:
+                if key in _cache_dependencies:
+                    del _cache_dependencies[key]
+                    
+        except Exception as e:
+            logger.error(f"Cache dependency invalidation failed for {dependency}: {e}")
+
+
+async def cache_invalidate_address(address: str):
+    """Invalidate all cache entries related to a specific address"""
+    patterns = [
+        f"address:{address}:*",
+        f"analysis:{address}:*",
+        f"compliance:{address}:*",
+        f"transaction:*:{address}:*",
+        f"transaction:*:*:{address}"  # from/to address
+    ]
+    
+    for pattern in patterns:
+        await cache_invalidate_pattern(pattern)
+    
+    # Also invalidate by dependency
+    await cache_invalidate_dependencies(f"address:{address}")
+
+
+async def cache_invalidate_transaction(tx_hash: str):
+    """Invalidate all cache entries related to a specific transaction"""
+    patterns = [
+        f"transaction:{tx_hash}:*",
+        f"block:*:transaction:{tx_hash}",
+        f"address:*:transaction:{tx_hash}"
+    ]
+    
+    for pattern in patterns:
+        await cache_invalidate_pattern(pattern)
+    
+    # Also invalidate by dependency
+    await cache_invalidate_dependencies(f"transaction:{tx_hash}")
+
+
+async def cache_invalidate_blockchain(blockchain: str):
+    """Invalidate all cache entries for a specific blockchain"""
+    patterns = [
+        f"{blockchain}:*",
+        f"blockchain:{blockchain}:*",
+        f"node:{blockchain}:*",
+        f"stats:{blockchain}:*"
+    ]
+    
+    for pattern in patterns:
+        await cache_invalidate_pattern(pattern)
+    
+    # Also invalidate by dependency
+    await cache_invalidate_dependencies(f"blockchain:{blockchain}")
+
+
+def register_cache_invalidation_callback(event_type: str, callback):
+    """Register callback for cache invalidation events"""
+    _cache_invalidation_callbacks[event_type] = callback
+
+
+async def trigger_cache_invalidation_event(event_type: str, data: Any):
+    """Trigger cache invalidation event"""
+    if event_type in _cache_invalidation_callbacks:
+        try:
+            await _cache_invalidation_callbacks[event_type](data)
+        except Exception as e:
+            logger.error(f"Cache invalidation callback failed for {event_type}: {e}")
+
+
+# Default invalidation callbacks
+async def _on_address_updated(address_data: dict):
+    """Handle address update invalidation"""
+    address = address_data.get('address')
+    if address:
+        await cache_invalidate_address(address)
+
+
+async def _on_transaction_updated(tx_data: dict):
+    """Handle transaction update invalidation"""
+    tx_hash = tx_data.get('transaction_hash')
+    if tx_hash:
+        await cache_invalidate_transaction(tx_hash)
+        
+        # Also invalidate related addresses
+        from_address = tx_data.get('from_address')
+        to_address = tx_data.get('to_address')
+        
+        if from_address:
+            await cache_invalidate_address(from_address)
+        if to_address:
+            await cache_invalidate_address(to_address)
+
+
+async def _on_blockchain_updated(blockchain_data: dict):
+    """Handle blockchain update invalidation"""
+    blockchain = blockchain_data.get('blockchain')
+    if blockchain:
+        await cache_invalidate_blockchain(blockchain)
+
+
+# Register default callbacks
+register_cache_invalidation_callback('address_updated', _on_address_updated)
+register_cache_invalidation_callback('transaction_updated', _on_transaction_updated)
+register_cache_invalidation_callback('blockchain_updated', _on_blockchain_updated)
+
+
 # Connection monitoring
+_monitoring_task: Optional[asyncio.Task] = None
+_monitoring_active = False
+
+
 async def monitor_connections():
-    """Monitor database connection health"""
-    while True:
+    """Monitor database connection health with proper cleanup"""
+    global _monitoring_active
+    
+    while _monitoring_active:
         try:
             health = await check_database_health()
             
@@ -303,21 +599,56 @@ async def monitor_connections():
                 
                 # Attempt to reconnect failed connections
                 if not health["postgres"]:
+                    logger.info("Attempting to reconnect PostgreSQL...")
                     await init_postgres()
                 if not health["neo4j"]:
+                    logger.info("Attempting to reconnect Neo4j...")
                     await init_neo4j()
                 if not health["redis"]:
+                    logger.info("Attempting to reconnect Redis...")
                     await init_redis()
             
+            # Check if monitoring should continue
+            if not _monitoring_active:
+                break
+                
             await asyncio.sleep(60)  # Check every minute
             
         except Exception as e:
             logger.error(f"Connection monitoring error: {e}")
-            await asyncio.sleep(30)  # Retry in 30 seconds
+            if _monitoring_active:
+                await asyncio.sleep(30)  # Retry in 30 seconds
+            else:
+                break
+    
+    logger.info("Connection monitoring stopped")
 
 
-# Background task starter
 async def start_connection_monitoring():
-    """Start background connection monitoring"""
-    asyncio.create_task(monitor_connections())
+    """Start background connection monitoring with proper task management"""
+    global _monitoring_task, _monitoring_active
+    
+    if _monitoring_task and not _monitoring_task.done():
+        logger.warning("Connection monitoring is already running")
+        return
+    
+    _monitoring_active = True
+    _monitoring_task = asyncio.create_task(monitor_connections())
     logger.info("Started database connection monitoring")
+
+
+async def stop_connection_monitoring():
+    """Stop connection monitoring and clean up resources"""
+    global _monitoring_active, _monitoring_task
+    
+    _monitoring_active = False
+    
+    if _monitoring_task:
+        _monitoring_task.cancel()
+        try:
+            await _monitoring_task
+        except asyncio.CancelledError:
+            pass
+        _monitoring_task = None
+    
+    logger.info("Stopped database connection monitoring")

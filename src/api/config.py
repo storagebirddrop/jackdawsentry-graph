@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     # =============================================================================
     # API Configuration
     # =============================================================================
-    API_HOST: str = "0.0.0.0"
+    API_HOST: str = os.getenv("API_HOST", "127.0.0.1")
     API_PORT: int = 8000
     API_SECRET_KEY: str
     API_ALGORITHM: str = "HS256"
@@ -63,8 +63,8 @@ class Settings(BaseSettings):
     LND_TLS_CERT_PATH: Optional[str] = None
     
     # Ethereum/EVM Chains
-    ETHEREUM_RPC_URL: str = "https://mainnet.infura.io/v3/YOUR_INFURA_KEY"
-    ETHEREUM_NETWORK: str = "mainnet"
+    ETHEREUM_RPC_URL: str = os.getenv("ETHEREUM_RPC_URL", "https://mainnet.infura.io/v3/YOUR_INFURA_KEY")
+    ETHEREUM_NETWORK: str = os.getenv("ETHEREUM_NETWORK", "mainnet")
     
     BSC_RPC_URL: str = "https://bsc-dataseed.binance.org"
     BSC_NETWORK: str = "mainnet"
@@ -200,9 +200,19 @@ class Settings(BaseSettings):
     
     @validator("ENCRYPTION_KEY")
     def validate_encryption_key(cls, v):
-        """Validate encryption key is 32 characters"""
+        """Validate encryption key format and strength"""
         if len(v) != 32:
             raise ValueError("Encryption key must be exactly 32 characters")
+        
+        # Check for sufficient entropy (basic check)
+        has_upper = any(c.isupper() for c in v)
+        has_lower = any(c.islower() for c in v)
+        has_digit = any(c.isdigit() for c in v)
+        has_special = any(c in "!@#$%^&*()_+-=[]{}|;:,.<>?" for c in v)
+        
+        if not (has_upper and has_lower and has_digit and has_special):
+            raise ValueError("Encryption key must contain uppercase, lowercase, digits, and special characters")
+        
         return v
     
     @validator("API_SECRET_KEY")
@@ -217,6 +227,48 @@ class Settings(BaseSettings):
         """Ensure retention period meets EU AML requirements"""
         if v < 2555:  # 7 years
             raise ValueError("Data retention period must be at least 2555 days (7 years) for EU AML compliance")
+        return v
+    
+    @validator("API_SECRET_KEY", pre=True)
+    def validate_required_api_secret_key(cls, v):
+        """Validate API secret key is provided"""
+        if not v or v.strip() == "":
+            raise ValueError("API_SECRET_KEY environment variable is required")
+        return v
+    
+    @validator("NEO4J_PASSWORD", pre=True)
+    def validate_required_neo4j_password(cls, v):
+        """Validate Neo4j password is provided"""
+        if not v or v.strip() == "":
+            raise ValueError("NEO4J_PASSWORD environment variable is required")
+        return v
+    
+    @validator("POSTGRES_PASSWORD", pre=True)
+    def validate_required_postgres_password(cls, v):
+        """Validate PostgreSQL password is provided"""
+        if not v or v.strip() == "":
+            raise ValueError("POSTGRES_PASSWORD environment variable is required")
+        return v
+    
+    @validator("REDIS_PASSWORD", pre=True)
+    def validate_required_redis_password(cls, v):
+        """Validate Redis password is provided"""
+        if not v or v.strip() == "":
+            raise ValueError("REDIS_PASSWORD environment variable is required")
+        return v
+    
+    @validator("ENCRYPTION_KEY", pre=True)
+    def validate_required_encryption_key(cls, v):
+        """Validate encryption key is provided"""
+        if not v or v.strip() == "":
+            raise ValueError("ENCRYPTION_KEY environment variable is required")
+        return v
+    
+    @validator("JWT_SECRET_KEY", pre=True)
+    def validate_required_jwt_secret_key(cls, v):
+        """Validate JWT secret key is provided"""
+        if not v or v.strip() == "":
+            raise ValueError("JWT_SECRET_KEY environment variable is required")
         return v
     
     class Config:
