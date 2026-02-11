@@ -8,10 +8,22 @@ import logging
 from typing import Dict, List, Optional, Any, Union
 from datetime import datetime
 import json
-import base58
-from solders.pubkey import Pubkey
-from solana.rpc.async_api import AsyncClient
-from solana.rpc.types import RPCResponse
+
+# Try to import Solana dependencies, but don't fail if not available
+try:
+    import base58
+    from solders.pubkey import Pubkey
+    from solana.rpc.async_api import AsyncClient
+    from solana.rpc.types import RPCResponse
+    SOLANA_AVAILABLE = True
+except ImportError:
+    SOLANA_AVAILABLE = False
+    
+    # Fallback for base58
+    try:
+        import base58
+    except ImportError:
+        base58 = None
 
 from .base import BaseCollector, Transaction, Block, Address
 from src.api.config import settings
@@ -41,6 +53,10 @@ class SolanaCollector(BaseCollector):
     
     async def connect(self) -> bool:
         """Connect to Solana RPC"""
+        if not SOLANA_AVAILABLE:
+            logger.warning("Solana dependencies not available, skipping connection")
+            return False
+            
         try:
             self.client = AsyncClient(self.rpc_url)
             

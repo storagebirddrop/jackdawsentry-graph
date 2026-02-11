@@ -10,6 +10,20 @@ from datetime import datetime
 import json
 import base64
 
+# Try to import aiohttp, but don't fail if not available
+try:
+    import aiohttp
+    AIOHTTP_AVAILABLE = True
+except ImportError:
+    AIOHTTP_AVAILABLE = False
+
+# Try to import base58, but don't fail if not available
+try:
+    import base58
+    BASE58_AVAILABLE = True
+except ImportError:
+    BASE58_AVAILABLE = False
+
 from .base import BaseCollector, Transaction, Block, Address
 from src.api.config import settings
 
@@ -37,9 +51,11 @@ class TronCollector(BaseCollector):
     
     async def connect(self) -> bool:
         """Connect to Tron RPC"""
-        try:
-            import aiohttp
+        if not AIOHTTP_AVAILABLE:
+            logger.warning("aiohttp not available, skipping Tron connection")
+            return False
             
+        try:
             self.session = aiohttp.ClientSession(
                 timeout=aiohttp.ClientTimeout(total=30)
             )
@@ -254,17 +270,21 @@ class TronCollector(BaseCollector):
     def base58_to_hex(self, address: str) -> str:
         """Convert Base58 address to hex"""
         try:
-            import base58
-            decoded = base58.b58decode(address)
-            return decoded.hex()
+            if BASE58_AVAILABLE:
+                decoded = base58.b58decode(address)
+                return decoded.hex()
+            else:
+                return address
         except Exception:
             return address
     
     def hex_to_base58(self, hex_address: str) -> str:
         """Convert hex address to Base58"""
         try:
-            import base58
-            return base58.b58encode(bytes.fromhex(hex_address)).decode()
+            if BASE58_AVAILABLE:
+                return base58.b58encode(bytes.fromhex(hex_address)).decode()
+            else:
+                return hex_address
         except Exception:
             return hex_address
     

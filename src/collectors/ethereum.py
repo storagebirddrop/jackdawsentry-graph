@@ -9,9 +9,26 @@ from typing import Dict, List, Optional, Any, Union
 from datetime import datetime
 import json
 import re
-from web3 import Web3
-from web3.middleware import geth_poa_middleware
-from eth_utils import to_checksum_address, from_wei
+
+# Try to import Web3 dependencies, but don't fail if not available
+try:
+    from web3 import Web3
+    from web3.middleware import geth_poa_middleware
+    from eth_utils import to_checksum_address, from_wei
+    WEB3_AVAILABLE = True
+except ImportError:
+    WEB3_AVAILABLE = False
+    
+    # Fallback functions
+    def to_checksum_address(address: str) -> str:
+        return address.lower()
+    
+    def from_wei(amount: int, unit: str = 'ether') -> float:
+        if unit == 'ether':
+            return float(amount) / 1e18
+        elif unit == 'gwei':
+            return float(amount) / 1e9
+        return float(amount)
 
 from .base import BaseCollector, Transaction, Block, Address
 from src.api.config import settings
@@ -80,6 +97,10 @@ class EthereumCollector(BaseCollector):
     
     async def connect(self) -> bool:
         """Connect to Ethereum RPC"""
+        if not WEB3_AVAILABLE:
+            logger.warning("Web3 dependencies not available, skipping connection")
+            return False
+            
         try:
             # Configure Web3
             self.w3 = Web3(Web3.HTTPProvider(self.rpc_url))
@@ -210,7 +231,7 @@ class EthereumCollector(BaseCollector):
     async def get_address_balance(self, address: str) -> float:
         """Get address balance in ETH"""
         try:
-            if not self.w3:
+            if not self.w3 or not WEB3_AVAILABLE:
                 return 0.0
             
             checksum_address = to_checksum_address(address)
@@ -224,7 +245,7 @@ class EthereumCollector(BaseCollector):
     async def get_address_transactions(self, address: str, limit: int = 100) -> List[Transaction]:
         """Get address transaction history"""
         try:
-            if not self.w3:
+            if not self.w3 or not WEB3_AVAILABLE:
                 return []
             
             checksum_address = to_checksum_address(address)
