@@ -8,7 +8,7 @@ import logging
 from typing import Optional
 import asyncpg
 from neo4j import AsyncGraphDatabase
-import aioredis
+import redis
 from contextlib import asynccontextmanager
 import threading
 
@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 # Global connection pools
 _postgres_pool: Optional[asyncpg.Pool] = None
 _neo4j_driver: Optional[AsyncGraphDatabase.driver] = None
-_redis_pool: Optional[aioredis.ConnectionPool] = None
+_redis_client: Optional[redis.Redis] = None
 
 # Initialization lock to prevent race conditions
 _init_lock = threading.Lock()

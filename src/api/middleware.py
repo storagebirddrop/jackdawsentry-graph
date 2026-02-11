@@ -7,8 +7,9 @@ import time
 import logging
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timedelta
-from fastapi import Request, Response, HTTPException, status
-from fastapi.middleware.base import BaseHTTPMiddleware
+from fastapi import Request, Response
+from fastapi.middleware import Middleware
+from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.base import RequestResponseEndpoint
 import json
 import hashlib

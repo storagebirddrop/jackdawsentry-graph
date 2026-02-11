@@ -5,7 +5,8 @@ GDPR-compliant configuration management
 
 import os
 from typing import List, Optional
-from pydantic import BaseSettings, validator
+from pydantic_settings import BaseSettings
+from pydantic import validator
 from cryptography.fernet import Fernet
 
 
@@ -201,8 +202,9 @@ class Settings(BaseSettings):
     @validator("ENCRYPTION_KEY")
     def validate_encryption_key(cls, v):
         """Validate encryption key format and strength"""
-        if len(v) != 32:
-            raise ValueError("Encryption key must be exactly 32 characters")
+        # Check for 32 bytes (64 hex characters) or 32 characters
+        if len(v) not in [32, 64]:
+            raise ValueError("Encryption key must be exactly 32 characters or 64 hex characters")
         
         # Check for sufficient entropy (basic check)
         has_upper = any(c.isupper() for c in v)
@@ -210,7 +212,7 @@ class Settings(BaseSettings):
         has_digit = any(c.isdigit() for c in v)
         has_special = any(c in "!@#$%^&*()_+-=[]{}|;:,.<>?" for c in v)
         
-        if not (has_upper and has_lower and has_digit and has_special):
+        if len(v) == 32 and not (has_upper and has_lower and has_digit and has_special):
             raise ValueError("Encryption key must contain uppercase, lowercase, digits, and special characters")
         
         return v
