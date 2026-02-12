@@ -25,16 +25,20 @@ class MigrationManager:
     async def get_applied_migrations(self, conn) -> set:
         """Get set of already applied migrations"""
         try:
-            result = await conn.fetchval("""
+            # Ensure migrations table exists
+            await conn.execute("""
                 CREATE TABLE IF NOT EXISTS schema_migrations (
                     id SERIAL PRIMARY KEY,
                     filename VARCHAR(255) UNIQUE NOT NULL,
                     applied_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
                 );
-                
-                SELECT filename FROM schema_migrations ORDER BY applied_at;
             """)
-            return set(result) if result else set()
+            
+            # Query applied migrations separately
+            rows = await conn.fetch(
+                "SELECT filename FROM schema_migrations ORDER BY applied_at"
+            )
+            return {row["filename"] for row in rows}
         except Exception as e:
             logger.error(f"Failed to get applied migrations: {e}")
             return set()
@@ -61,9 +65,11 @@ class MigrationManager:
             return False
         
         try:
-            # Read migration SQL
-            with open(migration_path, 'r') as f:
-                migration_sql = f.read()
+            # Read migration SQL (small files, run in executor to avoid blocking)
+            loop = asyncio.get_event_loop()
+            migration_sql = await loop.run_in_executor(
+                None, migration_path.read_text, "utf-8"
+            )
             
             # Execute migration in a transaction
             async with conn.transaction():

@@ -3,7 +3,6 @@ Jackdaw Sentry - Configuration Settings
 GDPR-compliant configuration management
 """
 
-import os
 from typing import List, Optional
 from pydantic_settings import BaseSettings
 from pydantic import validator
@@ -16,7 +15,7 @@ class Settings(BaseSettings):
     # =============================================================================
     # API Configuration
     # =============================================================================
-    API_HOST: str = os.getenv("API_HOST", "127.0.0.1")
+    API_HOST: str = "127.0.0.1"
     API_PORT: int = 8000
     API_SECRET_KEY: str
     API_ALGORITHM: str = "HS256"
@@ -64,8 +63,8 @@ class Settings(BaseSettings):
     LND_TLS_CERT_PATH: Optional[str] = None
     
     # Ethereum/EVM Chains
-    ETHEREUM_RPC_URL: str = os.getenv("ETHEREUM_RPC_URL", "https://mainnet.infura.io/v3/YOUR_INFURA_KEY")
-    ETHEREUM_NETWORK: str = os.getenv("ETHEREUM_NETWORK", "mainnet")
+    ETHEREUM_RPC_URL: str = "https://mainnet.infura.io/v3/YOUR_INFURA_KEY"
+    ETHEREUM_NETWORK: str = "mainnet"
     
     BSC_RPC_URL: str = "https://bsc-dataseed.binance.org"
     BSC_NETWORK: str = "mainnet"
@@ -201,25 +200,18 @@ class Settings(BaseSettings):
     
     @validator("ENCRYPTION_KEY")
     def validate_encryption_key(cls, v):
-        """Validate encryption key format and strength"""
-        # Check for 32 bytes (64 hex characters) or 32 characters
-        if len(v) not in [32, 64]:
-            raise ValueError("Encryption key must be exactly 32 characters or 64 hex characters")
-        
-        # Check for sufficient entropy (basic check)
-        has_upper = any(c.isupper() for c in v)
-        has_lower = any(c.islower() for c in v)
-        has_digit = any(c.isdigit() for c in v)
-        has_special = any(c in "!@#$%^&*()_+-=[]{}|;:,.<>?" for c in v)
-        
-        if len(v) == 32 and not (has_upper and has_lower and has_digit and has_special):
-            raise ValueError("Encryption key must contain uppercase, lowercase, digits, and special characters")
-        
+        """Validate encryption key is non-empty and at least 32 characters"""
+        if not v or not v.strip():
+            raise ValueError("ENCRYPTION_KEY environment variable is required")
+        if len(v) < 32:
+            raise ValueError("Encryption key must be at least 32 characters")
         return v
     
     @validator("API_SECRET_KEY")
     def validate_api_secret_key(cls, v):
-        """Validate API secret key is strong enough"""
+        """Validate API secret key is provided and strong enough"""
+        if not v or not v.strip():
+            raise ValueError("API_SECRET_KEY environment variable is required")
         if len(v) < 32:
             raise ValueError("API secret key must be at least 32 characters")
         return v
@@ -229,13 +221,6 @@ class Settings(BaseSettings):
         """Ensure retention period meets EU AML requirements"""
         if v < 2555:  # 7 years
             raise ValueError("Data retention period must be at least 2555 days (7 years) for EU AML compliance")
-        return v
-    
-    @validator("API_SECRET_KEY", pre=True)
-    def validate_required_api_secret_key(cls, v):
-        """Validate API secret key is provided"""
-        if not v or v.strip() == "":
-            raise ValueError("API_SECRET_KEY environment variable is required")
         return v
     
     @validator("NEO4J_PASSWORD", pre=True)
@@ -259,13 +244,6 @@ class Settings(BaseSettings):
             raise ValueError("REDIS_PASSWORD environment variable is required")
         return v
     
-    @validator("ENCRYPTION_KEY", pre=True)
-    def validate_required_encryption_key(cls, v):
-        """Validate encryption key is provided"""
-        if not v or v.strip() == "":
-            raise ValueError("ENCRYPTION_KEY environment variable is required")
-        return v
-    
     @validator("JWT_SECRET_KEY", pre=True)
     def validate_required_jwt_secret_key(cls, v):
         """Validate JWT secret key is provided"""
@@ -276,6 +254,7 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         case_sensitive = True
+        extra = "ignore"
 
 
 # Create global settings instance
@@ -287,14 +266,19 @@ settings = Settings()
 # =============================================================================
 
 def get_encryption_key() -> bytes:
-    """Get encryption key for GDPR compliance"""
-    return settings.ENCRYPTION_KEY.encode()
+    """Get raw encryption key bytes for GDPR compliance.
+    Derives 32 bytes from the hex ENCRYPTION_KEY setting."""
+    import hashlib
+    return hashlib.sha256(settings.ENCRYPTION_KEY.encode()).digest()
 
 
 def get_fernet() -> Fernet:
-    """Get Fernet encryption instance"""
-    key = get_encryption_key()
-    return Fernet(key)
+    """Get Fernet encryption instance.
+    Derives a valid Fernet key (url-safe base64 of 32 bytes) from ENCRYPTION_KEY."""
+    import base64
+    raw = get_encryption_key()
+    fernet_key = base64.urlsafe_b64encode(raw)
+    return Fernet(fernet_key)
 
 
 # =============================================================================

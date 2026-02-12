@@ -111,7 +111,7 @@ class SolanaCollector(BaseCollector):
                 hash=str(slot_number),  # Solana uses slot numbers
                 blockchain=self.blockchain,
                 number=slot_number,
-                timestamp=datetime.fromtimestamp(block['block_time'] / 1000) if block.get('block_time') else datetime.utcnow(),
+                timestamp=datetime.fromtimestamp(block['block_time'] / 1000) if block.get('block_time') else datetime.now(timezone.utc),
                 transaction_count=len(block.get('transactions', [])),
                 parent_hash=str(block.get('parent_slot', 0)),
                 miner=block.get('blockhash')[:32] if block.get('blockhash') else None,
@@ -173,7 +173,7 @@ class SolanaCollector(BaseCollector):
             # Get slot info
             slot = transaction.get('slot')
             block_time = transaction.get('blockTime')
-            timestamp = datetime.fromtimestamp(block_time) if block_time else datetime.utcnow()
+            timestamp = datetime.fromtimestamp(block_time) if block_time else datetime.now(timezone.utc)
             
             return Transaction(
                 hash=tx_signature,

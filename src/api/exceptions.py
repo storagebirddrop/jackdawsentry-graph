@@ -3,7 +3,7 @@ Jackdaw Sentry - Exception Classes
 Custom exception classes for different error types
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any
 from fastapi import HTTPException, status
 
@@ -22,7 +22,7 @@ class JackdawException(Exception):
         self.error_code = error_code
         self.status_code = status_code
         self.details = details or {}
-        self.timestamp = datetime.utcnow()
+        self.timestamp = datetime.now(timezone.utc)
         super().__init__(self.message)
     
     def to_dict(self) -> Dict[str, Any]:
@@ -295,71 +295,3 @@ class ReportException(JackdawException):
             result["report_type"] = self.report_type
         return result
 
-
-# Exception factory functions
-def create_jackdaw_exception(message: str, **kwargs) -> JackdawException:
-    """Create a generic JackdawException"""
-    return JackdawException(message, **kwargs)
-
-
-def create_compliance_exception(message: str, regulation: str = "UNKNOWN", **kwargs) -> ComplianceException:
-    """Create a ComplianceException"""
-    return ComplianceException(message, regulation, **kwargs)
-
-
-def create_blockchain_exception(message: str, blockchain: str = "unknown", **kwargs) -> BlockchainException:
-    """Create a BlockchainException"""
-    return BlockchainException(message, blockchain, **kwargs)
-
-
-def create_authentication_exception(message: str, **kwargs) -> AuthenticationException:
-    """Create an AuthenticationException"""
-    return AuthenticationException(message, **kwargs)
-
-
-def create_authorization_exception(message: str, required_permission: Optional[str] = None, **kwargs) -> AuthorizationException:
-    """Create an AuthorizationException"""
-    return AuthorizationException(message, required_permission, **kwargs)
-
-
-def create_validation_exception(message: str, field: Optional[str] = None, value: Optional[Any] = None, **kwargs) -> ValidationException:
-    """Create a ValidationException"""
-    return ValidationException(message, field, value, **kwargs)
-
-
-def create_database_exception(message: str, database: str = "unknown", operation: Optional[str] = None, **kwargs) -> DatabaseException:
-    """Create a DatabaseException"""
-    return DatabaseException(message, database, operation, **kwargs)
-
-
-def create_configuration_exception(message: str, config_key: Optional[str] = None, **kwargs) -> ConfigurationException:
-    """Create a ConfigurationException"""
-    return ConfigurationException(message, config_key, **kwargs)
-
-
-def create_rate_limit_exception(message: str, limit_type: str = "unknown", retry_after: Optional[int] = None, **kwargs) -> RateLimitException:
-    """Create a RateLimitException"""
-    return RateLimitException(message, limit_type, retry_after, **kwargs)
-
-
-# Exception mapping for error codes
-EXCEPTION_MAP = {
-    "JACKDAW_ERROR": JackdawException,
-    "COMPLIANCE_ERROR": ComplianceException,
-    "BLOCKCHAIN_ERROR": BlockchainException,
-    "AUTHENTICATION_ERROR": AuthenticationException,
-    "AUTHORIZATION_ERROR": AuthorizationException,
-    "VALIDATION_ERROR": ValidationException,
-    "DATABASE_ERROR": DatabaseException,
-    "CONFIGURATION_ERROR": ConfigurationException,
-    "RATE_LIMIT_ERROR": RateLimitException,
-    "INTELLIGENCE_ERROR": IntelligenceException,
-    "INVESTIGATION_ERROR": InvestigationException,
-    "REPORT_ERROR": ReportException
-}
-
-
-def create_exception_from_error_code(error_code: str, message: str, **kwargs) -> JackdawException:
-    """Create exception from error code"""
-    exception_class = EXCEPTION_MAP.get(error_code, JackdawException)
-    return exception_class(message, error_code=error_code, **kwargs)

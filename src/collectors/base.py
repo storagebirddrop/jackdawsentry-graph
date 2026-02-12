@@ -190,7 +190,7 @@ class BaseCollector(ABC):
             
             # Update metrics
             self.metrics['blocks_processed'] += (end_block - start_block + 1)
-            self.metrics['last_collection'] = datetime.utcnow()
+            self.metrics['last_collection'] = datetime.now(timezone.utc)
             
             logger.info(f"Processed blocks {start_block}-{end_block} for {self.blockchain}")
             

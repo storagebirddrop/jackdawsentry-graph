@@ -211,7 +211,7 @@ class EthereumCollector(BaseCollector):
                 from_address=from_address,
                 to_address=to_address,
                 value=value,
-                timestamp=block_timestamp or datetime.utcnow(),
+                timestamp=block_timestamp or datetime.now(timezone.utc),
                 block_number=block_number,
                 block_hash=tx_data['blockHash'].hex() if tx_data['blockHash'] else None,
                 gas_used=gas_used,

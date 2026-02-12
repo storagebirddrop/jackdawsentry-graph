@@ -5,12 +5,11 @@ Handles Neo4j, PostgreSQL, and Redis connections
 
 import asyncio
 import logging
-from typing import Optional
+from typing import Any, List, Optional
 import asyncpg
 from neo4j import AsyncGraphDatabase
-import redis
+import redis.asyncio as redis_async
 from contextlib import asynccontextmanager
-import threading
 
 from src.api.config import settings
 
@@ -19,10 +18,10 @@ logger = logging.getLogger(__name__)
 # Global connection pools
 _postgres_pool: Optional[asyncpg.Pool] = None
 _neo4j_driver: Optional[AsyncGraphDatabase.driver] = None
-_redis_client: Optional[redis.Redis] = None
+_redis_pool: Optional[redis_async.ConnectionPool] = None
 
 # Initialization lock to prevent race conditions
-_init_lock = threading.Lock()
+_init_lock = asyncio.Lock()
 _init_event = asyncio.Event()
 _initialized = False
 
@@ -36,8 +35,8 @@ async def init_databases():
         await _init_event.wait()
         return
     
-    # Use thread-safe lock to prevent concurrent initialization
-    with _init_lock:
+    # Use async lock to prevent concurrent initialization
+    async with _init_lock:
         if _initialized:
             await _init_event.wait()
             return
@@ -110,14 +109,14 @@ async def init_redis():
     global _redis_pool
     
     try:
-        _redis_pool = aioredis.ConnectionPool.from_url(
+        _redis_pool = redis_async.ConnectionPool.from_url(
             f"redis://:{settings.REDIS_PASSWORD}@{settings.REDIS_HOST}:{settings.REDIS_PORT}/{settings.REDIS_DB}",
             max_connections=20,
             retry_on_timeout=True
         )
         
         # Test connection
-        redis = aioredis.Redis(connection_pool=_redis_pool)
+        redis = redis_async.Redis(connection_pool=_redis_pool)
         await redis.ping()
         
         logger.info("✅ Redis connection pool initialized")
@@ -140,7 +139,7 @@ def get_neo4j_driver() -> AsyncGraphDatabase.driver:
     return _neo4j_driver
 
 
-def get_redis_pool() -> aioredis.ConnectionPool:
+def get_redis_pool() -> redis_async.ConnectionPool:
     """Get Redis connection pool"""
     if _redis_pool is None:
         raise RuntimeError("Redis pool not initialized")
@@ -167,7 +166,7 @@ async def get_neo4j_session():
 @asynccontextmanager
 async def get_redis_connection():
     """Get Redis connection from pool with connection reuse optimization"""
-    redis = aioredis.Redis(connection_pool=get_redis_pool())
+    redis = redis_async.Redis(connection_pool=get_redis_pool())
     try:
         yield redis
     finally:

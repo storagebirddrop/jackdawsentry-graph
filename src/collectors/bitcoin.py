@@ -186,7 +186,7 @@ class BitcoinCollector(BaseCollector):
                 from_address=from_address or "unknown",
                 to_address=to_address,
                 value=value,
-                timestamp=block_timestamp or datetime.utcnow(),
+                timestamp=block_timestamp or datetime.now(timezone.utc),
                 block_number=block_number,
                 block_hash=block_hash,
                 fee=fee,
@@ -352,7 +352,7 @@ class BitcoinCollector(BaseCollector):
                     'address': address,
                     'utxos': unspent,
                     'total_value': sum(utxo.get('amount', 0) for utxo in unspent),
-                    'updated_at': datetime.utcnow().isoformat()
+                    'updated_at': datetime.now(timezone.utc).isoformat()
                 }
                 await redis.setex(cache_key, 300, json.dumps(utxo_data))  # Cache for 5 minutes
                 

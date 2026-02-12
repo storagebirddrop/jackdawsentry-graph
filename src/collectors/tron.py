@@ -210,7 +210,7 @@ class TronCollector(BaseCollector):
                 from_address=self.base58_to_hex(from_address) if from_address else "unknown",
                 to_address=self.base58_to_hex(to_address) if to_address else None,
                 value=value,
-                timestamp=block_timestamp or datetime.utcnow(),
+                timestamp=block_timestamp or datetime.now(timezone.utc),
                 block_number=block_number,
                 block_hash=ref_block,
                 contract_address=self.base58_to_hex(contract_address) if contract_address else None,

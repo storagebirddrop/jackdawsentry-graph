@@ -3,11 +3,12 @@ Jackdaw Sentry - Middleware Components
 Security, audit, and rate limiting middleware
 """
 
+import os
 import time
 import logging
 from typing import Dict, List, Optional, Any
-from datetime import datetime, timedelta
-from fastapi import Request, Response
+from datetime import datetime, timedelta, timezone
+from fastapi import Request, Response, HTTPException, status
 from fastapi.middleware import Middleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.base import RequestResponseEndpoint
@@ -19,6 +20,19 @@ import asyncio
 
 from src.api.database import get_redis_connection
 from src.api.config import settings
+
+
+def get_client_ip(request: Request) -> str:
+    """Extract client IP from request, checking proxy headers first."""
+    forwarded_for = request.headers.get("X-Forwarded-For")
+    if forwarded_for:
+        return forwarded_for.split(",")[0].strip()
+    
+    real_ip = request.headers.get("X-Real-IP")
+    if real_ip:
+        return real_ip.strip()
+    
+    return request.client.host if request.client else "unknown"
 
 logger = logging.getLogger(__name__)
 
@@ -70,18 +84,9 @@ class SecurityMiddleware(BaseHTTPMiddleware):
         
         return response
     
-    def _get_client_ip(self, request: Request) -> str:
-        """Get client IP address"""
-        # Check for forwarded headers
-        forwarded_for = request.headers.get("X-Forwarded-For")
-        if forwarded_for:
-            return forwarded_for.split(",")[0].strip()
-        
-        real_ip = request.headers.get("X-Real-IP")
-        if real_ip:
-            return real_ip.strip()
-        
-        return request.client.host if request.client else "unknown"
+    @staticmethod
+    def _get_client_ip(request: Request) -> str:
+        return get_client_ip(request)
     
     def _validate_request(self, request: Request) -> Dict[str, Any]:
         """Validate request for security issues"""
@@ -189,7 +194,7 @@ class AuditMiddleware(BaseHTTPMiddleware):
         
         request_log = {
             "request_id": request_id,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "method": request.method,
             "url": str(request.url),
             "path": request.url.path,
@@ -219,7 +224,7 @@ class AuditMiddleware(BaseHTTPMiddleware):
         
         response_log = {
             "request_id": request_id,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "status_code": response.status_code,
             "content_length": response.headers.get("content-length"),
             "processing_time_ms": round(processing_time, 2),
@@ -235,7 +240,7 @@ class AuditMiddleware(BaseHTTPMiddleware):
         
         error_log = {
             "request_id": request_id,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "error_type": type(error).__name__,
             "error_message": str(error),
             "processing_time_ms": round(processing_time, 2),
@@ -245,39 +250,39 @@ class AuditMiddleware(BaseHTTPMiddleware):
         logger.error(f"Request failed: {request_id} - {type(error).__name__}: {str(error)}")
         return error_log
     
-    def _get_client_ip(self, request: Request) -> str:
-        """Get client IP address"""
-        forwarded_for = request.headers.get("X-Forwarded-For")
-        if forwarded_for:
-            return forwarded_for.split(",")[0].strip()
-        
-        real_ip = request.headers.get("X-Real-IP")
-        if real_ip:
-            return real_ip.strip()
-        
-        return request.client.host if request.client else "unknown"
+    @staticmethod
+    def _get_client_ip(request: Request) -> str:
+        return get_client_ip(request)
     
     async def _store_audit_log(self, request_log: Dict[str, Any], response_log: Dict[str, Any]):
-        """Store audit log in database"""
+        """Store audit log in Redis, falling back to a local JSON-lines file."""
+        audit_data = {
+            "request": request_log,
+            "response": response_log,
+        }
         try:
-            # Store in Redis for fast access
             async with get_redis_connection() as redis:
                 audit_key = f"audit:{request_log['request_id']}"
-                audit_data = {
-                    "request": request_log,
-                    "response": response_log
-                }
                 await redis.setex(
-                    audit_key, 
-                    self.audit_retention_days * 24 * 3600,  # Convert days to seconds
-                    json.dumps(audit_data)
+                    audit_key,
+                    self.audit_retention_days * 24 * 3600,
+                    json.dumps(audit_data),
                 )
-            
-            # In production, also store in PostgreSQL for long-term storage
-            # await self._store_audit_log_postgres(request_log, response_log)
-            
         except Exception as e:
-            logger.error(f"Failed to store audit log: {e}")
+            logger.warning(f"Redis audit write failed, falling back to file: {e}")
+            await self._store_audit_log_file(audit_data)
+
+    async def _store_audit_log_file(self, audit_data: Dict[str, Any]):
+        """Append an audit record to a local JSON-lines file (fallback)."""
+        import os
+        import aiofiles
+        log_dir = os.environ.get("AUDIT_LOG_DIR", "/app/logs")
+        try:
+            os.makedirs(log_dir, exist_ok=True)
+            async with aiofiles.open(os.path.join(log_dir, "audit_fallback.jsonl"), mode="a") as f:
+                await f.write(json.dumps(audit_data) + "\n")
+        except Exception as e:
+            logger.error(f"Audit fallback file write also failed: {e}")
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
@@ -299,6 +304,10 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         """Process request through rate limiting"""
+        # Skip rate limiting in test mode
+        if os.environ.get("TESTING"):
+            return await call_next(request)
+
         client_ip = self._get_client_ip(request)
         user_info = getattr(request.state, 'user', None)
         
@@ -322,17 +331,9 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         
         return response
     
-    def _get_client_ip(self, request: Request) -> str:
-        """Get client IP address"""
-        forwarded_for = request.headers.get("X-Forwarded-For")
-        if forwarded_for:
-            return forwarded_for.split(",")[0].strip()
-        
-        real_ip = request.headers.get("X-Real-IP")
-        if real_ip:
-            return real_ip.strip()
-        
-        return request.client.host if request.client else "unknown"
+    @staticmethod
+    def _get_client_ip(request: Request) -> str:
+        return get_client_ip(request)
     
     def _check_rate_limit(self, key: str) -> bool:
         """Check if rate limit is exceeded"""

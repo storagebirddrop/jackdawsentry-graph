@@ -277,7 +277,7 @@ class CollectorManager:
                     'total_transactions': total_transactions,
                     'total_blocks': total_blocks,
                     'running_collectors': running_collectors,
-                    'last_update': datetime.utcnow().isoformat()
+                    'last_update': datetime.now(timezone.utc).isoformat()
                 })
                 
                 # Cache metrics in Redis

@@ -195,7 +195,7 @@ class LightningMonitor:
             # Update metrics
             self.metrics['channels_monitored'] = len(channels)
             self.metrics['network_capacity'] = total_capacity
-            self.metrics['last_update'] = datetime.utcnow()
+            self.metrics['last_update'] = datetime.now(timezone.utc)
             
             # Cache in Redis
             await self.cache_channel_data(channels)

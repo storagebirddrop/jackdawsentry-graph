@@ -3,9 +3,12 @@ Jackdaw Sentry - Authentication Module
 JWT-based authentication with GDPR compliance
 """
 
+import uuid
 import jwt
-from datetime import datetime, timedelta
+import bcrypt
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, List
+from uuid import UUID
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
@@ -21,8 +24,10 @@ security = HTTPBearer()
 
 class User(BaseModel):
     """User model for authentication"""
+    id: UUID
     username: str
     email: str
+    role: str = "viewer"
     permissions: List[str]
     is_active: bool = True
     created_at: datetime
@@ -31,24 +36,58 @@ class User(BaseModel):
 
 class TokenData(BaseModel):
     """Token data model"""
+    user_id: Optional[str] = None
     username: Optional[str] = None
     permissions: List[str] = []
     exp: Optional[datetime] = None
 
 
+class LoginRequest(BaseModel):
+    """Login request model"""
+    username: str
+    password: str
+
+
+class TokenResponse(BaseModel):
+    """Token response model"""
+    access_token: str
+    token_type: str = "bearer"
+    expires_in: int
+    user: Dict
+
+
+# =============================================================================
+# Password hashing
+# =============================================================================
+
+def hash_password(password: str) -> str:
+    """Hash a password using bcrypt"""
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """Verify a password against its bcrypt hash"""
+    return bcrypt.checkpw(plain_password.encode("utf-8"), hashed_password.encode("utf-8"))
+
+
+# =============================================================================
+# JWT token management
+# =============================================================================
+
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     """Create JWT access token"""
     to_encode = data.copy()
+    now = datetime.now(timezone.utc)
     
     if expires_delta:
-        expire = datetime.utcnow() + expires_delta
+        expire = now + expires_delta
     else:
-        expire = datetime.utcnow() + timedelta(minutes=settings.JWT_EXPIRE_MINUTES)
+        expire = now + timedelta(minutes=settings.JWT_EXPIRE_MINUTES)
     
-    to_encode.update({"exp": expire})
+    to_encode.update({"exp": expire, "iat": now})
     encoded_jwt = jwt.encode(to_encode, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
     
-    logger.info(f"Created access token for user: {data.get('username', 'unknown')}")
+    logger.info(f"Created access token for user: {data.get('sub', 'unknown')}")
     return encoded_jwt
 
 
@@ -63,45 +102,78 @@ def verify_token(token: str) -> TokenData:
     try:
         payload = jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
         username: str = payload.get("sub")
+        user_id: str = payload.get("user_id")
         permissions: List[str] = payload.get("permissions", [])
-        exp: datetime = datetime.fromtimestamp(payload.get("exp"))
+        exp: datetime = datetime.fromtimestamp(payload.get("exp"), tz=timezone.utc)
         
         if username is None:
             raise credentials_exception
             
-        token_data = TokenData(username=username, permissions=permissions, exp=exp)
-        
-        # Check if token is expired
-        if datetime.utcnow() > exp:
-            raise credentials_exception
-            
-        return token_data
+        return TokenData(user_id=user_id, username=username, permissions=permissions, exp=exp)
         
     except jwt.ExpiredSignatureError:
         logger.warning("Token has expired")
         raise credentials_exception
-    except jwt.JWTError as e:
+    except (jwt.PyJWTError, Exception) as e:
         logger.warning(f"JWT validation error: {e}")
         raise credentials_exception
 
 
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> User:
-    """Get current authenticated user from token"""
+    """Get current authenticated user from token, backed by database lookup"""
     token_data = verify_token(credentials.credentials)
     
-    # In a real implementation, you would fetch user from database
-    # For now, we'll create a mock user based on token data
-    user = User(
-        username=token_data.username,
-        email=f"{token_data.username}@jackdawsentry.com",
-        permissions=token_data.permissions,
-        is_active=True,
-        created_at=datetime.utcnow(),
-        last_login=datetime.utcnow()
-    )
-    
-    logger.info(f"Authenticated user: {user.username}")
-    return user
+    try:
+        from src.api.database import get_postgres_connection
+        
+        async with get_postgres_connection() as conn:
+            row = await conn.fetchrow(
+                "SELECT id, username, email, role, is_active, created_at, last_login "
+                "FROM users WHERE username = $1",
+                token_data.username
+            )
+        
+        if row is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="User not found",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        
+        role = row["role"]
+        permissions = ROLES.get(role, ROLES["viewer"])
+        
+        user = User(
+            id=row["id"],
+            username=row["username"],
+            email=row["email"],
+            role=role,
+            permissions=permissions,
+            is_active=row["is_active"],
+            created_at=row["created_at"],
+            last_login=row["last_login"]
+        )
+        
+        if not user.is_active:
+            raise HTTPException(status_code=400, detail="Inactive user")
+        
+        return user
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Database error during user lookup: {e}")
+        # Fallback: construct user from token data if DB is unavailable
+        return User(
+            id=UUID(token_data.user_id) if token_data.user_id else uuid.uuid4(),
+            username=token_data.username,
+            email=f"{token_data.username}@jackdawsentry.com",
+            role="viewer",
+            permissions=token_data.permissions,
+            is_active=True,
+            created_at=datetime.now(timezone.utc),
+            last_login=datetime.now(timezone.utc)
+        )
 
 
 async def get_current_active_user(current_user: User = Depends(get_current_user)) -> User:
@@ -185,59 +257,93 @@ ROLES = {
 }
 
 
-def get_user_permissions(username: str) -> List[str]:
-    """Get user permissions (mock implementation - in real app, fetch from database)"""
-    # Mock implementation - in production, this would query the database
-    if username == "admin":
-        return ROLES["admin"]
-    elif username == "analyst":
-        return ROLES["analyst"]
-    elif username == "compliance":
-        return ROLES["compliance_officer"]
-    else:
+async def get_user_permissions(username: str) -> List[str]:
+    """Get user permissions from database role"""
+    try:
+        from src.api.database import get_postgres_connection
+        
+        async with get_postgres_connection() as conn:
+            role = await conn.fetchval(
+                "SELECT role FROM users WHERE username = $1", username
+            )
+        
+        return ROLES.get(role, ROLES["viewer"])
+    except Exception as e:
+        logger.error(f"Failed to get permissions for {username}: {e}")
         return ROLES["viewer"]
 
 
-def authenticate_user(username: str, password: str) -> Optional[User]:
-    """Authenticate user credentials (mock implementation)"""
-    # Mock implementation - in production, this would verify against database
-    # For demo purposes, we'll accept any non-empty credentials
-    if username and password:
-        permissions = get_user_permissions(username)
+async def authenticate_user(username: str, password: str) -> Optional[User]:
+    """Authenticate user credentials against database"""
+    try:
+        from src.api.database import get_postgres_connection
+        
+        async with get_postgres_connection() as conn:
+            row = await conn.fetchrow(
+                "SELECT id, username, email, password_hash, role, is_active, "
+                "created_at, last_login FROM users WHERE username = $1",
+                username
+            )
+        
+        if row is None:
+            return None
+        
+        if not verify_password(password, row["password_hash"]):
+            return None
+        
+        if not row["is_active"]:
+            return None
+        
+        role = row["role"]
+        permissions = ROLES.get(role, ROLES["viewer"])
+        
+        # Update last_login
+        async with get_postgres_connection() as conn:
+            await conn.execute(
+                "UPDATE users SET last_login = $1 WHERE id = $2",
+                datetime.now(timezone.utc), row["id"]
+            )
         
         user = User(
-            username=username,
-            email=f"{username}@jackdawsentry.com",
+            id=row["id"],
+            username=row["username"],
+            email=row["email"],
+            role=role,
             permissions=permissions,
-            is_active=True,
-            created_at=datetime.utcnow(),
-            last_login=datetime.utcnow()
+            is_active=row["is_active"],
+            created_at=row["created_at"],
+            last_login=datetime.now(timezone.utc)
         )
         
         logger.info(f"User authenticated: {username}")
         return user
-    
-    return None
+        
+    except Exception as e:
+        logger.error(f"Authentication error: {e}")
+        return None
 
 
 def create_user_token(user: User) -> str:
     """Create access token for user"""
     token_data = {
         "sub": user.username,
+        "user_id": str(user.id),
         "permissions": user.permissions,
-        "iat": datetime.utcnow()
     }
     
     return create_access_token(token_data)
 
 
+# =============================================================================
 # GDPR compliance functions
+# =============================================================================
+
 def log_access_attempt(username: str, success: bool, ip_address: str = None):
     """Log access attempt for GDPR compliance"""
     log_data = {
         "username": username,
         "success": success,
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "ip_address": ip_address
     }
     
@@ -247,19 +353,53 @@ def log_access_attempt(username: str, success: bool, ip_address: str = None):
         logger.warning(f"Failed login attempt: {log_data}")
 
 
-def get_user_data_export(username: str) -> Dict:
-    """Get user data for GDPR export"""
-    # Mock implementation - in production, this would collect all user data
+async def get_user_data_export(username: str) -> Dict:
+    """Get user data for GDPR export from database"""
+    try:
+        from src.api.database import get_postgres_connection
+        
+        async with get_postgres_connection() as conn:
+            row = await conn.fetchrow(
+                "SELECT username, email, role, created_at, last_login, "
+                "gdpr_consent_given, gdpr_consent_date FROM users WHERE username = $1",
+                username
+            )
+        
+        if row:
+            return {
+                "username": row["username"],
+                "email": row["email"],
+                "role": row["role"],
+                "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+                "data_types": ["authentication_logs", "access_logs", "permissions"],
+                "export_date": datetime.now(timezone.utc).isoformat(),
+                "data_retention_days": settings.DATA_RETENTION_DAYS
+            }
+    except Exception as e:
+        logger.error(f"GDPR export error for {username}: {e}")
+    
     return {
         "username": username,
         "data_types": ["authentication_logs", "access_logs", "permissions"],
-        "export_date": datetime.utcnow().isoformat(),
+        "export_date": datetime.now(timezone.utc).isoformat(),
         "data_retention_days": settings.DATA_RETENTION_DAYS
     }
 
 
-def delete_user_data(username: str) -> bool:
+async def delete_user_data(username: str) -> bool:
     """Delete user data for GDPR compliance"""
-    # Mock implementation - in production, this would delete all user data
-    logger.info(f"GDPR data deletion requested for user: {username}")
-    return True
+    try:
+        from src.api.database import get_postgres_connection
+        
+        async with get_postgres_connection() as conn:
+            result = await conn.execute(
+                "UPDATE users SET is_active = false, email = 'deleted@gdpr.local', "
+                "password_hash = 'DELETED' WHERE username = $1",
+                username
+            )
+        
+        logger.info(f"GDPR data deletion completed for user: {username}")
+        return True
+    except Exception as e:
+        logger.error(f"GDPR deletion error for {username}: {e}")
+        return False
