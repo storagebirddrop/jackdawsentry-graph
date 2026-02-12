@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS users (
     email VARCHAR(255) UNIQUE NOT NULL,
     password_hash VARCHAR(255) NOT NULL,
     full_name VARCHAR(100),
-    role VARCHAR(20) DEFAULT 'analyst',
+    role VARCHAR(20) DEFAULT 'analyst' CHECK (role IN ('admin', 'analyst', 'investigator', 'auditor', 'viewer')),
     is_active BOOLEAN DEFAULT true,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
@@ -30,8 +30,8 @@ CREATE TABLE IF NOT EXISTS investigations (
     description TEXT,
     status VARCHAR(20) DEFAULT 'open',
     priority VARCHAR(10) DEFAULT 'medium',
-    assigned_to UUID REFERENCES users(id),
-    created_by UUID REFERENCES users(id),
+    assigned_to UUID REFERENCES users(id) ON DELETE SET NULL,
+    created_by UUID REFERENCES users(id) ON DELETE SET NULL,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     closed_at TIMESTAMP WITH TIME ZONE,
@@ -53,7 +53,8 @@ CREATE TABLE IF NOT EXISTS evidence (
     blockchain_address VARCHAR(100),
     transaction_hash VARCHAR(100),
     collected_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    collected_by UUID REFERENCES users(id)
+    collected_by UUID REFERENCES users(id),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
 -- =============================================================================
@@ -84,7 +85,7 @@ CREATE TABLE IF NOT EXISTS transactions (
     block_number BIGINT,
     block_hash VARCHAR(100),
     from_address VARCHAR(100) NOT NULL,
-    to_address VARCHAR(100) NOT NULL,
+    to_address VARCHAR(100),
     amount DECIMAL(20,8),
     amount_usd DECIMAL(20,8),
     gas_used BIGINT,
@@ -103,8 +104,9 @@ CREATE TABLE IF NOT EXISTS transactions (
 -- =============================================================================
 CREATE TABLE IF NOT EXISTS addresses (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    address VARCHAR(100) UNIQUE NOT NULL,
+    address VARCHAR(100) NOT NULL,
     blockchain VARCHAR(50) NOT NULL,
+    UNIQUE (address, blockchain),
     label VARCHAR(100),
     risk_score DECIMAL(5,2),
     transaction_count BIGINT DEFAULT 0,
@@ -266,4 +268,7 @@ CREATE TRIGGER update_addresses_updated_at BEFORE UPDATE ON addresses
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 CREATE TRIGGER update_sanctions_entries_updated_at BEFORE UPDATE ON sanctions_entries
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_risk_scoring_models_updated_at BEFORE UPDATE ON risk_scoring_models
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
