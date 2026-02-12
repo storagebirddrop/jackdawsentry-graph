@@ -6,7 +6,7 @@ Lightning Network channel state and payment routing analysis
 import asyncio
 import logging
 from typing import Dict, List, Optional, Any, Tuple
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 import grpc
 import base64
@@ -183,7 +183,7 @@ class LightningMonitor:
                     'initiator': channel.initiator,
                     'private': channel.private,
                     'active': channel.active,
-                    'last_update': datetime.fromtimestamp(channel.last_update / 1000000) if channel.last_update else None
+                    'last_update': datetime.fromtimestamp(channel.last_update / 1000000, tz=timezone.utc) if channel.last_update else None
                 }
                 
                 channels.append(channel_info)
@@ -275,7 +275,7 @@ class LightningMonitor:
                     'value': payment.value,
                     'fee': payment.fee,
                     'status': payment.status,
-                    'creation_time': datetime.fromtimestamp(payment.creation_date / 1000000) if payment.creation_date else None,
+                    'creation_time': datetime.fromtimestamp(payment.creation_date / 1000000, tz=timezone.utc) if payment.creation_date else None,
                     'payment_preimage': payment.payment_preimage,
                     'path': list(payment.path) if payment.path else []
                 }
@@ -397,7 +397,7 @@ class LightningMonitor:
                     'pubkey': node.pubkey,
                     'alias': node.alias,
                     'addresses': [(addr.addr, addr.port) for addr in node.addresses],
-                    'last_update': datetime.fromtimestamp(node.last_update / 1000000) if node.last_update else None
+                    'last_update': datetime.fromtimestamp(node.last_update / 1000000, tz=timezone.utc) if node.last_update else None
                 }
                 nodes.append(node_info)
                 await self.store_node(node_info)
@@ -408,7 +408,7 @@ class LightningMonitor:
                     'node1_pubkey': edge.node1_pub,
                     'node2_pubkey': edge.node2_pub,
                     'capacity': edge.capacity,
-                    'last_update': datetime.fromtimestamp(edge.last_update / 1000000) if edge.last_update else None
+                    'last_update': datetime.fromtimestamp(edge.last_update / 1000000, tz=timezone.utc) if edge.last_update else None
                 }
                 edges.append(edge_info)
             

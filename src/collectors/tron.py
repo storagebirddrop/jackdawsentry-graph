@@ -6,7 +6,7 @@ Tron blockchain data collection
 import asyncio
 import logging
 from typing import Dict, List, Optional, Any, Union
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 import base64
 
@@ -132,7 +132,7 @@ class TronCollector(BaseCollector):
                 hash=block_header.get('txTrieRoot', ''),
                 blockchain=self.blockchain,
                 number=block_number,
-                timestamp=datetime.fromtimestamp(block_header.get('timestamp', 0) / 1000),
+                timestamp=datetime.fromtimestamp(block_header.get('timestamp', 0) / 1000, tz=timezone.utc),
                 transaction_count=len(transactions),
                 parent_hash=block_header.get('parentHash'),
                 miner=block_header.get('witness_address', ''),
@@ -197,7 +197,7 @@ class TronCollector(BaseCollector):
             
             if ref_block:
                 # Would need to query block by hash to get full info
-                block_timestamp = datetime.fromtimestamp(raw_data.get('timestamp', 0) / 1000)
+                block_timestamp = datetime.fromtimestamp(raw_data.get('timestamp', 0) / 1000, tz=timezone.utc)
             
             # Get token transfers
             token_transfers = []

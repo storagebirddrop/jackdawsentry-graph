@@ -172,6 +172,7 @@ class Settings(BaseSettings):
     
     DEBUG: bool = False
     TESTING: bool = False
+    TRUST_PROXY_HEADERS: bool = True
     
     # API Rate Limiting
     RATE_LIMIT_ENABLED: bool = True
@@ -267,9 +268,32 @@ settings = Settings()
 
 def get_encryption_key() -> bytes:
     """Get raw encryption key bytes for GDPR compliance.
-    Derives 32 bytes from the hex ENCRYPTION_KEY setting."""
-    import hashlib
-    return hashlib.sha256(settings.ENCRYPTION_KEY.encode()).digest()
+
+    If ENCRYPTION_KEY looks like a hex string (even-length, all hex chars),
+    it is decoded via bytes.fromhex(); otherwise it is treated as a UTF-8
+    passphrase and encoded to bytes.  The raw material is then run through
+    HKDF-SHA256 to derive exactly 32 bytes.
+    """
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+    from cryptography.hazmat.primitives import hashes
+
+    raw = settings.ENCRYPTION_KEY
+    # Detect hex-encoded key vs. plain passphrase
+    try:
+        if len(raw) % 2 == 0 and all(c in "0123456789abcdefABCDEF" for c in raw):
+            key_material = bytes.fromhex(raw)
+        else:
+            key_material = raw.encode("utf-8")
+    except (ValueError, AttributeError):
+        key_material = raw.encode("utf-8")
+
+    hkdf = HKDF(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=b"jackdawsentry-gdpr-kdf-salt",
+        info=b"jackdawsentry-encryption-key",
+    )
+    return hkdf.derive(key_material)
 
 
 def get_fernet() -> Fernet:

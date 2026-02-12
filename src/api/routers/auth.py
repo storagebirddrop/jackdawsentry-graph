@@ -4,7 +4,6 @@ Login, token refresh, and user management endpoints
 """
 
 from fastapi import APIRouter, HTTPException, Request, status
-from datetime import timezone, datetime
 import logging
 
 from src.api.auth import (
@@ -13,7 +12,6 @@ from src.api.auth import (
     authenticate_user,
     create_user_token,
     log_access_attempt,
-    hash_password,
     settings,
 )
 

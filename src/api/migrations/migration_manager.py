@@ -66,7 +66,7 @@ class MigrationManager:
         
         try:
             # Read migration SQL (small files, run in executor to avoid blocking)
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             migration_sql = await loop.run_in_executor(
                 None, migration_path.read_text, "utf-8"
             )
@@ -189,8 +189,10 @@ async def create_initial_migration():
                 # Read and apply initial schema
                 migration_path = Path(__file__).parent / "001_initial_schema.sql"
                 if migration_path.exists():
-                    with open(migration_path, 'r') as f:
-                        schema_sql = f.read()
+                    loop = asyncio.get_running_loop()
+                    schema_sql = await loop.run_in_executor(
+                        None, migration_path.read_text, "utf-8"
+                    )
                     
                     async with conn.transaction():
                         await conn.execute(schema_sql)

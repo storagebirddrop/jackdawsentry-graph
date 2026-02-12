@@ -17,22 +17,48 @@ import hashlib
 import ipaddress
 from collections import defaultdict, deque
 import asyncio
+import aiofiles
 
 from src.api.database import get_redis_connection
 from src.api.config import settings
 
 
-def get_client_ip(request: Request) -> str:
-    """Extract client IP from request, checking proxy headers first."""
-    forwarded_for = request.headers.get("X-Forwarded-For")
-    if forwarded_for:
-        return forwarded_for.split(",")[0].strip()
-    
-    real_ip = request.headers.get("X-Real-IP")
-    if real_ip:
-        return real_ip.strip()
-    
-    return request.client.host if request.client else "unknown"
+def _is_valid_ip(value: str) -> bool:
+    """Check whether *value* is a valid IPv4 or IPv6 address."""
+    try:
+        ipaddress.ip_address(value)
+        return True
+    except (ValueError, TypeError):
+        return False
+
+
+def get_client_ip(request: Request, trust_proxy_headers: bool = None) -> str:
+    """Extract client IP from request, optionally checking proxy headers.
+
+    If *trust_proxy_headers* is ``None`` the value is read from
+    ``settings.TRUST_PROXY_HEADERS``.
+    """
+    if trust_proxy_headers is None:
+        trust_proxy_headers = settings.TRUST_PROXY_HEADERS
+
+    if trust_proxy_headers:
+        forwarded_for = request.headers.get("X-Forwarded-For")
+        if forwarded_for:
+            candidate = forwarded_for.split(",")[0].strip()
+            if _is_valid_ip(candidate):
+                return candidate
+
+        real_ip = request.headers.get("X-Real-IP")
+        if real_ip:
+            candidate = real_ip.strip()
+            if _is_valid_ip(candidate):
+                return candidate
+
+    host = request.client.host if request.client else None
+    if host and _is_valid_ip(host):
+        return host
+
+    return "unknown"
 
 logger = logging.getLogger(__name__)
 
@@ -274,8 +300,6 @@ class AuditMiddleware(BaseHTTPMiddleware):
 
     async def _store_audit_log_file(self, audit_data: Dict[str, Any]):
         """Append an audit record to a local JSON-lines file (fallback)."""
-        import os
-        import aiofiles
         log_dir = os.environ.get("AUDIT_LOG_DIR", "/app/logs")
         try:
             os.makedirs(log_dir, exist_ok=True)

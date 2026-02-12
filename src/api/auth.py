@@ -114,8 +114,11 @@ def verify_token(token: str) -> TokenData:
     except jwt.ExpiredSignatureError:
         logger.warning("Token has expired")
         raise credentials_exception
-    except (jwt.PyJWTError, Exception) as e:
+    except jwt.PyJWTError as e:
         logger.warning(f"JWT validation error: {e}")
+        raise credentials_exception
+    except (KeyError, ValueError, TypeError) as e:
+        logger.warning(f"Token payload parsing error: {e}")
         raise credentials_exception
 
 
@@ -199,6 +202,16 @@ def check_permissions(required_permissions: List[str]):
         return current_user
     
     return permission_checker
+
+
+async def require_admin(current_user: User = Depends(get_current_active_user)) -> User:
+    """Require admin-level access (admin:system permission)"""
+    if "admin:system" not in current_user.permissions:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required"
+        )
+    return current_user
 
 
 # Permission constants

@@ -6,7 +6,7 @@ Bitcoin blockchain data collection with Lightning Network support
 import asyncio
 import logging
 from typing import Dict, List, Optional, Any, Union
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 import struct
 import binascii
@@ -112,7 +112,7 @@ class BitcoinCollector(BaseCollector):
                 hash=block_data['hash'],
                 blockchain=self.blockchain,
                 number=block_data['height'],
-                timestamp=datetime.fromtimestamp(block_data['time']),
+                timestamp=datetime.fromtimestamp(block_data['time'], tz=timezone.utc),
                 transaction_count=len(block_data['tx']),
                 parent_hash=block_data.get('previousblockhash'),
                 miner=block_data.get('miner'),
@@ -141,7 +141,7 @@ class BitcoinCollector(BaseCollector):
                 block_data = await self.rpc_call("getblock", [block_hash])
                 if block_data:
                     block_number = block_data.get('height')
-                    block_timestamp = datetime.fromtimestamp(block_data.get('time'))
+                    block_timestamp = datetime.fromtimestamp(block_data.get('time'), tz=timezone.utc)
             
             # Calculate inputs and outputs
             total_input = 0

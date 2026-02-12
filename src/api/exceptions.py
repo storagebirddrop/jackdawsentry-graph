@@ -52,14 +52,10 @@ class ComplianceException(JackdawException):
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert compliance exception to dictionary for API response"""
-        return {
-            "error": "ComplianceError",
-            "message": self.message,
-            "code": self.error_code,
-            "regulation": self.regulation,
-            "timestamp": self.timestamp.isoformat(),
-            "details": self.details
-        }
+        result = super().to_dict()
+        result["error"] = "ComplianceError"
+        result["regulation"] = self.regulation
+        return result
 
 
 class BlockchainException(JackdawException):
@@ -78,14 +74,10 @@ class BlockchainException(JackdawException):
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert blockchain exception to dictionary for API response"""
-        return {
-            "error": "BlockchainError",
-            "message": self.message,
-            "code": self.error_code,
-            "blockchain": self.blockchain,
-            "timestamp": self.timestamp.isoformat(),
-            "details": self.details
-        }
+        result = super().to_dict()
+        result["error"] = "BlockchainError"
+        result["blockchain"] = self.blockchain
+        return result
 
 
 class AuthenticationException(JackdawException):
@@ -101,13 +93,9 @@ class AuthenticationException(JackdawException):
         super().__init__(message, error_code, status_code, details)
     
     def to_dict(self) -> Dict[str, Any]:
-        return {
-            "error": "AuthenticationError",
-            "message": self.message,
-            "code": self.error_code,
-            "timestamp": self.timestamp.isoformat(),
-            "details": self.details
-        }
+        result = super().to_dict()
+        result["error"] = "AuthenticationError"
+        return result
 
 
 class AuthorizationException(JackdawException):

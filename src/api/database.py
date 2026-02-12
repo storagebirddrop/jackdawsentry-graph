@@ -393,7 +393,9 @@ async def neo4j_transaction_with_rollback(queries: list, rollback_callback=None)
 
 # Cache utilities with invalidation strategy
 _cache_invalidation_callbacks = {}
-_cache_dependencies = {}  # Track cache key dependencies
+
+_CACHE_DEPS_PREFIX = "cache:deps:"   # cache:deps:{cache_key} -> SET of dependencies
+_CACHE_RDEPS_PREFIX = "cache:rdeps:"  # cache:rdeps:{dep}       -> SET of cache keys
 
 
 async def cache_get(key: str) -> Optional[str]:
@@ -414,71 +416,101 @@ async def cache_set(key: str, value: str, ttl: int = None, dependencies: List[st
                 await redis.setex(key, ttl, value)
             else:
                 await redis.set(key, value)
-            
-            # Track dependencies for invalidation
+
+            # Track dependencies in Redis sets
             if dependencies:
-                _cache_dependencies[key] = dependencies
-                
+                deps_key = f"{_CACHE_DEPS_PREFIX}{key}"
+                await redis.sadd(deps_key, *dependencies)
+                # Maintain reverse index: dep -> cache keys
+                for dep in dependencies:
+                    await redis.sadd(f"{_CACHE_RDEPS_PREFIX}{dep}", key)
+
     except Exception as e:
         logger.error(f"Cache set failed for key {key}: {e}")
 
 
 async def cache_delete(key: str):
-    """Delete value from Redis cache and handle dependencies"""
+    """Delete value from Redis cache and clean up dependency sets"""
     try:
         async with get_redis_connection() as redis:
             await redis.delete(key)
-        
-        # Remove from dependencies tracking
-        if key in _cache_dependencies:
-            del _cache_dependencies[key]
-            
+
+            # Clean up dependency tracking
+            deps_key = f"{_CACHE_DEPS_PREFIX}{key}"
+            deps = await redis.smembers(deps_key)
+            for dep in deps:
+                dep_str = dep.decode() if isinstance(dep, bytes) else dep
+                await redis.srem(f"{_CACHE_RDEPS_PREFIX}{dep_str}", key)
+            await redis.delete(deps_key)
+
     except Exception as e:
         logger.error(f"Cache delete failed for key {key}: {e}")
 
 
 async def cache_invalidate_pattern(pattern: str):
-    """Invalidate cache keys matching pattern"""
+    """Invalidate cache keys matching pattern using async SCAN"""
     try:
         async with get_redis_connection() as redis:
-            # Get all keys matching pattern
-            keys = await redis.keys(pattern)
-            if keys:
-                await redis.delete(*keys)
-                logger.info(f"Invalidated {len(keys)} cache keys matching pattern: {pattern}")
-                
-                # Remove from dependencies tracking
-                for key in keys:
-                    if key in _cache_dependencies:
-                        del _cache_dependencies[key]
-                        
+            all_deleted: List[str] = []
+            batch: List[str] = []
+            async for raw_key in redis.scan_iter(match=pattern, count=100):
+                key_str = raw_key.decode() if isinstance(raw_key, bytes) else raw_key
+                batch.append(key_str)
+                if len(batch) >= 100:
+                    await redis.delete(*batch)
+                    all_deleted.extend(batch)
+                    batch = []
+            if batch:
+                await redis.delete(*batch)
+                all_deleted.extend(batch)
+
+            if all_deleted:
+                logger.info(f"Invalidated {len(all_deleted)} cache keys matching pattern: {pattern}")
+
+            # Clean up dependency tracking for all deleted keys
+            for key_str in all_deleted:
+                deps_key = f"{_CACHE_DEPS_PREFIX}{key_str}"
+                deps = await redis.smembers(deps_key)
+                for dep in deps:
+                    dep_s = dep.decode() if isinstance(dep, bytes) else dep
+                    await redis.srem(f"{_CACHE_RDEPS_PREFIX}{dep_s}", key_str)
+                await redis.delete(deps_key)
+
     except Exception as e:
         logger.error(f"Cache pattern invalidation failed for pattern {pattern}: {e}")
 
 
 async def cache_invalidate_dependencies(dependency: str):
     """Invalidate all cache keys that depend on a specific dependency"""
-    keys_to_invalidate = []
-    
-    # Find all keys that depend on this dependency
-    for cache_key, dependencies in _cache_dependencies.items():
-        if dependency in dependencies:
-            keys_to_invalidate.append(cache_key)
-    
-    if keys_to_invalidate:
-        logger.info(f"Invalidating {len(keys_to_invalidate)} cache keys for dependency: {dependency}")
-        
-        try:
-            async with get_redis_connection() as redis:
-                await redis.delete(*keys_to_invalidate)
-                
-            # Remove from dependencies tracking
-            for key in keys_to_invalidate:
-                if key in _cache_dependencies:
-                    del _cache_dependencies[key]
-                    
-        except Exception as e:
-            logger.error(f"Cache dependency invalidation failed for {dependency}: {e}")
+    try:
+        async with get_redis_connection() as redis:
+            rdeps_key = f"{_CACHE_RDEPS_PREFIX}{dependency}"
+            raw_members = await redis.smembers(rdeps_key)
+            if not raw_members:
+                return
+
+            keys_to_invalidate = [
+                m.decode() if isinstance(m, bytes) else m for m in raw_members
+            ]
+            logger.info(f"Invalidating {len(keys_to_invalidate)} cache keys for dependency: {dependency}")
+
+            # Delete the cached values
+            await redis.delete(*keys_to_invalidate)
+
+            # Clean up forward dependency sets and reverse entries
+            for cache_key in keys_to_invalidate:
+                deps_key = f"{_CACHE_DEPS_PREFIX}{cache_key}"
+                deps = await redis.smembers(deps_key)
+                for dep in deps:
+                    dep_s = dep.decode() if isinstance(dep, bytes) else dep
+                    await redis.srem(f"{_CACHE_RDEPS_PREFIX}{dep_s}", cache_key)
+                await redis.delete(deps_key)
+
+            # Remove the reverse index entry itself
+            await redis.delete(rdeps_key)
+
+    except Exception as e:
+        logger.error(f"Cache dependency invalidation failed for {dependency}: {e}")
 
 
 async def cache_invalidate_address(address: str):

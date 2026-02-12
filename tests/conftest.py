@@ -80,7 +80,7 @@ def make_token(jwt_secret):
             "exp": now + timedelta(minutes=expire_minutes),
             **extra,
         }
-        return pyjwt.encode(payload, jwt_secret, algorithm="HS256")
+        return pyjwt.encode(payload, jwt_secret, algorithm=os.environ.get("JWT_ALGORITHM", "HS256"))
 
     return _make
 
