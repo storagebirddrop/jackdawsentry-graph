@@ -31,7 +31,8 @@ CREATE TABLE IF NOT EXISTS investigations (
     status VARCHAR(20) DEFAULT 'open',
     priority VARCHAR(10) DEFAULT 'medium',
     assigned_to UUID REFERENCES users(id) ON DELETE SET NULL,
-    created_by UUID REFERENCES users(id) ON DELETE RESTRICT,
+    -- ON DELETE SET NULL: allows user deletion (GDPR); app queries must handle NULL created_by
+    created_by UUID REFERENCES users(id) ON DELETE SET NULL,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     closed_at TIMESTAMP WITH TIME ZONE,
