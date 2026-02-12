@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS investigations (
     status VARCHAR(20) DEFAULT 'open',
     priority VARCHAR(10) DEFAULT 'medium',
     assigned_to UUID REFERENCES users(id) ON DELETE SET NULL,
-    created_by UUID REFERENCES users(id) ON DELETE SET NULL,
+    created_by UUID REFERENCES users(id) ON DELETE RESTRICT,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     closed_at TIMESTAMP WITH TIME ZONE,
@@ -53,7 +53,7 @@ CREATE TABLE IF NOT EXISTS evidence (
     blockchain_address VARCHAR(100),
     transaction_hash VARCHAR(100),
     collected_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    collected_by UUID REFERENCES users(id),
+    collected_by UUID REFERENCES users(id) ON DELETE SET NULL,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
