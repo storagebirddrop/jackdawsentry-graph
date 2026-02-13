@@ -99,11 +99,12 @@ class GraphClusterRequest(BaseModel):
 
     @validator("addresses")
     def validate_addresses(cls, v):
-        if not v or len(v) < 2:
-            raise ValueError("At least 2 addresses required")
-        if len(v) > 50:
+        cleaned = [a.strip().lower() for a in (v or []) if a.strip()]
+        if len(cleaned) < 2:
+            raise ValueError("At least 2 non-empty addresses required")
+        if len(cleaned) > 50:
             raise ValueError("Maximum 50 addresses per cluster request")
-        return [a.strip().lower() for a in v if a.strip()]
+        return cleaned
 
 
 class GraphNode(BaseModel):
@@ -160,37 +161,44 @@ async def expand_address(
     edges_list: List[Dict[str, Any]] = []
 
     # Build direction-specific Cypher pattern with variable-length depth
+    depth = request.depth
     if request.direction == "out":
-        pattern = "path = (a:Address {address: $addr, blockchain: $bc})-[:SENT]->(:Transaction)-[:RECEIVED]->(b:Address)"
+        pattern = f"path = (a:Address {{address: $addr, blockchain: $bc}})(-[:SENT]->(:Transaction)-[:RECEIVED]->(:Address)){{1,{depth}}}"
     elif request.direction == "in":
-        pattern = "path = (b:Address)-[:SENT]->(:Transaction)-[:RECEIVED]->(a:Address {address: $addr, blockchain: $bc})"
+        pattern = f"path = (a:Address {{address: $addr, blockchain: $bc}})(<-[:RECEIVED]-(:Transaction)<-[:SENT]-(:Address)){{1,{depth}}}"
     else:
-        pattern = "path = (a:Address {address: $addr, blockchain: $bc})-[:SENT|RECEIVED]-(:Transaction)-[:SENT|RECEIVED]-(b:Address)"
+        pattern = f"path = (a:Address {{address: $addr, blockchain: $bc}})(-[:SENT|RECEIVED]-(:Transaction)-[:SENT|RECEIVED]-(:Address)){{1,{depth}}}"
 
-    # Multi-hop expansion via variable-length paths bounded by depth
+    # Multi-hop expansion via variable-length paths
     cypher = f"""
     MATCH {pattern}
-    WHERE b.address <> $addr AND length(path) <= $depth * 2
-    WITH a, b, relationships(path) AS rels
-    UNWIND rels AS r
-    WITH a, b, startNode(r) AS sn, endNode(r) AS en, r
-    WHERE 'Transaction' IN labels(en) OR 'Transaction' IN labels(sn)
-    WITH a, b,
-         CASE WHEN 'Transaction' IN labels(en) THEN en ELSE sn END AS t
+    WITH a, nodes(path) AS ns, relationships(path) AS rels
+    UNWIND range(0, size(ns)-1) AS idx
+    WITH a, ns[idx] AS n
+    WHERE n:Transaction
+    WITH a, n AS t
+    OPTIONAL MATCH (t)<-[:SENT]-(src:Address)
+    OPTIONAL MATCH (t)-[:RECEIVED]->(tgt:Address)
+    WITH a, t, src, tgt
+    WHERE (src IS NOT NULL OR tgt IS NOT NULL) AND (src.address <> $addr OR tgt.address <> $addr)
     """
 
+    # Build optional filter conditions
+    conditions = []
     if request.min_value is not None:
-        cypher += " AND toFloat(t.value) >= $min_val"
+        conditions.append("toFloat(t.value) >= $min_val")
     if request.time_from:
-        cypher += " AND t.timestamp >= $t_from"
+        conditions.append("t.timestamp >= $t_from")
     if request.time_to:
-        cypher += " AND t.timestamp <= $t_to"
+        conditions.append("t.timestamp <= $t_to")
+    if conditions:
+        cypher += " WHERE " + " AND ".join(conditions)
 
     cypher += f"""
     RETURN DISTINCT
-        a.address AS from_addr,
-        b.address AS to_addr,
-        b.blockchain AS b_chain,
+        COALESCE(src.address, $addr) AS from_addr,
+        COALESCE(tgt.address, $addr) AS to_addr,
+        COALESCE(tgt.blockchain, src.blockchain, $bc) AS b_chain,
         t.hash AS tx_hash,
         t.value AS tx_value,
         t.timestamp AS tx_ts,
@@ -265,11 +273,11 @@ async def expand_address(
                         continue  # tx doesn't involve addr
                     if peer and peer not in nodes_map:
                         nodes_map[peer] = _make_address_node(peer, request.blockchain)
-                    if peer:
+                    if peer and from_a and to_a:
                         edges_list.append({
                             "id": tx.hash,
-                            "source": from_a or addr,
-                            "target": to_a or "",
+                            "source": from_a,
+                            "target": to_a,
                             "value": float(tx.value) if tx.value else 0.0,
                             "chain": request.blockchain,
                             "timestamp": tx.timestamp.isoformat() if tx.timestamp else None,
@@ -534,8 +542,8 @@ async def graph_search(
                             "type": addr_info.type,
                         })
                         nodes_map[q] = node
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning(f"Graph search RPC address fallback failed: {exc}")
 
             if not nodes_map and client:
                 try:
@@ -547,18 +555,19 @@ async def graph_search(
                             nodes_map[fa] = _make_address_node(fa, chain)
                         if ta:
                             nodes_map[ta] = _make_address_node(ta, chain)
-                        edges_list.append({
-                            "id": tx.hash,
-                            "source": fa,
-                            "target": ta,
-                            "value": float(tx.value) if tx.value else 0.0,
-                            "chain": chain,
-                            "timestamp": tx.timestamp.isoformat() if tx.timestamp else None,
-                            "tx_hash": tx.hash,
-                            "block_number": tx.block_number,
-                        })
-                except Exception:
-                    pass
+                        if fa and ta:
+                            edges_list.append({
+                                "id": tx.hash,
+                                "source": fa,
+                                "target": ta,
+                                "value": float(tx.value) if tx.value else 0.0,
+                                "chain": chain,
+                                "timestamp": tx.timestamp.isoformat() if tx.timestamp else None,
+                                "tx_hash": tx.hash,
+                                "block_number": tx.block_number,
+                            })
+                except Exception as exc:
+                    logger.warning(f"Graph search RPC tx fallback failed: {exc}")
 
     if not nodes_map and not edges_list:
         raise HTTPException(status_code=404, detail="No results found")
@@ -606,9 +615,9 @@ async def address_summary(
             WITH a, count(DISTINCT r) AS tx_count,
                  count(DISTINCT sent_t) AS sent_count,
                  count(DISTINCT recv_t) AS recv_count,
-                 min(sent_t.timestamp) AS first_sent,
-                 max(recv_t.timestamp) AS last_recv
-            RETURN a, tx_count, sent_count, recv_count, first_sent, last_recv
+                 min(COALESCE(sent_t.timestamp, recv_t.timestamp)) AS first_activity,
+                 max(COALESCE(recv_t.timestamp, sent_t.timestamp)) AS last_activity
+            RETURN a, tx_count, sent_count, recv_count, first_activity, last_activity
             """,
             addr=addr, bc=bc,
         )
@@ -624,8 +633,8 @@ async def address_summary(
             "type": props.get("type", "unknown"),
             "risk_score": _safe_float(props.get("risk_score")),
             "labels": props.get("labels", []),
-            "first_seen": rec.get("first_sent"),
-            "last_seen": rec.get("last_recv"),
+            "first_seen": rec.get("first_activity"),
+            "last_seen": rec.get("last_activity"),
             "sanctioned": props.get("sanctioned", False),
             "data_source": "neo4j",
         })

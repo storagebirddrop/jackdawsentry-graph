@@ -81,9 +81,10 @@ class BaseRPCClient(ABC):
             return self._session
 
     async def close(self) -> None:
-        if self._session and not self._session.closed:
-            await self._session.close()
-            self._session = None
+        async with self._session_lock:
+            if self._session and not self._session.closed:
+                await self._session.close()
+                self._session = None
 
     # ------------------------------------------------------------------
     # Rate limiting
@@ -171,7 +172,18 @@ class BaseRPCClient(ABC):
                     self.metrics["last_request"] = datetime.now(timezone.utc).isoformat()
                     return body.get("result")
 
-            except RPCError:
+            except RPCError as rpc_exc:
+                # Retry transient 5xx server errors and rate-limit responses
+                if rpc_exc.code and 500 <= rpc_exc.code <= 599 or rpc_exc.code == 429:
+                    last_exc = rpc_exc
+                    if attempt <= retries:
+                        wait = 0.5 * (2 ** (attempt - 1))
+                        logger.warning(
+                            f"[{self.blockchain}] RPC transient error (HTTP {rpc_exc.code}) "
+                            f"attempt {attempt}, retrying in {wait:.1f}s"
+                        )
+                        await asyncio.sleep(wait)
+                        continue
                 self.metrics["requests_failed"] += 1
                 raise
             except (aiohttp.ClientError, asyncio.TimeoutError) as exc:

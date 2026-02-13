@@ -148,6 +148,36 @@ class BitcoinRpcClient(BaseRPCClient):
                 self.metrics["requests_sent"] += 1
                 self.metrics["last_request"] = datetime.now(timezone.utc).isoformat()
                 return await resp.json(content_type=None)
+        except RPCError:
+            raise
+        except (aiohttp.ClientError, Exception) as exc:
+            self.metrics["requests_failed"] += 1
+            raise RPCError(
+                f"Blockstream request failed: {exc}",
+                blockchain=self.blockchain,
+            )
+
+    async def _blockstream_get_text(self, path: str) -> Optional[str]:
+        """GET from Blockstream API, return plain text response."""
+        await self._wait_for_rate_limit()
+        session = await self._ensure_session()
+        url = f"{self.blockstream_url}{path}"
+        try:
+            async with session.get(url) as resp:
+                if resp.status == 404:
+                    return None
+                if resp.status != 200:
+                    text = await resp.text()
+                    raise RPCError(
+                        f"Blockstream HTTP {resp.status}: {text[:200]}",
+                        code=resp.status,
+                        blockchain=self.blockchain,
+                    )
+                self.metrics["requests_sent"] += 1
+                self.metrics["last_request"] = datetime.now(timezone.utc).isoformat()
+                return await resp.text()
+        except RPCError:
+            raise
         except (aiohttp.ClientError, Exception) as exc:
             self.metrics["requests_failed"] += 1
             raise RPCError(
@@ -174,7 +204,7 @@ class BitcoinRpcClient(BaseRPCClient):
         data = await self._blockstream_get(f"/tx/{tx_hash}")
         if data is None:
             return None
-        return self._parse_blockstream_tx(data)
+        return await self._parse_blockstream_tx(data)
 
     async def _parse_core_tx(self, raw: Dict[str, Any]) -> Transaction:
         """Parse Bitcoin Core ``getrawtransaction`` verbose output."""
@@ -182,7 +212,7 @@ class BitcoinRpcClient(BaseRPCClient):
         if raw.get("time"):
             timestamp = datetime.fromtimestamp(raw["time"], tz=timezone.utc)
 
-        # Sum outputs for value
+        # Sum outputs for value (Bitcoin Core returns values in BTC)
         total_value = sum(
             vout.get("value", 0) for vout in raw.get("vout", [])
         )
@@ -238,7 +268,7 @@ class BitcoinRpcClient(BaseRPCClient):
             confirmations=confirmations,
         )
 
-    def _parse_blockstream_tx(self, data: Dict[str, Any]) -> Transaction:
+    async def _parse_blockstream_tx(self, data: Dict[str, Any]) -> Transaction:
         """Parse Blockstream ``/tx/{txid}`` response."""
         status_obj = data.get("status", {})
         confirmed = status_obj.get("confirmed", False)
@@ -249,7 +279,7 @@ class BitcoinRpcClient(BaseRPCClient):
                 status_obj["block_time"], tz=timezone.utc
             )
 
-        # Sum outputs
+        # Sum outputs (Blockstream returns values in satoshis; convert to BTC)
         total_value = sum(
             vout.get("value", 0) for vout in data.get("vout", [])
         ) / SATS_PER_BTC
@@ -268,6 +298,14 @@ class BitcoinRpcClient(BaseRPCClient):
 
         fee = data.get("fee", 0) / SATS_PER_BTC if data.get("fee") else None
 
+        # Compute confirmations from current tip if block height is known
+        block_height = status_obj.get("block_height")
+        confirmations = None
+        if confirmed and block_height is not None:
+            tip = await self._get_current_block_height()
+            if tip is not None:
+                confirmations = max(tip - block_height + 1, 0)
+
         return Transaction(
             hash=data["txid"],
             blockchain="bitcoin",
@@ -275,19 +313,24 @@ class BitcoinRpcClient(BaseRPCClient):
             to_address=to_addr or None,
             value=total_value,
             timestamp=timestamp,
-            block_number=status_obj.get("block_height"),
+            block_number=block_height,
             block_hash=status_obj.get("block_hash"),
             fee=fee,
             status="confirmed" if confirmed else "pending",
-            confirmations=None,  # computed below if block height available
+            confirmations=confirmations,
         )
 
     async def _get_current_block_height(self) -> Optional[int]:
-        """Get current blockchain tip height via Blockstream API."""
+        """Get current blockchain tip height via Blockstream API.
+
+        The ``/blocks/tip/height`` endpoint returns plain text, not JSON.
+        """
         try:
-            data = await self._blockstream_get("/blocks/tip/height")
+            data = await self._blockstream_get_text("/blocks/tip/height")
             if data is not None:
-                return int(data)
+                return int(data.strip())
+        except (ValueError, TypeError) as exc:
+            logger.debug(f"Failed to parse block height: {exc}")
         except Exception as exc:
             logger.debug(f"Failed to fetch current block height: {exc}")
         return None
@@ -338,7 +381,7 @@ class BitcoinRpcClient(BaseRPCClient):
 
         txs = []
         for item in data[:limit]:
-            txs.append(self._parse_blockstream_tx(item))
+            txs.append(await self._parse_blockstream_tx(item))
         return txs
 
     # ------------------------------------------------------------------
@@ -349,16 +392,13 @@ class BitcoinRpcClient(BaseRPCClient):
         """Fetch a block by height (int) or hash (str)."""
         # Resolve height → hash if needed
         if isinstance(block_id, int):
-            block_hash = await self._blockstream_get(
+            # Blockstream returns the hash as plain text for this endpoint
+            block_hash = await self._blockstream_get_text(
                 f"/block-height/{block_id}"
             )
             if block_hash is None:
                 return None
-            # Blockstream returns the hash as plain text for this endpoint
-            if isinstance(block_hash, str):
-                block_id = block_hash
-            else:
-                return None
+            block_id = block_hash.strip()
 
         data = await self._blockstream_get(f"/block/{block_id}")
         if data is None:

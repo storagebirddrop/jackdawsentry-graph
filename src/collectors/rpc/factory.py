@@ -4,6 +4,7 @@ Instantiates the correct RPC client for a given blockchain.
 """
 
 import logging
+import threading
 from typing import Dict, Optional
 
 from src.api.config import get_blockchain_config
@@ -15,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 # Module-level cache: one client instance per blockchain
 _clients: Dict[str, BaseRPCClient] = {}
+_clients_lock = threading.Lock()
 
 
 def get_rpc_client(blockchain: str) -> Optional[BaseRPCClient]:
@@ -28,33 +30,38 @@ def get_rpc_client(blockchain: str) -> Optional[BaseRPCClient]:
     if blockchain in _clients:
         return _clients[blockchain]
 
-    config = get_blockchain_config(blockchain)
-    if not config or not config.get("rpc_url"):
-        logger.debug(f"No RPC config for {blockchain}")
-        return None
+    with _clients_lock:
+        # Double-check after acquiring lock
+        if blockchain in _clients:
+            return _clients[blockchain]
 
-    family = config.get("family", "")
-    rpc_url = config["rpc_url"]
+        config = get_blockchain_config(blockchain)
+        if not config or not config.get("rpc_url"):
+            logger.debug(f"No RPC config for {blockchain}")
+            return None
 
-    client: Optional[BaseRPCClient] = None
+        family = config.get("family", "")
+        rpc_url = config["rpc_url"]
 
-    if family == "evm":
-        client = EvmRpcClient(rpc_url, blockchain)
-    elif family == "bitcoin":
-        client = BitcoinRpcClient(
-            rpc_url,
-            blockchain,
-            rpc_user=config.get("user"),
-            rpc_password=config.get("password"),
-        )
-    else:
-        logger.debug(
-            f"RPC family '{family}' for {blockchain} not yet implemented"
-        )
-        return None
+        client: Optional[BaseRPCClient] = None
 
-    _clients[blockchain] = client
-    return client
+        if family == "evm":
+            client = EvmRpcClient(rpc_url, blockchain)
+        elif family == "bitcoin":
+            client = BitcoinRpcClient(
+                rpc_url,
+                blockchain,
+                rpc_user=config.get("user"),
+                rpc_password=config.get("password"),
+            )
+        else:
+            logger.debug(
+                f"RPC family '{family}' for {blockchain} not yet implemented"
+            )
+            return None
+
+        _clients[blockchain] = client
+        return client
 
 
 async def close_all_clients() -> None:
