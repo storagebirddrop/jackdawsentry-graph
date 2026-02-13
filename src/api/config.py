@@ -178,6 +178,14 @@ class Settings(BaseSettings):
     RATE_LIMIT_ENABLED: bool = True
     RATE_LIMIT_REQUESTS_PER_MINUTE: int = 100
     
+    # RPC Rate Limiting (for public blockchain RPCs)
+    RPC_RATE_LIMIT_PER_MINUTE: int = 60
+    RPC_REQUEST_TIMEOUT_SECONDS: int = 30
+    
+    # Optional block explorer API keys (for indexed tx history)
+    ETHERSCAN_API_KEY: Optional[str] = None
+    BLOCKSTREAM_API_URL: str = "https://blockstream.info/api"
+    
     # Cache Configuration
     CACHE_TTL_SECONDS: int = 300
     CACHE_MAX_SIZE: int = 1000
@@ -352,17 +360,74 @@ def get_blockchain_config(blockchain: str) -> dict:
             "rpc_url": settings.BITCOIN_RPC_URL,
             "network": settings.BITCOIN_NETWORK,
             "user": settings.BITCOIN_RPC_USER,
-            "password": settings.BITCOIN_RPC_PASSWORD
+            "password": settings.BITCOIN_RPC_PASSWORD,
+            "family": "bitcoin",
         },
         "ethereum": {
             "rpc_url": settings.ETHEREUM_RPC_URL,
-            "network": settings.ETHEREUM_NETWORK
+            "network": settings.ETHEREUM_NETWORK,
+            "family": "evm",
         },
         "bsc": {
             "rpc_url": settings.BSC_RPC_URL,
-            "network": settings.BSC_NETWORK
+            "network": settings.BSC_NETWORK,
+            "family": "evm",
         },
-        # ... other blockchains
+        "polygon": {
+            "rpc_url": settings.POLYGON_RPC_URL,
+            "network": settings.POLYGON_NETWORK,
+            "family": "evm",
+        },
+        "arbitrum": {
+            "rpc_url": settings.ARBITRUM_RPC_URL,
+            "network": settings.ARBITRUM_NETWORK,
+            "family": "evm",
+        },
+        "base": {
+            "rpc_url": settings.BASE_RPC_URL,
+            "network": settings.BASE_NETWORK,
+            "family": "evm",
+        },
+        "avalanche": {
+            "rpc_url": settings.AVALANCHE_RPC_URL,
+            "network": settings.AVALANCHE_NETWORK,
+            "family": "evm",
+        },
+        "solana": {
+            "rpc_url": settings.SOLANA_RPC_URL,
+            "network": settings.SOLANA_NETWORK,
+            "family": "solana",
+        },
+        "tron": {
+            "rpc_url": settings.TRON_RPC_URL,
+            "network": settings.TRON_NETWORK,
+            "family": "tron",
+        },
+        "xrpl": {
+            "rpc_url": settings.XRPL_RPC_URL,
+            "network": settings.XRPL_NETWORK,
+            "family": "xrpl",
+        },
+        "stellar": {
+            "rpc_url": settings.STELLAR_RPC_URL,
+            "network": settings.STELLAR_NETWORK,
+            "family": "stellar",
+        },
+        "sei": {
+            "rpc_url": settings.SEI_RPC_URL,
+            "network": settings.SEI_NETWORK,
+            "family": "evm",
+        },
+        "hyperliquid": {
+            "rpc_url": settings.HYPERLIQUID_RPC_URL,
+            "network": settings.HYPERLIQUID_NETWORK,
+            "family": "hyperliquid",
+        },
+        "plasma": {
+            "rpc_url": settings.PLASMA_RPC_URL,
+            "network": settings.PLASMA_NETWORK,
+            "family": "evm",
+        },
     }
     return configs.get(blockchain, {})
 
