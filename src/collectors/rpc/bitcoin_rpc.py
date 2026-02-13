@@ -80,11 +80,19 @@ class BitcoinRpcClient(BaseRPCClient):
                 async with session.post(
                     self.rpc_url, json=payload, auth=auth
                 ) as resp:
-                    body = await resp.json(content_type=None)
                     if resp.status == 401:
                         raise RPCError(
                             "Authentication failed — check BITCOIN_RPC_USER/PASSWORD",
                             code=401,
+                            blockchain=self.blockchain,
+                        )
+                    try:
+                        body = await resp.json(content_type=None)
+                    except Exception:
+                        text = await resp.text()
+                        raise RPCError(
+                            f"Non-JSON response (HTTP {resp.status}): {text[:200]}",
+                            code=resp.status,
                             blockchain=self.blockchain,
                         )
                     if "error" in body and body["error"]:
@@ -158,7 +166,7 @@ class BitcoinRpcClient(BaseRPCClient):
             try:
                 raw = await self._json_rpc("getrawtransaction", [tx_hash, True])
                 if raw:
-                    return self._parse_core_tx(raw)
+                    return await self._parse_core_tx(raw)
             except RPCError:
                 pass
 
@@ -168,7 +176,7 @@ class BitcoinRpcClient(BaseRPCClient):
             return None
         return self._parse_blockstream_tx(data)
 
-    def _parse_core_tx(self, raw: Dict[str, Any]) -> Transaction:
+    async def _parse_core_tx(self, raw: Dict[str, Any]) -> Transaction:
         """Parse Bitcoin Core ``getrawtransaction`` verbose output."""
         timestamp = datetime.now(timezone.utc)
         if raw.get("time"):
@@ -184,6 +192,24 @@ class BitcoinRpcClient(BaseRPCClient):
         vin = raw.get("vin", [])
         if vin and vin[0].get("prevout", {}).get("scriptpubkey_address"):
             from_addr = vin[0]["prevout"]["scriptpubkey_address"]
+        elif vin and "txid" in vin[0] and "vout" in vin[0]:
+            # Fallback: fetch the previous output to resolve the sender
+            try:
+                prev_tx = await self._json_rpc(
+                    "getrawtransaction", [vin[0]["txid"], True]
+                )
+                if prev_tx:
+                    prev_vout = prev_tx.get("vout", [])
+                    idx = vin[0]["vout"]
+                    if idx < len(prev_vout):
+                        spk = prev_vout[idx].get("scriptPubKey", {})
+                        addrs = spk.get("addresses", []) or spk.get("address", "")
+                        if isinstance(addrs, list) and addrs:
+                            from_addr = addrs[0]
+                        elif isinstance(addrs, str):
+                            from_addr = addrs
+            except Exception as exc:
+                logger.debug(f"prevout fallback failed for {vin[0].get('txid')}: {exc}")
 
         to_addr = ""
         vout = raw.get("vout", [])
@@ -253,8 +279,18 @@ class BitcoinRpcClient(BaseRPCClient):
             block_hash=status_obj.get("block_hash"),
             fee=fee,
             status="confirmed" if confirmed else "pending",
-            confirmations=0,
+            confirmations=None,  # computed below if block height available
         )
+
+    async def _get_current_block_height(self) -> Optional[int]:
+        """Get current blockchain tip height via Blockstream API."""
+        try:
+            data = await self._blockstream_get("/blocks/tip/height")
+            if data is not None:
+                return int(data)
+        except Exception as exc:
+            logger.debug(f"Failed to fetch current block height: {exc}")
+        return None
 
     # ------------------------------------------------------------------
     # Address
@@ -286,10 +322,17 @@ class BitcoinRpcClient(BaseRPCClient):
         )
 
     async def get_address_transactions(
-        self, address: str, *, limit: int = 25, offset: int = 0
+        self, address: str, *, limit: int = 25, last_seen_txid: Optional[str] = None
     ) -> List[Transaction]:
-        """Fetch recent transactions for an address via Blockstream API."""
-        data = await self._blockstream_get(f"/address/{address}/txs")
+        """Fetch recent transactions for an address via Blockstream API.
+
+        Uses cursor-based pagination: pass ``last_seen_txid`` from the
+        previous page's last transaction to fetch the next page.
+        """
+        path = f"/address/{address}/txs"
+        if last_seen_txid:
+            path += f"/chain/{last_seen_txid}"
+        data = await self._blockstream_get(path)
         if not data:
             return []
 

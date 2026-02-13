@@ -217,9 +217,11 @@ class EvmRpcClient(BaseRPCClient):
         if block_data is None:
             return None
 
-        timestamp = datetime.fromtimestamp(
-            _hex_to_int(block_data.get("timestamp")), tz=timezone.utc
-        )
+        raw_ts = block_data.get("timestamp")
+        if raw_ts is None or not isinstance(raw_ts, str) or not raw_ts.startswith("0x"):
+            logger.warning(f"[{self.blockchain}] Block missing or invalid timestamp: {raw_ts}")
+            return None
+        timestamp = datetime.fromtimestamp(_hex_to_int(raw_ts), tz=timezone.utc)
 
         return Block(
             hash=block_data.get("hash", ""),

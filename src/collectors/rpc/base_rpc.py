@@ -51,10 +51,12 @@ class BaseRPCClient(ABC):
         self.rate_limit_rpm = rate_limit_rpm or settings.RPC_RATE_LIMIT_PER_MINUTE
 
         self._session: Optional[aiohttp.ClientSession] = None
+        self._session_lock = asyncio.Lock()
         self._request_id = 0
 
         # Simple sliding-window rate limiter
         self._request_timestamps: List[float] = []
+        self._rate_limit_lock = asyncio.Lock()
 
         # Metrics
         self.metrics = {
@@ -70,12 +72,13 @@ class BaseRPCClient(ABC):
     # ------------------------------------------------------------------
 
     async def _ensure_session(self) -> aiohttp.ClientSession:
-        if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=self.timeout),
-                headers={"Content-Type": "application/json"},
-            )
-        return self._session
+        async with self._session_lock:
+            if self._session is None or self._session.closed:
+                self._session = aiohttp.ClientSession(
+                    timeout=aiohttp.ClientTimeout(total=self.timeout),
+                    headers={"Content-Type": "application/json"},
+                )
+            return self._session
 
     async def close(self) -> None:
         if self._session and not self._session.closed:
@@ -90,18 +93,21 @@ class BaseRPCClient(ABC):
         """Block until we are within the per-minute request budget."""
         if self.rate_limit_rpm <= 0:
             return
-        now = time.monotonic()
-        window = 60.0
-        self._request_timestamps = [
-            ts for ts in self._request_timestamps if now - ts < window
-        ]
-        if len(self._request_timestamps) >= self.rate_limit_rpm:
-            sleep_for = window - (now - self._request_timestamps[0]) + 0.05
+        sleep_for = 0.0
+        async with self._rate_limit_lock:
+            now = time.monotonic()
+            window = 60.0
+            self._request_timestamps = [
+                ts for ts in self._request_timestamps if now - ts < window
+            ]
+            if len(self._request_timestamps) >= self.rate_limit_rpm:
+                sleep_for = window - (now - self._request_timestamps[0]) + 0.05
+            self._request_timestamps.append(time.monotonic())
+        if sleep_for > 0:
             logger.debug(
                 f"[{self.blockchain}] RPC rate limit hit, sleeping {sleep_for:.1f}s"
             )
             await asyncio.sleep(sleep_for)
-        self._request_timestamps.append(time.monotonic())
 
     # ------------------------------------------------------------------
     # JSON-RPC transport

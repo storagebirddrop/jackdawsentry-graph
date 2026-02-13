@@ -6,7 +6,7 @@ Instantiates the correct RPC client for a given blockchain.
 import logging
 from typing import Dict, Optional
 
-from src.api.config import get_blockchain_config, settings
+from src.api.config import get_blockchain_config
 from src.collectors.rpc.base_rpc import BaseRPCClient
 from src.collectors.rpc.evm_rpc import EvmRpcClient
 from src.collectors.rpc.bitcoin_rpc import BitcoinRpcClient

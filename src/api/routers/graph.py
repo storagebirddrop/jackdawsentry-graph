@@ -159,21 +159,24 @@ async def expand_address(
     nodes_map: Dict[str, Dict[str, Any]] = {}
     edges_list: List[Dict[str, Any]] = []
 
-    # Build direction-specific Cypher pattern
+    # Build direction-specific Cypher pattern with variable-length depth
     if request.direction == "out":
-        pattern = f"(a:Address {{address: $addr, blockchain: $bc}})-[:SENT]->(t:Transaction)-[:RECEIVED]->(b:Address)"
-        path_pattern = f"path = (a:Address {{address: $addr, blockchain: $bc}})-[:SENT]->(:Transaction)-[:RECEIVED]->(:Address)"
+        pattern = "path = (a:Address {address: $addr, blockchain: $bc})-[:SENT]->(:Transaction)-[:RECEIVED]->(b:Address)"
     elif request.direction == "in":
-        pattern = f"(b:Address)-[:SENT]->(t:Transaction)-[:RECEIVED]->(a:Address {{address: $addr, blockchain: $bc}})"
-        path_pattern = f"path = (:Address)-[:SENT]->(:Transaction)-[:RECEIVED]->(a:Address {{address: $addr, blockchain: $bc}})"
+        pattern = "path = (b:Address)-[:SENT]->(:Transaction)-[:RECEIVED]->(a:Address {address: $addr, blockchain: $bc})"
     else:
-        pattern = f"(a:Address {{address: $addr, blockchain: $bc}})-[:SENT|RECEIVED]-(t:Transaction)-[:SENT|RECEIVED]-(b:Address)"
-        path_pattern = f"path = (a:Address {{address: $addr, blockchain: $bc}})-[:SENT|RECEIVED]-(:Transaction)-[:SENT|RECEIVED]-(:Address)"
+        pattern = "path = (a:Address {address: $addr, blockchain: $bc})-[:SENT|RECEIVED]-(:Transaction)-[:SENT|RECEIVED]-(b:Address)"
 
-    # Multi-hop expansion via variable-length paths
+    # Multi-hop expansion via variable-length paths bounded by depth
     cypher = f"""
     MATCH {pattern}
-    WHERE b.address <> $addr
+    WHERE b.address <> $addr AND length(path) <= $depth * 2
+    WITH a, b, relationships(path) AS rels
+    UNWIND rels AS r
+    WITH a, b, startNode(r) AS sn, endNode(r) AS en, r
+    WHERE 'Transaction' IN labels(en) OR 'Transaction' IN labels(sn)
+    WITH a, b,
+         CASE WHEN 'Transaction' IN labels(en) THEN en ELSE sn END AS t
     """
 
     if request.min_value is not None:
@@ -199,6 +202,7 @@ async def expand_address(
     params = {
         "addr": addr,
         "bc": request.blockchain,
+        "depth": request.depth,
         "node_limit": MAX_GRAPH_NODES,
         "min_val": request.min_value,
         "t_from": request.time_from,
@@ -251,14 +255,21 @@ async def expand_address(
                 # Attempt to fetch recent txs to build edges
                 txs = await client.get_address_transactions(addr, limit=25)
                 for tx in txs:
-                    peer = tx.to_address if tx.from_address == addr else tx.from_address
+                    from_a = (tx.from_address or "").lower()
+                    to_a = (tx.to_address or "").lower()
+                    if from_a == addr:
+                        peer = to_a
+                    elif to_a == addr:
+                        peer = from_a
+                    else:
+                        continue  # tx doesn't involve addr
                     if peer and peer not in nodes_map:
                         nodes_map[peer] = _make_address_node(peer, request.blockchain)
                     if peer:
                         edges_list.append({
                             "id": tx.hash,
-                            "source": tx.from_address or addr,
-                            "target": tx.to_address or "",
+                            "source": from_a or addr,
+                            "target": to_a or "",
                             "value": float(tx.value) if tx.value else 0.0,
                             "chain": request.blockchain,
                             "timestamp": tx.timestamp.isoformat() if tx.timestamp else None,
@@ -376,22 +387,22 @@ async def trace_transaction(
         "block_number": seed.get("block_num"),
     })
 
-    # Follow hops from the destination address
+    # Follow hops from the destination address using variable-length path
     if request.follow_hops > 0:
         cypher_hops = """
         MATCH path = (start:Address {address: $addr, blockchain: $bc})
-              -[:SENT]->(:Transaction)-[:RECEIVED]->(hop:Address)
-        WHERE hop.address <> $addr
-        WITH hop, relationships(path) AS rels, nodes(path) AS ns
-        LIMIT $limit
-        MATCH (hop)-[:SENT]->(ht:Transaction)-[:RECEIVED]->(next:Address)
-        WHERE next.address <> hop.address
-        RETURN hop.address AS hop_addr,
-               next.address AS next_addr,
-               ht.hash AS tx_hash,
-               ht.value AS value,
-               ht.timestamp AS ts,
-               ht.block_number AS block_num
+              (-[:SENT]->(:Transaction)-[:RECEIVED]->(:Address)){1,$hops}
+        WITH nodes(path) AS ns, relationships(path) AS rels
+        UNWIND range(0, size(rels)-1) AS i
+        WITH ns, rels, i
+        WHERE i % 2 = 0
+        WITH ns[i] AS src_node, ns[i+2] AS tgt_node, rels[i+1] AS tx_rel, rels[i] AS sent_rel
+        RETURN src_node.address AS hop_addr,
+               tgt_node.address AS next_addr,
+               tx_rel.hash AS tx_hash,
+               tx_rel.value AS value,
+               tx_rel.timestamp AS ts,
+               tx_rel.block_number AS block_num
         LIMIT $limit
         """
         async with get_neo4j_session() as session:
@@ -399,6 +410,7 @@ async def trace_transaction(
                 cypher_hops,
                 addr=to_addr,
                 bc=request.blockchain,
+                hops=request.follow_hops,
                 limit=MAX_GRAPH_NODES,
             )
             hop_records = await result.data()
@@ -515,13 +527,13 @@ async def graph_search(
                     # Try address
                     addr_info = await client.get_address_info(q)
                     if addr_info:
-                        nodes_map[q] = {
-                            "id": q,
-                            "type": addr_info.type,
-                            "chain": chain,
+                        node = _make_address_node(q, chain)
+                        node.update({
                             "balance": float(addr_info.balance) if addr_info.balance else 0.0,
                             "tx_count": addr_info.transaction_count,
-                        }
+                            "type": addr_info.type,
+                        })
+                        nodes_map[q] = node
                 except Exception:
                     pass
 
@@ -668,13 +680,11 @@ async def cluster_addresses(
     MATCH (a:Address {address: input_addr, blockchain: $bc})-[:SENT|RECEIVED]-(t:Transaction)-[:SENT|RECEIVED]-(counterparty:Address)
     WHERE NOT counterparty.address IN $addrs
     WITH counterparty, collect(DISTINCT input_addr) AS connected_inputs,
-         collect(DISTINCT t.hash) AS tx_hashes,
-         collect(DISTINCT t.value) AS tx_values
+         collect(DISTINCT {input_addr: input_addr, tx_hash: t.hash, tx_value: t.value}) AS tx_data
     WHERE size(connected_inputs) >= 2
     RETURN counterparty.address AS cp_addr,
            connected_inputs,
-           tx_hashes,
-           tx_values
+           tx_data
     LIMIT $limit
     """
 
@@ -694,10 +704,11 @@ async def cluster_addresses(
             node["label"] = "common_counterparty"
             nodes_map[cp] = node
 
-        # Add edges from each connected input to the counterparty
-        for i, input_addr in enumerate(rec["connected_inputs"]):
-            tx_hash = rec["tx_hashes"][i] if i < len(rec["tx_hashes"]) else f"{input_addr}-{cp}"
-            value = _safe_float(rec["tx_values"][i]) if i < len(rec["tx_values"]) else 0.0
+        # Add edges from each tx_data entry to the counterparty
+        for entry in rec.get("tx_data", []):
+            input_addr = entry.get("input_addr", "")
+            tx_hash = entry.get("tx_hash") or f"{input_addr}-{cp}"
+            value = _safe_float(entry.get("tx_value"))
             edges_list.append({
                 "id": tx_hash,
                 "source": input_addr,
@@ -711,7 +722,7 @@ async def cluster_addresses(
     cypher_direct = """
     UNWIND $addrs AS a1
     UNWIND $addrs AS a2
-    WITH a1, a2 WHERE a1 < a2
+    WITH a1, a2 WHERE a1 <> a2
     MATCH (from_a:Address {address: a1, blockchain: $bc})-[:SENT]->(t:Transaction)-[:RECEIVED]->(to_a:Address {address: a2, blockchain: $bc})
     RETURN a1, a2, t.hash AS tx_hash, t.value AS value, t.timestamp AS ts
     LIMIT $limit
