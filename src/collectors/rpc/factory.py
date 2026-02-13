@@ -65,10 +65,18 @@ def get_rpc_client(blockchain: str) -> Optional[BaseRPCClient]:
 
 
 async def close_all_clients() -> None:
-    """Close all cached RPC client sessions (call on shutdown)."""
-    for name, client in _clients.items():
+    """Close all cached RPC client sessions (call on shutdown).
+
+    Acquires _clients_lock to prevent get_rpc_client from inserting new
+    clients after the clear, and avoids closing a client that a caller
+    just received from get_rpc_client.
+    """
+    with _clients_lock:
+        snapshot = list(_clients.items())
+        _clients.clear()
+
+    for name, client in snapshot:
         try:
             await client.close()
         except Exception as exc:
             logger.warning(f"Error closing RPC client for {name}: {exc}")
-    _clients.clear()

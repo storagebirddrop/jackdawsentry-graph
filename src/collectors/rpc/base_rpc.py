@@ -173,7 +173,8 @@ class BaseRPCClient(ABC):
                     return body.get("result")
 
             except RPCError as rpc_exc:
-                # Retry transient 5xx server errors and rate-limit responses
+                # Retry transient 5xx server errors and rate-limit responses.
+                # Count logical failed request only once on final failure.
                 if rpc_exc.code and 500 <= rpc_exc.code <= 599 or rpc_exc.code == 429:
                     last_exc = rpc_exc
                     if attempt <= retries:
@@ -187,9 +188,10 @@ class BaseRPCClient(ABC):
                 self.metrics["requests_failed"] += 1
                 raise
             except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                # Count logical failed request only once on final failure,
+                # not on every retry attempt.
                 elapsed_ms = (time.monotonic() - start) * 1000
                 self._record_latency(elapsed_ms)
-                self.metrics["requests_failed"] += 1
                 last_exc = exc
                 if attempt <= retries:
                     wait = 0.5 * (2 ** (attempt - 1))
@@ -198,6 +200,8 @@ class BaseRPCClient(ABC):
                         f"retrying in {wait:.1f}s"
                     )
                     await asyncio.sleep(wait)
+                else:
+                    self.metrics["requests_failed"] += 1
 
         raise RPCError(
             f"RPC request failed after {retries + 1} attempts: {last_exc}",

@@ -192,7 +192,12 @@ async def expand_address(
     if request.time_to:
         conditions.append("t.timestamp <= $t_to")
     if conditions:
-        cypher += " WHERE " + " AND ".join(conditions)
+        # Detect whether the base query already contains a WHERE clause
+        # after the last WITH; if so, append with AND, otherwise start WHERE
+        if "WHERE" in cypher.rsplit("WITH", 1)[-1]:
+            cypher += " AND " + " AND ".join(conditions)
+        else:
+            cypher += " WHERE " + " AND ".join(conditions)
 
     cypher += f"""
     RETURN DISTINCT
