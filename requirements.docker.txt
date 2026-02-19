@@ -1,0 +1,35 @@
+# =============================================================================
+# Docker Runtime Dependencies
+# Core API + all runtime deps needed by mounted routers and engines.
+# Excludes blockchain SDKs (web3, eth-abi) that require external RPC nodes.
+# =============================================================================
+
+# Core API dependencies
+-r requirements.minimal.txt
+
+# Additional runtime deps required by the application
+pydantic-settings==2.1.0
+PyJWT==2.8.0
+bcrypt==4.1.2
+asyncpg==0.29.0
+httpx==0.25.2
+psutil==5.9.7
+aiofiles==23.2.1
+python-dotenv==1.0.0
+
+# Data processing (compliance analytics, export, visualization engines)
+pandas>=2.1.0
+numpy>=1.26.0
+matplotlib>=3.8.0
+
+# Async HTTP (intelligence, collectors)
+aiohttp>=3.9.0
+
+# Prometheus monitoring
+prometheus-client>=0.19.0
+
+# Scheduling (compliance scheduler)
+schedule>=1.2.0
+
+# gRPC (Lightning Network collector)
+grpcio>=1.60.0
