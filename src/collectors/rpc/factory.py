@@ -11,6 +11,9 @@ from src.api.config import get_blockchain_config
 from src.collectors.rpc.base_rpc import BaseRPCClient
 from src.collectors.rpc.evm_rpc import EvmRpcClient
 from src.collectors.rpc.bitcoin_rpc import BitcoinRpcClient
+from src.collectors.rpc.solana_rpc import SolanaRpcClient
+from src.collectors.rpc.tron_rpc import TronRpcClient
+from src.collectors.rpc.xrpl_rpc import XrplRpcClient
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +57,12 @@ def get_rpc_client(blockchain: str) -> Optional[BaseRPCClient]:
                 rpc_user=config.get("user"),
                 rpc_password=config.get("password"),
             )
+        elif family == "solana":
+            client = SolanaRpcClient(rpc_url, blockchain)
+        elif family == "tron":
+            client = TronRpcClient(rpc_url, blockchain)
+        elif family == "xrpl":
+            client = XrplRpcClient(rpc_url, blockchain)
         else:
             logger.debug(
                 f"RPC family '{family}' for {blockchain} not yet implemented"

@@ -7,7 +7,7 @@ Supports address expansion, transaction tracing, search, and clustering.
 from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import Any, Dict, List, Optional
 from datetime import datetime, timezone
-from pydantic import BaseModel, validator
+from pydantic import BaseModel, field_validator
 import logging
 import time
 
@@ -17,6 +17,8 @@ from src.api.config import get_supported_blockchains
 from src.collectors.rpc.factory import get_rpc_client
 from src.services.sanctions import screen_address as _sanctions_screen
 from src.services.entity_attribution import lookup_addresses_bulk as _entity_lookup_bulk
+from src.analysis.bridge_tracker import BridgeTracker
+from src.analysis.mixer_detection import MixerDetector
 
 logger = logging.getLogger(__name__)
 
@@ -40,19 +42,22 @@ class GraphExpandRequest(BaseModel):
     time_from: Optional[str] = None
     time_to: Optional[str] = None
 
-    @validator("blockchain")
+    @field_validator("blockchain")
+    @classmethod
     def validate_blockchain(cls, v):
         if v.lower() not in get_supported_blockchains():
             raise ValueError(f"Unsupported blockchain: {v}")
         return v.lower()
 
-    @validator("depth")
+    @field_validator("depth")
+    @classmethod
     def validate_depth(cls, v):
         if v < 1 or v > MAX_DEPTH:
             raise ValueError(f"Depth must be between 1 and {MAX_DEPTH}")
         return v
 
-    @validator("direction")
+    @field_validator("direction")
+    @classmethod
     def validate_direction(cls, v):
         if v not in ("in", "out", "both"):
             raise ValueError("Direction must be 'in', 'out', or 'both'")
@@ -64,13 +69,15 @@ class GraphTraceRequest(BaseModel):
     blockchain: str
     follow_hops: int = 3
 
-    @validator("blockchain")
+    @field_validator("blockchain")
+    @classmethod
     def validate_blockchain(cls, v):
         if v.lower() not in get_supported_blockchains():
             raise ValueError(f"Unsupported blockchain: {v}")
         return v.lower()
 
-    @validator("follow_hops")
+    @field_validator("follow_hops")
+    @classmethod
     def validate_hops(cls, v):
         if v < 1 or v > MAX_DEPTH:
             raise ValueError(f"follow_hops must be between 1 and {MAX_DEPTH}")
@@ -81,7 +88,8 @@ class GraphSearchRequest(BaseModel):
     query: str
     blockchain: Optional[str] = None
 
-    @validator("blockchain", pre=True, always=True)
+    @field_validator("blockchain", mode="before")
+    @classmethod
     def validate_blockchain(cls, v):
         if v and v.lower() not in get_supported_blockchains():
             raise ValueError(f"Unsupported blockchain: {v}")
@@ -92,13 +100,15 @@ class GraphClusterRequest(BaseModel):
     addresses: List[str]
     blockchain: str
 
-    @validator("blockchain")
+    @field_validator("blockchain")
+    @classmethod
     def validate_blockchain(cls, v):
         if v.lower() not in get_supported_blockchains():
             raise ValueError(f"Unsupported blockchain: {v}")
         return v.lower()
 
-    @validator("addresses")
+    @field_validator("addresses")
+    @classmethod
     def validate_addresses(cls, v):
         cleaned = [a.strip().lower() for a in (v or []) if a.strip()]
         if len(cleaned) < 2:
@@ -252,6 +262,7 @@ async def expand_address(
             "timestamp": rec.get("tx_ts"),
             "tx_hash": tx_hash,
             "block_number": rec.get("tx_block"),
+            "edge_type": _classify_edge(addr, neighbor),
         })
 
     # If nothing found in Neo4j, try live RPC for the seed address
@@ -289,6 +300,7 @@ async def expand_address(
                             "timestamp": tx.timestamp.isoformat() if tx.timestamp else None,
                             "tx_hash": tx.hash,
                             "block_number": tx.block_number,
+                            "edge_type": _classify_edge(from_a, to_a),
                         })
             except Exception as exc:
                 logger.warning(f"Graph expand RPC fallback failed: {exc}")
@@ -363,6 +375,7 @@ async def trace_transaction(
                         "timestamp": tx.timestamp.isoformat() if tx.timestamp else None,
                         "tx_hash": tx.hash,
                         "block_number": tx.block_number,
+                        "edge_type": _classify_edge(from_addr, to_addr),
                     })
             except Exception as exc:
                 logger.warning(f"Graph trace RPC fallback failed: {exc}")
@@ -403,6 +416,7 @@ async def trace_transaction(
         "timestamp": seed["ts"],
         "tx_hash": request.tx_hash,
         "block_number": seed.get("block_num"),
+        "edge_type": _classify_edge(from_addr, to_addr),
     })
 
     # Follow hops from the destination address using variable-length path
@@ -859,3 +873,64 @@ def _safe_float(val: Any) -> float:
         return float(val)
     except (ValueError, TypeError):
         return 0.0
+
+
+# Lazily-initialised address sets for edge classification
+_bridge_addresses: Optional[set] = None
+_mixer_addresses: Optional[set] = None
+
+
+def _get_known_bridge_addresses() -> set:
+    global _bridge_addresses
+    if _bridge_addresses is None:
+        tracker = BridgeTracker()
+        addrs: set = set()
+        for chain_bridges in tracker.bridge_contracts.values():
+            for bridge_contracts in chain_bridges.values():
+                if isinstance(bridge_contracts, dict):
+                    addrs.update(v.lower() for v in bridge_contracts.values() if v)
+                elif isinstance(bridge_contracts, str) and bridge_contracts:
+                    addrs.add(bridge_contracts.lower())
+        _bridge_addresses = addrs
+    return _bridge_addresses
+
+
+def _get_known_mixer_addresses() -> set:
+    global _mixer_addresses
+    if _mixer_addresses is None:
+        detector = MixerDetector()
+        addrs: set = set()
+        known = getattr(detector, "mixer_addresses", {})
+        for chain_mixers in known.values() if isinstance(known, dict) else []:
+            if isinstance(chain_mixers, dict):
+                for mixer_set in chain_mixers.values():
+                    if isinstance(mixer_set, (set, list)):
+                        addrs.update(a.lower() for a in mixer_set)
+                    elif isinstance(mixer_set, str):
+                        addrs.add(mixer_set.lower())
+            elif isinstance(chain_mixers, (set, list)):
+                addrs.update(a.lower() for a in chain_mixers)
+        _mixer_addresses = addrs
+    return _mixer_addresses
+
+
+def _classify_edge(source: str, target: str) -> str:
+    """Classify an edge as bridge, mixer, dex, or transfer.
+
+    Returns one of: 'bridge', 'mixer', 'dex', 'transfer'
+    """
+    src = (source or "").lower()
+    tgt = (target or "").lower()
+    bridge_addrs = _get_known_bridge_addresses()
+    mixer_addrs = _get_known_mixer_addresses()
+
+    if src in bridge_addrs or tgt in bridge_addrs:
+        return "bridge"
+    if src in mixer_addrs or tgt in mixer_addrs:
+        return "mixer"
+    # Simple heuristic for DEX: common DEX router patterns
+    dex_keywords = {"swap", "dex", "uniswap", "sushiswap", "pancake", "curve"}
+    combined = src + tgt
+    if any(kw in combined for kw in dex_keywords):
+        return "dex"
+    return "transfer"

@@ -5,7 +5,8 @@ GDPR-compliant configuration management
 
 from typing import List, Optional
 from pydantic_settings import BaseSettings
-from pydantic import validator
+from pydantic import field_validator
+from pydantic import ConfigDict
 from cryptography.fernet import Fernet
 
 
@@ -207,7 +208,10 @@ class Settings(BaseSettings):
     # Validators
     # =============================================================================
     
-    @validator("ENCRYPTION_KEY")
+    model_config = ConfigDict(env_file=".env", case_sensitive=True, extra="ignore")
+
+    @field_validator("ENCRYPTION_KEY")
+    @classmethod
     def validate_encryption_key(cls, v):
         """Validate encryption key is non-empty and at least 32 characters"""
         if not v or not v.strip():
@@ -215,8 +219,9 @@ class Settings(BaseSettings):
         if len(v) < 32:
             raise ValueError("Encryption key must be at least 32 characters")
         return v
-    
-    @validator("API_SECRET_KEY")
+
+    @field_validator("API_SECRET_KEY")
+    @classmethod
     def validate_api_secret_key(cls, v):
         """Validate API secret key is provided and strong enough"""
         if not v or not v.strip():
@@ -224,46 +229,46 @@ class Settings(BaseSettings):
         if len(v) < 32:
             raise ValueError("API secret key must be at least 32 characters")
         return v
-    
-    @validator("DATA_RETENTION_DAYS")
+
+    @field_validator("DATA_RETENTION_DAYS")
+    @classmethod
     def validate_retention_period(cls, v):
         """Ensure retention period meets EU AML requirements"""
         if v < 2555:  # 7 years
             raise ValueError("Data retention period must be at least 2555 days (7 years) for EU AML compliance")
         return v
-    
-    @validator("NEO4J_PASSWORD", pre=True)
+
+    @field_validator("NEO4J_PASSWORD", mode="before")
+    @classmethod
     def validate_required_neo4j_password(cls, v):
         """Validate Neo4j password is provided"""
         if not v or v.strip() == "":
             raise ValueError("NEO4J_PASSWORD environment variable is required")
         return v
-    
-    @validator("POSTGRES_PASSWORD", pre=True)
+
+    @field_validator("POSTGRES_PASSWORD", mode="before")
+    @classmethod
     def validate_required_postgres_password(cls, v):
         """Validate PostgreSQL password is provided"""
         if not v or v.strip() == "":
             raise ValueError("POSTGRES_PASSWORD environment variable is required")
         return v
-    
-    @validator("REDIS_PASSWORD", pre=True)
+
+    @field_validator("REDIS_PASSWORD", mode="before")
+    @classmethod
     def validate_required_redis_password(cls, v):
         """Validate Redis password is provided"""
         if not v or v.strip() == "":
             raise ValueError("REDIS_PASSWORD environment variable is required")
         return v
-    
-    @validator("JWT_SECRET_KEY", pre=True)
+
+    @field_validator("JWT_SECRET_KEY", mode="before")
+    @classmethod
     def validate_required_jwt_secret_key(cls, v):
         """Validate JWT secret key is provided"""
         if not v or v.strip() == "":
             raise ValueError("JWT_SECRET_KEY environment variable is required")
         return v
-    
-    class Config:
-        env_file = ".env"
-        case_sensitive = True
-        extra = "ignore"
 
 
 # Create global settings instance
