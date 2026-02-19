@@ -883,34 +883,16 @@ _mixer_addresses: Optional[set] = None
 def _get_known_bridge_addresses() -> set:
     global _bridge_addresses
     if _bridge_addresses is None:
-        tracker = BridgeTracker()
-        addrs: set = set()
-        for chain_bridges in tracker.bridge_contracts.values():
-            for bridge_contracts in chain_bridges.values():
-                if isinstance(bridge_contracts, dict):
-                    addrs.update(v.lower() for v in bridge_contracts.values() if v)
-                elif isinstance(bridge_contracts, str) and bridge_contracts:
-                    addrs.add(bridge_contracts.lower())
-        _bridge_addresses = addrs
+        from src.analysis.protocol_registry import get_known_bridge_addresses as _reg_bridges
+        _bridge_addresses = _reg_bridges()
     return _bridge_addresses
 
 
 def _get_known_mixer_addresses() -> set:
     global _mixer_addresses
     if _mixer_addresses is None:
-        detector = MixerDetector()
-        addrs: set = set()
-        known = getattr(detector, "mixer_addresses", {})
-        for chain_mixers in known.values() if isinstance(known, dict) else []:
-            if isinstance(chain_mixers, dict):
-                for mixer_set in chain_mixers.values():
-                    if isinstance(mixer_set, (set, list)):
-                        addrs.update(a.lower() for a in mixer_set)
-                    elif isinstance(mixer_set, str):
-                        addrs.add(mixer_set.lower())
-            elif isinstance(chain_mixers, (set, list)):
-                addrs.update(a.lower() for a in chain_mixers)
-        _mixer_addresses = addrs
+        from src.analysis.protocol_registry import get_known_mixer_addresses as _reg_mixers
+        _mixer_addresses = _reg_mixers()
     return _mixer_addresses
 
 
@@ -928,9 +910,9 @@ def _classify_edge(source: str, target: str) -> str:
         return "bridge"
     if src in mixer_addrs or tgt in mixer_addrs:
         return "mixer"
-    # Simple heuristic for DEX: common DEX router patterns
-    dex_keywords = {"swap", "dex", "uniswap", "sushiswap", "pancake", "curve"}
-    combined = src + tgt
-    if any(kw in combined for kw in dex_keywords):
+    # DEX check via protocol registry
+    from src.analysis.protocol_registry import get_known_dex_addresses
+    dex_addrs = get_known_dex_addresses()
+    if src in dex_addrs or tgt in dex_addrs:
         return "dex"
     return "transfer"
