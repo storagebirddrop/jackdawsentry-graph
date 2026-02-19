@@ -146,6 +146,15 @@ def get_redis_pool() -> redis_async.ConnectionPool:
     return _redis_pool
 
 
+def get_redis_client() -> redis_async.Redis:
+    """Return a Redis client bound to the shared connection pool.
+
+    Use for one-off commands (publish, get, set).  For pub/sub subscriptions
+    call .pubsub() on the returned client.
+    """
+    return redis_async.Redis(connection_pool=get_redis_pool())
+
+
 @asynccontextmanager
 async def get_postgres_connection():
     """Get PostgreSQL connection from pool with connection reuse optimization"""
