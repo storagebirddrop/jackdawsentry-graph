@@ -7,7 +7,7 @@ import asyncio
 import logging
 from abc import ABC, abstractmethod
 from typing import Dict, List, Optional, Any, Union
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
 import json
 import hashlib

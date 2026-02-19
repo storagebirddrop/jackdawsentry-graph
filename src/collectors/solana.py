@@ -6,7 +6,7 @@ Solana blockchain data collection
 import asyncio
 import logging
 from typing import Dict, List, Optional, Any, Union
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 
 # Try to import Solana dependencies, but don't fail if not available

@@ -619,8 +619,6 @@ _monitoring_active = False
 
 async def monitor_connections():
     """Monitor database connection health with proper cleanup"""
-    global _monitoring_active
-    
     while _monitoring_active:
         try:
             health = await check_database_health()

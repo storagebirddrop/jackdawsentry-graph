@@ -6,7 +6,7 @@ Manages all blockchain collectors and coordinates data collection
 import asyncio
 import logging
 from typing import Dict, List, Optional, Any
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 
 from .bitcoin import BitcoinCollector

@@ -6,7 +6,7 @@ Ethereum and EVM-compatible blockchain data collection
 import asyncio
 import logging
 from typing import Dict, List, Optional, Any, Union
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 import re
 
