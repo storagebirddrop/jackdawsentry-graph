@@ -1,7 +1,6 @@
 # =============================================================================
 # Docker Runtime Dependencies
 # Core API + all runtime deps needed by mounted routers and engines.
-# Excludes blockchain SDKs (web3, eth-abi) that require external RPC nodes.
 # =============================================================================
 
 # Core API dependencies
@@ -48,3 +47,7 @@ anthropic>=0.25.0
 
 # scikit-learn (ML risk model feature extraction)
 scikit-learn>=1.4.0
+
+# Blockchain SDKs (Ethereum RPC + EVM chains)
+web3>=6.15.0
+eth-abi>=4.2.0
