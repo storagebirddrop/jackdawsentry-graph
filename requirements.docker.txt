@@ -33,3 +33,18 @@ schedule>=1.2.0
 
 # gRPC (Lightning Network collector)
 grpcio>=1.60.0
+
+# XML parsing (sanctions OFAC ingestion)
+defusedxml==0.7.1
+
+# PDF export (investigation reports, compliance exports)
+reportlab>=4.0.0
+
+# Excel export (compliance exports)
+openpyxl>=3.1.0
+
+# AI narrative generation (optional — falls back to template if key absent)
+anthropic>=0.25.0
+
+# scikit-learn (ML risk model feature extraction)
+scikit-learn>=1.4.0
