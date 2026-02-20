@@ -280,6 +280,16 @@ class AuditMiddleware(BaseHTTPMiddleware):
     def _get_client_ip(request: Request) -> str:
         return get_client_ip(request)
     
+    @staticmethod
+    def _json_default(obj):
+        """Fallback serializer for types not natively supported by json.dumps."""
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        try:
+            return str(obj)
+        except Exception:
+            return None
+
     async def _store_audit_log(self, request_log: Dict[str, Any], response_log: Dict[str, Any]):
         """Store audit log in Redis, falling back to a local JSON-lines file."""
         audit_data = {
@@ -292,7 +302,7 @@ class AuditMiddleware(BaseHTTPMiddleware):
                 await redis.setex(
                     audit_key,
                     self.audit_retention_days * 24 * 3600,
-                    json.dumps(audit_data),
+                    json.dumps(audit_data, default=self._json_default),
                 )
         except Exception as e:
             logger.warning(f"Redis audit write failed, falling back to file: {e}")
@@ -304,7 +314,7 @@ class AuditMiddleware(BaseHTTPMiddleware):
         try:
             os.makedirs(log_dir, exist_ok=True)
             async with aiofiles.open(os.path.join(log_dir, "audit_fallback.jsonl"), mode="a") as f:
-                await f.write(json.dumps(audit_data) + "\n")
+                await f.write(json.dumps(audit_data, default=self._json_default) + "\n")
         except Exception as e:
             logger.error(f"Audit fallback file write also failed: {e}")
 
