@@ -45,6 +45,7 @@ def client():
         patch("src.api.main.close_databases", new_callable=AsyncMock),
         patch("src.api.main.start_background_tasks", new_callable=AsyncMock),
         patch("src.api.main.stop_background_tasks", new_callable=AsyncMock),
+        patch("src.monitoring.alert_rules.ensure_tables", new_callable=AsyncMock),
     ):
         with TestClient(app, raise_server_exceptions=False, base_url="http://localhost") as c:
             yield c

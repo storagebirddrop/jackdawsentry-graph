@@ -45,6 +45,14 @@ def get_rpc_client(blockchain: str) -> Optional[BaseRPCClient]:
 
         family = config.get("family", "")
         rpc_url = config["rpc_url"]
+        fallback_url = config.get("fallback_url", "")
+
+        # aiohttp clients use plain HTTP/S POST — WebSocket URLs won't work.
+        # Prefer the fallback HTTP URL when the primary is a WebSocket endpoint.
+        if rpc_url.startswith("wss://") or rpc_url.startswith("ws://"):
+            if fallback_url and (fallback_url.startswith("http://") or fallback_url.startswith("https://")):
+                logger.debug(f"Primary URL for {blockchain} is WSS; using HTTP fallback for RPC client")
+                rpc_url = fallback_url
 
         client: Optional[BaseRPCClient] = None
 

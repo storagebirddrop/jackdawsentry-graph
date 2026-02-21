@@ -167,31 +167,41 @@ async def expand_address(
     Falls back to live RPC if address is not in Neo4j.
     """
     start = time.monotonic()
-    addr = request.address.lower()
+    # Bitcoin addresses are Base58 (case-sensitive) — preserve case.
+    _bc = (request.blockchain or "").lower()
+    addr = request.address if _bc == "bitcoin" else request.address.lower()
     nodes_map: Dict[str, Dict[str, Any]] = {}
     edges_list: List[Dict[str, Any]] = []
 
-    # Build direction-specific Cypher pattern with variable-length depth
-    depth = request.depth
+    # Build direction-specific Cypher. Use simple *1..N variable-length
+    # relationship patterns — Neo4j QPP quantified path expressions
+    # (the {...} repetition syntax) are only supported on Neo4j 5.9+ Enterprise
+    # and behave differently across patch versions; stick to classic syntax.
+    depth = max(1, min(int(request.depth), 5))
     if request.direction == "out":
-        pattern = f"path = (a:Address {{address: $addr, blockchain: $bc}})(-[:SENT]->(:Transaction)-[:RECEIVED]->(:Address)){{1,{depth}}}"
+        cypher = f"""
+    MATCH (a:Address {{address: $addr, blockchain: $bc}})
+          -[:SENT*1..{depth}]->(t:Transaction)-[:RECEIVED]->(tgt:Address)
+    OPTIONAL MATCH (t)<-[:SENT]-(src:Address)
+    WITH a, t, src, tgt
+    WHERE tgt IS NOT NULL AND tgt.address <> $addr
+    """
     elif request.direction == "in":
-        pattern = f"path = (a:Address {{address: $addr, blockchain: $bc}})(<-[:RECEIVED]-(:Transaction)<-[:SENT]-(:Address)){{1,{depth}}}"
+        cypher = f"""
+    MATCH (tgt:Address)-[:SENT]->(t:Transaction)
+          -[:RECEIVED*1..{depth}]->(a:Address {{address: $addr, blockchain: $bc}})
+    OPTIONAL MATCH (t)<-[:SENT]-(src:Address)
+    WITH a, t, src, tgt
+    WHERE tgt IS NOT NULL
+    """
     else:
-        pattern = f"path = (a:Address {{address: $addr, blockchain: $bc}})(-[:SENT|RECEIVED]-(:Transaction)-[:SENT|RECEIVED]-(:Address)){{1,{depth}}}"
-
-    # Multi-hop expansion via variable-length paths
-    cypher = f"""
-    MATCH {pattern}
-    WITH a, nodes(path) AS ns, relationships(path) AS rels
-    UNWIND range(0, size(ns)-1) AS idx
-    WITH a, ns[idx] AS n
-    WHERE n:Transaction
-    WITH a, n AS t
+        cypher = f"""
+    MATCH (a:Address {{address: $addr, blockchain: $bc}})
+          -[:SENT|RECEIVED*1..{depth}]-(t:Transaction)
     OPTIONAL MATCH (t)<-[:SENT]-(src:Address)
     OPTIONAL MATCH (t)-[:RECEIVED]->(tgt:Address)
     WITH a, t, src, tgt
-    WHERE (src IS NOT NULL OR tgt IS NOT NULL) AND (src.address <> $addr OR tgt.address <> $addr)
+    WHERE (src IS NOT NULL OR tgt IS NOT NULL)
     """
 
     # Build optional filter conditions
@@ -280,8 +290,10 @@ async def expand_address(
                 # Attempt to fetch recent txs to build edges
                 txs = await client.get_address_transactions(addr, limit=25)
                 for tx in txs:
-                    from_a = (tx.from_address or "").lower()
-                    to_a = (tx.to_address or "").lower()
+                    # Preserve case for Bitcoin (Base58); lowercase EVM/Solana
+                    _norm = (lambda s: s) if _bc == "bitcoin" else (lambda s: s.lower())
+                    from_a = _norm(tx.from_address or "")
+                    to_a = _norm(tx.to_address or "")
                     if from_a == addr:
                         peer = to_a
                     elif to_a == addr:
@@ -494,7 +506,10 @@ async def graph_search(
 ):
     """Search for an address or transaction hash; return the initial graph node(s)."""
     start = time.monotonic()
-    q = request.query.strip().lower()
+    # Bitcoin addresses are Base58 (case-sensitive) — don't lowercase them.
+    # EVM/Solana addresses are case-insensitive; lowercase those for Neo4j consistency.
+    _bc = (request.blockchain or "").lower()
+    q = request.query.strip() if _bc == "bitcoin" else request.query.strip().lower()
     nodes_map: Dict[str, Dict[str, Any]] = {}
     edges_list: List[Dict[str, Any]] = []
 

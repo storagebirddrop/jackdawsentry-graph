@@ -53,7 +53,7 @@ class Settings(BaseSettings):
     # =============================================================================
     
     # Bitcoin
-    BITCOIN_RPC_URL: str = "http://localhost:8332"
+    BITCOIN_RPC_URL: str = "https://bitcoin-rpc.publicnode.com"
     BITCOIN_RPC_USER: Optional[str] = None
     BITCOIN_RPC_PASSWORD: Optional[str] = None
     BITCOIN_NETWORK: str = "mainnet"
@@ -64,27 +64,57 @@ class Settings(BaseSettings):
     LND_TLS_CERT_PATH: Optional[str] = None
     
     # Ethereum/EVM Chains
-    ETHEREUM_RPC_URL: str = "https://mainnet.infura.io/v3/YOUR_INFURA_KEY"
+    ETHEREUM_RPC_URL: str = "wss://ethereum-rpc.publicnode.com"
+    ETHEREUM_RPC_FALLBACK: str = "https://ethereum-rpc.publicnode.com"
     ETHEREUM_NETWORK: str = "mainnet"
-    
+
     BSC_RPC_URL: str = "https://bsc-dataseed.binance.org"
     BSC_NETWORK: str = "mainnet"
-    
-    POLYGON_RPC_URL: str = "https://polygon-rpc.com"
+
+    POLYGON_RPC_URL: str = "wss://polygon-bor-rpc.publicnode.com"
+    POLYGON_RPC_FALLBACK: str = "https://polygon-bor-rpc.publicnode.com"
     POLYGON_NETWORK: str = "mainnet"
-    
-    ARBITRUM_RPC_URL: str = "https://arb1.arbitrum.io/rpc"
+
+    ARBITRUM_RPC_URL: str = "wss://arbitrum-one-rpc.publicnode.com"
+    ARBITRUM_RPC_FALLBACK: str = "https://arbitrum-one-rpc.publicnode.com"
     ARBITRUM_NETWORK: str = "mainnet"
-    
-    BASE_RPC_URL: str = "https://mainnet.base.org"
+
+    BASE_RPC_URL: str = "wss://base-rpc.publicnode.com"
+    BASE_RPC_FALLBACK: str = "https://base-rpc.publicnode.com"
     BASE_NETWORK: str = "mainnet"
-    
-    AVALANCHE_RPC_URL: str = "https://api.avax.network/ext/bc/C/rpc"
+
+    AVALANCHE_RPC_URL: str = "wss://avalanche-c-chain-rpc.publicnode.com"
+    AVALANCHE_RPC_FALLBACK: str = "https://avalanche-c-chain-rpc.publicnode.com"
     AVALANCHE_NETWORK: str = "mainnet"
-    
+
+    OPTIMISM_RPC_URL: str = "wss://optimism-rpc.publicnode.com"
+    OPTIMISM_RPC_FALLBACK: str = "https://optimism-rpc.publicnode.com"
+    OPTIMISM_NETWORK: str = "mainnet"
+
     # Solana
-    SOLANA_RPC_URL: str = "https://api.mainnet-beta.solana.com"
+    SOLANA_RPC_URL: str = "wss://solana-rpc.publicnode.com"
+    SOLANA_RPC_FALLBACK: str = "https://solana-rpc.publicnode.com"
     SOLANA_NETWORK: str = "mainnet"
+
+    # SUI
+    SUI_RPC_URL: str = "wss://sui-rpc.publicnode.com"
+    SUI_RPC_FALLBACK: str = "https://sui-rpc.publicnode.com"
+    SUI_NETWORK: str = "mainnet"
+
+    # Starknet
+    STARKNET_RPC_URL: str = "wss://starknet-rpc.publicnode.com"
+    STARKNET_RPC_FALLBACK: str = "https://starknet-rpc.publicnode.com"
+    STARKNET_NETWORK: str = "mainnet"
+
+    # Injective
+    INJECTIVE_RPC_URL: str = "wss://injective-rpc.publicnode.com:443/websocket"
+    INJECTIVE_RPC_FALLBACK: str = "https://injective-rpc.publicnode.com:443"
+    INJECTIVE_NETWORK: str = "mainnet"
+
+    # Cosmos
+    COSMOS_RPC_URL: str = "wss://cosmos-rpc.publicnode.com:443/websocket"
+    COSMOS_RPC_FALLBACK: str = "https://cosmos-rpc.publicnode.com:443"
+    COSMOS_NETWORK: str = "mainnet"
     
     # Tron
     TRON_RPC_URL: str = "https://api.trongrid.io"
@@ -345,8 +375,8 @@ def get_supported_blockchains() -> List[str]:
     """Get list of supported blockchains"""
     return [
         "bitcoin", "ethereum", "bsc", "polygon", "arbitrum", "base",
-        "avalanche", "solana", "tron", "xrpl", "stellar", "sei",
-        "hyperliquid", "plasma"
+        "avalanche", "optimism", "solana", "sui", "starknet", "injective",
+        "cosmos", "tron", "xrpl", "stellar", "sei", "hyperliquid", "plasma"
     ]
 
 
@@ -370,6 +400,7 @@ def get_blockchain_config(blockchain: str) -> dict:
         },
         "ethereum": {
             "rpc_url": settings.ETHEREUM_RPC_URL,
+            "fallback_url": settings.ETHEREUM_RPC_FALLBACK,
             "network": settings.ETHEREUM_NETWORK,
             "family": "evm",
         },
@@ -380,28 +411,63 @@ def get_blockchain_config(blockchain: str) -> dict:
         },
         "polygon": {
             "rpc_url": settings.POLYGON_RPC_URL,
+            "fallback_url": settings.POLYGON_RPC_FALLBACK,
             "network": settings.POLYGON_NETWORK,
             "family": "evm",
         },
         "arbitrum": {
             "rpc_url": settings.ARBITRUM_RPC_URL,
+            "fallback_url": settings.ARBITRUM_RPC_FALLBACK,
             "network": settings.ARBITRUM_NETWORK,
             "family": "evm",
         },
         "base": {
             "rpc_url": settings.BASE_RPC_URL,
+            "fallback_url": settings.BASE_RPC_FALLBACK,
             "network": settings.BASE_NETWORK,
             "family": "evm",
         },
         "avalanche": {
             "rpc_url": settings.AVALANCHE_RPC_URL,
+            "fallback_url": settings.AVALANCHE_RPC_FALLBACK,
             "network": settings.AVALANCHE_NETWORK,
+            "family": "evm",
+        },
+        "optimism": {
+            "rpc_url": settings.OPTIMISM_RPC_URL,
+            "fallback_url": settings.OPTIMISM_RPC_FALLBACK,
+            "network": settings.OPTIMISM_NETWORK,
             "family": "evm",
         },
         "solana": {
             "rpc_url": settings.SOLANA_RPC_URL,
+            "fallback_url": settings.SOLANA_RPC_FALLBACK,
             "network": settings.SOLANA_NETWORK,
             "family": "solana",
+        },
+        "sui": {
+            "rpc_url": settings.SUI_RPC_URL,
+            "fallback_url": settings.SUI_RPC_FALLBACK,
+            "network": settings.SUI_NETWORK,
+            "family": "sui",
+        },
+        "starknet": {
+            "rpc_url": settings.STARKNET_RPC_URL,
+            "fallback_url": settings.STARKNET_RPC_FALLBACK,
+            "network": settings.STARKNET_NETWORK,
+            "family": "starknet",
+        },
+        "injective": {
+            "rpc_url": settings.INJECTIVE_RPC_URL,
+            "fallback_url": settings.INJECTIVE_RPC_FALLBACK,
+            "network": settings.INJECTIVE_NETWORK,
+            "family": "cosmos",
+        },
+        "cosmos": {
+            "rpc_url": settings.COSMOS_RPC_URL,
+            "fallback_url": settings.COSMOS_RPC_FALLBACK,
+            "network": settings.COSMOS_NETWORK,
+            "family": "cosmos",
         },
         "tron": {
             "rpc_url": settings.TRON_RPC_URL,

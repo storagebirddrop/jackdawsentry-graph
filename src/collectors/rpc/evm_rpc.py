@@ -25,6 +25,7 @@ NATIVE_SYMBOL: Dict[str, str] = {
     "arbitrum": "ETH",
     "base": "ETH",
     "avalanche": "AVAX",
+    "optimism": "ETH",
     "sei": "SEI",
     "plasma": "PLASMA",
 }

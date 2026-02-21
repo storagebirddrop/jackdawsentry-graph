@@ -369,8 +369,8 @@ class BitcoinRpcClient(BaseRPCClient):
     ) -> List[Transaction]:
         """Fetch recent transactions for an address via Blockstream API.
 
-        Uses cursor-based pagination: pass ``last_seen_txid`` from the
-        previous page's last transaction to fetch the next page.
+        Returns one Transaction per output (UTXO) so all fund flows are
+        visible in the graph — change addresses, multi-output sends, fees, etc.
         """
         path = f"/address/{address}/txs"
         if last_seen_txid:
@@ -381,8 +381,74 @@ class BitcoinRpcClient(BaseRPCClient):
 
         txs = []
         for item in data[:limit]:
-            txs.append(await self._parse_blockstream_tx(item))
+            txs.extend(await self._parse_blockstream_tx_utxos(item, address))
         return txs
+
+    async def _parse_blockstream_tx_utxos(
+        self, data: Dict[str, Any], focus_address: str = ""
+    ) -> List[Transaction]:
+        """Expand a Blockstream tx into one Transaction per output.
+
+        Each output becomes its own edge in the graph, giving a full UTXO
+        picture: change address, send-to-many, OP_RETURN, etc.
+        Fee is attached to the first output record as metadata only.
+        """
+        status_obj = data.get("status", {})
+        confirmed = status_obj.get("confirmed", False)
+        block_height = status_obj.get("block_height")
+
+        timestamp = datetime.now(timezone.utc)
+        if status_obj.get("block_time"):
+            timestamp = datetime.fromtimestamp(
+                status_obj["block_time"], tz=timezone.utc
+            )
+
+        fee_btc = data.get("fee", 0) / SATS_PER_BTC if data.get("fee") else None
+
+        confirmations = None
+        if confirmed and block_height is not None:
+            tip = await self._get_current_block_height()
+            if tip is not None:
+                confirmations = max(tip - block_height + 1, 0)
+
+        # Collect all input addresses (de-duplicated)
+        from_addrs: List[str] = []
+        for vin in data.get("vin", []):
+            a = vin.get("prevout", {}).get("scriptpubkey_address", "")
+            if a and a not in from_addrs:
+                from_addrs.append(a)
+
+        # Use primary sender as the canonical from_address
+        primary_from = from_addrs[0] if from_addrs else ""
+
+        # One Transaction per output
+        result: List[Transaction] = []
+        for vout in data.get("vout", []):
+            to_addr = vout.get("scriptpubkey_address", "")
+            if not to_addr:
+                continue  # OP_RETURN or unspendable — skip
+
+            value_btc = vout.get("value", 0) / SATS_PER_BTC
+
+            result.append(Transaction(
+                hash=data["txid"],
+                blockchain="bitcoin",
+                from_address=primary_from,
+                to_address=to_addr,
+                value=value_btc,
+                timestamp=timestamp,
+                block_number=block_height,
+                block_hash=status_obj.get("block_hash"),
+                fee=fee_btc,
+                status="confirmed" if confirmed else "pending",
+                confirmations=confirmations,
+            ))
+
+        # Fallback: if no spendable outputs, return the old single-output form
+        if not result:
+            result = [await self._parse_blockstream_tx(data)]
+
+        return result
 
     # ------------------------------------------------------------------
     # Block
