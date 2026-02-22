@@ -228,6 +228,10 @@ PERMISSIONS = {
     "write_intelligence": "intelligence:write",
     "read_reports": "reports:read",
     "write_reports": "reports:write",
+    "read_attribution": "attribution:read",
+    "write_attribution": "attribution:write",
+    "bulk_screening": "attribution:bulk",
+    "view_analytics": "analytics:view",
     "admin_full": "admin:full",
     "admin_users": "admin:users",
     "admin_system": "admin:system"
@@ -242,7 +246,8 @@ ROLES = {
         PERMISSIONS["read_investigations"],
         PERMISSIONS["read_blockchain"],
         PERMISSIONS["read_intelligence"],
-        PERMISSIONS["read_reports"]
+        PERMISSIONS["read_reports"],
+        PERMISSIONS["read_attribution"]
     ],
     "analyst": [
         PERMISSIONS["read_analysis"],
@@ -253,7 +258,9 @@ ROLES = {
         PERMISSIONS["read_blockchain"],
         PERMISSIONS["read_intelligence"],
         PERMISSIONS["read_reports"],
-        PERMISSIONS["write_reports"]
+        PERMISSIONS["write_reports"],
+        PERMISSIONS["read_attribution"],
+        PERMISSIONS["write_attribution"]
     ],
     "compliance_officer": [
         PERMISSIONS["read_analysis"],
@@ -264,7 +271,11 @@ ROLES = {
         PERMISSIONS["read_blockchain"],
         PERMISSIONS["read_intelligence"],
         PERMISSIONS["read_reports"],
-        PERMISSIONS["write_reports"]
+        PERMISSIONS["write_reports"],
+        PERMISSIONS["read_attribution"],
+        PERMISSIONS["write_attribution"],
+        PERMISSIONS["bulk_screening"],
+        PERMISSIONS["view_analytics"]
     ],
     "admin": list(PERMISSIONS.values())
 }
