@@ -1,0 +1,188 @@
+[build-system]
+requires = ["setuptools>=69.0.2", "wheel>=0.42.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jackdawsentry"
+version = "1.0.0"
+description = "Enterprise Blockchain Intelligence Platform"
+authors = [{name = "Jackdaw Team", email = "team@jackdawsentry.com"}]
+license = {text = "MIT"}
+readme = "README.md"
+requires-python = ">=3.8"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Financial and Insurance Industry",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security :: Cryptography",
+    "Topic :: Office/Business :: Financial :: Investment",
+]
+
+[tool.black]
+line-length = 88
+target-version = ["py38", "py39", "py310", "py311", "py312"]
+include = '\.pyi?$'
+extend-exclude = '''
+/(
+  # directories
+  \.eggs
+  | \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | _build
+  | buck-out
+  | build
+  | dist
+  | migrations
+)/
+'''
+
+[tool.isort]
+profile = "black"
+multi_line_output = 3
+line_length = 88
+known_first_party = ["src"]
+known_third_party = ["fastapi", "uvicorn", "neo4j", "psycopg2", "redis", "sqlalchemy"]
+force_single_line = true
+force_grid_wrap = 0
+use_parentheses = true
+ensure_newline_before_comments = true
+include_trailing_comma = true
+
+[tool.flake8]
+max-line-length = 88
+extend-ignore = ["E203", "W503", "E501"]
+exclude = [
+    ".git",
+    "__pycache__",
+    "build",
+    "dist",
+    ".venv",
+    ".eggs",
+    "*.egg-info",
+    ".mypy_cache",
+    ".pytest_cache",
+    "migrations"
+]
+per-file-ignores = [
+    "__init__.py:F401",
+    "tests/*:S101",
+]
+
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_unreachable = true
+strict_equality = true
+
+[[tool.mypy.overrides]]
+module = [
+    "neo4j.*",
+    "psycopg2.*",
+    "redis.*",
+    "bitcoinlib.*",
+    "web3.*",
+    "solana.*",
+    "tronpy.*",
+    "xrpl.*",
+    "stellar.*",
+    "networkx.*",
+    "igraph.*",
+    "graph_tool.*",
+    "selenium.*",
+    "torpy.*",
+    "stem.*",
+]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+minversion = "6.0"
+addopts = "-ra -q --strict-markers --strict-config"
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests as integration tests",
+    "unit: marks tests as unit tests",
+    "security: marks tests as security tests",
+    "performance: marks tests as performance tests",
+]
+
+[tool.coverage.run]
+source = ["src"]
+omit = [
+    "*/tests/*",
+    "*/migrations/*",
+    "*/__pycache__/*",
+    "*/venv/*",
+    "*/.venv/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "if self.debug:",
+    "if settings.DEBUG",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if 0:",
+    "if __name__ == .__main__.:",
+    "class .*\\bProtocol\\):",
+    "@(abc\\.)?abstractmethod",
+]
+show_missing = true
+precision = 2
+
+[tool.bandit]
+exclude_dirs = ["tests", "migrations"]
+skips = ["B101", "B601"]
+
+[tool.pylint.messages_control]
+disable = [
+    "C0330", "C0326",
+    "R0903", "R0913",
+    "W0613",
+]
+
+[tool.pylint.format]
+max-line-length = 88
+
+[tool.interrogate]
+ignore-init-method = true
+ignore-init-module = false
+ignore-magic = false
+ignore-semiprivate = false
+ignore-private = false
+ignore-property-decorators = false
+ignore-module = true
+ignore-nested-functions = false
+ignore-nested-classes = true
+ignore-setters = false
+fail-under = 90
+exclude = ["tests", "migrations", "setup.py"]
+ignore-regex = ["^get$", "^set$"]
+verbose = 2
+quiet = false
+whitelist = []
+color = true
+omit-covered-files = false
