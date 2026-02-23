@@ -30,3 +30,4 @@ networkx==3.2.1
 # Cryptographic utilities
 bip-utils==2.9.0
 mnemonic==0.20
+cbor2>=5.8.0 # not directly required, pinned by Snyk to avoid a vulnerability
