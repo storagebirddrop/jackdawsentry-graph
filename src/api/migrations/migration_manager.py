@@ -5,10 +5,12 @@ Database migration management system
 
 import asyncio
 import logging
-from typing import List, Optional
-from pathlib import Path
-import asyncpg
 from datetime import datetime
+from pathlib import Path
+from typing import List
+from typing import Optional
+
+import asyncpg
 
 from src.api.config import settings
 

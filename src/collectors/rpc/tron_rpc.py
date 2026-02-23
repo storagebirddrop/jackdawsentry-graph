@@ -5,14 +5,22 @@ Tron uses a REST-style API (not JSON-RPC 2.0).
 """
 
 import logging
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Union
+from datetime import datetime
+from datetime import timezone
+from typing import Any
+from typing import Dict
+from typing import List
+from typing import Optional
+from typing import Union
 
 import aiohttp
 
 from src.api.config import settings
-from src.collectors.base import Transaction, Block, Address
-from src.collectors.rpc.base_rpc import BaseRPCClient, RPCError
+from src.collectors.base import Address
+from src.collectors.base import Block
+from src.collectors.base import Transaction
+from src.collectors.rpc.base_rpc import BaseRPCClient
+from src.collectors.rpc.base_rpc import RPCError
 
 logger = logging.getLogger(__name__)
 
@@ -39,14 +47,20 @@ class TronRpcClient(BaseRPCClient):
             async with session.get(url) as resp:
                 body = await resp.json(content_type=None)
                 if resp.status != 200:
-                    raise RPCError(f"HTTP {resp.status}", code=resp.status, blockchain=self.blockchain)
+                    raise RPCError(
+                        f"HTTP {resp.status}",
+                        code=resp.status,
+                        blockchain=self.blockchain,
+                    )
                 return body
         except RPCError:
             raise
         except Exception as exc:
             raise RPCError(str(exc), blockchain=self.blockchain)
 
-    async def _rest_post(self, path: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    async def _rest_post(
+        self, path: str, payload: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
         """Perform a POST request to the Tron REST API."""
         await self._wait_for_rate_limit()
         session = await self._ensure_session()
@@ -55,7 +69,11 @@ class TronRpcClient(BaseRPCClient):
             async with session.post(url, json=payload) as resp:
                 body = await resp.json(content_type=None)
                 if resp.status != 200:
-                    raise RPCError(f"HTTP {resp.status}", code=resp.status, blockchain=self.blockchain)
+                    raise RPCError(
+                        f"HTTP {resp.status}",
+                        code=resp.status,
+                        blockchain=self.blockchain,
+                    )
                 return body
         except RPCError:
             raise
@@ -89,7 +107,11 @@ class TronRpcClient(BaseRPCClient):
 
         # Tron timestamp is in milliseconds
         ts_ms = raw.get("timestamp", 0)
-        timestamp = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc) if ts_ms else datetime.now(timezone.utc)
+        timestamp = (
+            datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
+            if ts_ms
+            else datetime.now(timezone.utc)
+        )
 
         ret = (result.get("ret") or [{}])[0]
         status = "confirmed" if ret.get("contractRet") == "SUCCESS" else "failed"
@@ -113,7 +135,9 @@ class TronRpcClient(BaseRPCClient):
     async def get_address_info(self, address: str) -> Optional[Address]:
         """Fetch TRX balance via /wallet/getaccount."""
         try:
-            result = await self._rest_post("wallet/getaccount", {"address": address, "visible": True})
+            result = await self._rest_post(
+                "wallet/getaccount", {"address": address, "visible": True}
+            )
         except Exception as exc:
             logger.warning(f"[tron] get_address_info failed: {exc}")
             return None
@@ -148,7 +172,9 @@ class TronRpcClient(BaseRPCClient):
     async def get_block(self, block_id: Union[int, str]) -> Optional[Block]:
         """Fetch a block by number via /wallet/getblockbynum."""
         try:
-            result = await self._rest_post("wallet/getblockbynum", {"num": int(block_id)})
+            result = await self._rest_post(
+                "wallet/getblockbynum", {"num": int(block_id)}
+            )
         except Exception as exc:
             logger.warning(f"[tron] get_block failed: {exc}")
             return None
@@ -158,7 +184,11 @@ class TronRpcClient(BaseRPCClient):
 
         header = (result.get("block_header") or {}).get("raw_data") or {}
         ts_ms = header.get("timestamp", 0)
-        timestamp = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc) if ts_ms else datetime.now(timezone.utc)
+        timestamp = (
+            datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
+            if ts_ms
+            else datetime.now(timezone.utc)
+        )
         block_num = header.get("number", int(block_id))
         txs = result.get("transactions") or []
 
@@ -180,10 +210,14 @@ class TronRpcClient(BaseRPCClient):
         try:
             result = await self._rest_get("wallet/getnowblock")
         except Exception as exc:
-            raise RPCError(f"get_latest_block_number failed: {exc}", blockchain=self.blockchain)
+            raise RPCError(
+                f"get_latest_block_number failed: {exc}", blockchain=self.blockchain
+            )
 
         if not result:
-            raise RPCError("Empty response from getnowblock", blockchain=self.blockchain)
+            raise RPCError(
+                "Empty response from getnowblock", blockchain=self.blockchain
+            )
 
         header = (result.get("block_header") or {}).get("raw_data") or {}
         return int(header.get("number", 0))

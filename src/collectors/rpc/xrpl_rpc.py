@@ -4,11 +4,19 @@ Lightweight async client for XRP Ledger using its JSON-RPC-like API.
 """
 
 import logging
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Union
+from datetime import datetime
+from datetime import timezone
+from typing import Any
+from typing import Dict
+from typing import List
+from typing import Optional
+from typing import Union
 
-from src.collectors.base import Transaction, Block, Address
-from src.collectors.rpc.base_rpc import BaseRPCClient, RPCError
+from src.collectors.base import Address
+from src.collectors.base import Block
+from src.collectors.base import Transaction
+from src.collectors.rpc.base_rpc import BaseRPCClient
+from src.collectors.rpc.base_rpc import RPCError
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +60,9 @@ class XrplRpcClient(BaseRPCClient):
         return raw
 
     # Override _post to not expect JSON-RPC 2.0 "result" field extraction
-    async def _json_rpc(self, method: str, params: Any = None, *, retries: int = 2) -> Any:
+    async def _json_rpc(
+        self, method: str, params: Any = None, *, retries: int = 2
+    ) -> Any:
         """Not used directly; XRPL uses _xrpl_rpc instead."""
         raise NotImplementedError("Use _xrpl_rpc for XRPL")
 
@@ -63,7 +73,9 @@ class XrplRpcClient(BaseRPCClient):
     async def get_transaction(self, tx_hash: str) -> Optional[Transaction]:
         """Fetch a transaction by hash via XRPL 'tx' command."""
         try:
-            result = await self._xrpl_rpc("tx", {"transaction": tx_hash, "binary": False})
+            result = await self._xrpl_rpc(
+                "tx", {"transaction": tx_hash, "binary": False}
+            )
         except Exception as exc:
             logger.warning(f"[xrpl] get_transaction failed: {exc}")
             return None
@@ -121,7 +133,9 @@ class XrplRpcClient(BaseRPCClient):
     async def get_address_info(self, address: str) -> Optional[Address]:
         """Fetch XRP balance via account_info."""
         try:
-            result = await self._xrpl_rpc("account_info", {"account": address, "ledger_index": "validated"})
+            result = await self._xrpl_rpc(
+                "account_info", {"account": address, "ledger_index": "validated"}
+            )
         except Exception as exc:
             logger.warning(f"[xrpl] get_address_info failed: {exc}")
             return None
@@ -157,7 +171,11 @@ class XrplRpcClient(BaseRPCClient):
         try:
             result = await self._xrpl_rpc(
                 "account_tx",
-                {"account": address, "limit": min(limit + offset, 200), "ledger_index_min": -1},
+                {
+                    "account": address,
+                    "limit": min(limit + offset, 200),
+                    "ledger_index_min": -1,
+                },
             )
         except Exception as exc:
             logger.warning(f"[xrpl] get_address_transactions failed: {exc}")
@@ -167,7 +185,7 @@ class XrplRpcClient(BaseRPCClient):
             return []
 
         tx_list = result.get("transactions") or []
-        tx_list = tx_list[offset: offset + limit]
+        tx_list = tx_list[offset : offset + limit]
 
         transactions = []
         for entry in tx_list:
@@ -198,17 +216,19 @@ class XrplRpcClient(BaseRPCClient):
             tx_result = meta.get("TransactionResult", "")
             status = "confirmed" if tx_result == "tesSUCCESS" else "failed"
 
-            transactions.append(Transaction(
-                hash=tx_hash,
-                blockchain=self.blockchain,
-                from_address=from_address,
-                to_address=to_address,
-                value=value_xrp,
-                timestamp=timestamp,
-                block_number=tx_data.get("ledger_index"),
-                fee=fee_xrp,
-                status=status,
-            ))
+            transactions.append(
+                Transaction(
+                    hash=tx_hash,
+                    blockchain=self.blockchain,
+                    from_address=from_address,
+                    to_address=to_address,
+                    value=value_xrp,
+                    timestamp=timestamp,
+                    block_number=tx_data.get("ledger_index"),
+                    fee=fee_xrp,
+                    status=status,
+                )
+            )
 
         return transactions
 
@@ -234,7 +254,9 @@ class XrplRpcClient(BaseRPCClient):
         ledger_index = int(ledger.get("ledger_index", block_id))
         close_time = ledger.get("close_time")
         timestamp = _xrpl_ts_to_datetime(close_time)
-        tx_count = ledger.get("transaction_count") or len(ledger.get("transactions") or [])
+        tx_count = ledger.get("transaction_count") or len(
+            ledger.get("transactions") or []
+        )
 
         return Block(
             number=ledger_index,
@@ -254,7 +276,9 @@ class XrplRpcClient(BaseRPCClient):
         try:
             result = await self._xrpl_rpc("ledger", {"ledger_index": "validated"})
         except Exception as exc:
-            raise RPCError(f"get_latest_block_number failed: {exc}", blockchain=self.blockchain)
+            raise RPCError(
+                f"get_latest_block_number failed: {exc}", blockchain=self.blockchain
+            )
 
         ledger = result.get("ledger") or result.get("ledger_hash") or {}
         if isinstance(ledger, dict):

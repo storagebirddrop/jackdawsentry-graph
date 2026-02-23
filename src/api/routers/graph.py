@@ -4,21 +4,32 @@ Returns {nodes, edges} JSON for the frontend Cytoscape.js graph renderer.
 Supports address expansion, transaction tracing, search, and clustering.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from typing import Any, Dict, List, Optional
-from datetime import datetime, timezone
-from pydantic import BaseModel, field_validator
 import logging
 import time
+from datetime import datetime
+from datetime import timezone
+from typing import Any
+from typing import Dict
+from typing import List
+from typing import Optional
 
-from src.api.auth import User, check_permissions, PERMISSIONS
-from src.api.database import get_neo4j_session
-from src.api.config import get_supported_blockchains
-from src.collectors.rpc.factory import get_rpc_client
-from src.services.sanctions import screen_address as _sanctions_screen
-from src.services.entity_attribution import lookup_addresses_bulk as _entity_lookup_bulk
+from fastapi import APIRouter
+from fastapi import Depends
+from fastapi import HTTPException
+from fastapi import Query
+from pydantic import BaseModel
+from pydantic import field_validator
+
 from src.analysis.bridge_tracker import BridgeTracker
 from src.analysis.mixer_detection import MixerDetector
+from src.api.auth import PERMISSIONS
+from src.api.auth import User
+from src.api.auth import check_permissions
+from src.api.config import get_supported_blockchains
+from src.api.database import get_neo4j_session
+from src.collectors.rpc.factory import get_rpc_client
+from src.services.entity_attribution import lookup_addresses_bulk as _entity_lookup_bulk
+from src.services.sanctions import screen_address as _sanctions_screen
 
 logger = logging.getLogger(__name__)
 
@@ -263,17 +274,19 @@ async def expand_address(
         # Add edge
         tx_hash = rec.get("tx_hash", "")
         edge_id = tx_hash or f"{addr}-{neighbor}"
-        edges_list.append({
-            "id": edge_id,
-            "source": addr,
-            "target": neighbor,
-            "value": _safe_float(rec.get("tx_value")),
-            "chain": request.blockchain,
-            "timestamp": rec.get("tx_ts"),
-            "tx_hash": tx_hash,
-            "block_number": rec.get("tx_block"),
-            "edge_type": _classify_edge(addr, neighbor),
-        })
+        edges_list.append(
+            {
+                "id": edge_id,
+                "source": addr,
+                "target": neighbor,
+                "value": _safe_float(rec.get("tx_value")),
+                "chain": request.blockchain,
+                "timestamp": rec.get("tx_ts"),
+                "tx_hash": tx_hash,
+                "block_number": rec.get("tx_block"),
+                "edge_type": _classify_edge(addr, neighbor),
+            }
+        )
 
     # If nothing found in Neo4j, try live RPC for the seed address
     if len(nodes_map) == 1 and not edges_list:
@@ -282,11 +295,15 @@ async def expand_address(
             try:
                 addr_info = await client.get_address_info(addr)
                 if addr_info:
-                    nodes_map[addr].update({
-                        "balance": float(addr_info.balance) if addr_info.balance else 0.0,
-                        "tx_count": addr_info.transaction_count,
-                        "type": addr_info.type,
-                    })
+                    nodes_map[addr].update(
+                        {
+                            "balance": (
+                                float(addr_info.balance) if addr_info.balance else 0.0
+                            ),
+                            "tx_count": addr_info.transaction_count,
+                            "type": addr_info.type,
+                        }
+                    )
                 # Attempt to fetch recent txs to build edges
                 txs = await client.get_address_transactions(addr, limit=25)
                 for tx in txs:
@@ -303,17 +320,21 @@ async def expand_address(
                     if peer and peer not in nodes_map:
                         nodes_map[peer] = _make_address_node(peer, request.blockchain)
                     if peer and from_a and to_a:
-                        edges_list.append({
-                            "id": tx.hash,
-                            "source": from_a,
-                            "target": to_a,
-                            "value": float(tx.value) if tx.value else 0.0,
-                            "chain": request.blockchain,
-                            "timestamp": tx.timestamp.isoformat() if tx.timestamp else None,
-                            "tx_hash": tx.hash,
-                            "block_number": tx.block_number,
-                            "edge_type": _classify_edge(from_a, to_a),
-                        })
+                        edges_list.append(
+                            {
+                                "id": tx.hash,
+                                "source": from_a,
+                                "target": to_a,
+                                "value": float(tx.value) if tx.value else 0.0,
+                                "chain": request.blockchain,
+                                "timestamp": (
+                                    tx.timestamp.isoformat() if tx.timestamp else None
+                                ),
+                                "tx_hash": tx.hash,
+                                "block_number": tx.block_number,
+                                "edge_type": _classify_edge(from_a, to_a),
+                            }
+                        )
             except Exception as exc:
                 logger.warning(f"Graph expand RPC fallback failed: {exc}")
 
@@ -375,20 +396,28 @@ async def trace_transaction(
                     from_addr = (tx.from_address or "").lower()
                     to_addr = (tx.to_address or "").lower()
                     if from_addr:
-                        nodes_map[from_addr] = _make_address_node(from_addr, request.blockchain)
+                        nodes_map[from_addr] = _make_address_node(
+                            from_addr, request.blockchain
+                        )
                     if to_addr:
-                        nodes_map[to_addr] = _make_address_node(to_addr, request.blockchain)
-                    edges_list.append({
-                        "id": tx.hash,
-                        "source": from_addr,
-                        "target": to_addr,
-                        "value": float(tx.value) if tx.value else 0.0,
-                        "chain": request.blockchain,
-                        "timestamp": tx.timestamp.isoformat() if tx.timestamp else None,
-                        "tx_hash": tx.hash,
-                        "block_number": tx.block_number,
-                        "edge_type": _classify_edge(from_addr, to_addr),
-                    })
+                        nodes_map[to_addr] = _make_address_node(
+                            to_addr, request.blockchain
+                        )
+                    edges_list.append(
+                        {
+                            "id": tx.hash,
+                            "source": from_addr,
+                            "target": to_addr,
+                            "value": float(tx.value) if tx.value else 0.0,
+                            "chain": request.blockchain,
+                            "timestamp": (
+                                tx.timestamp.isoformat() if tx.timestamp else None
+                            ),
+                            "tx_hash": tx.hash,
+                            "block_number": tx.block_number,
+                            "edge_type": _classify_edge(from_addr, to_addr),
+                        }
+                    )
             except Exception as exc:
                 logger.warning(f"Graph trace RPC fallback failed: {exc}")
 
@@ -419,17 +448,19 @@ async def trace_transaction(
     to_addr = seed["to_addr"]
     nodes_map[from_addr] = _make_address_node(from_addr, request.blockchain)
     nodes_map[to_addr] = _make_address_node(to_addr, request.blockchain)
-    edges_list.append({
-        "id": request.tx_hash,
-        "source": from_addr,
-        "target": to_addr,
-        "value": _safe_float(seed["value"]),
-        "chain": request.blockchain,
-        "timestamp": seed["ts"],
-        "tx_hash": request.tx_hash,
-        "block_number": seed.get("block_num"),
-        "edge_type": _classify_edge(from_addr, to_addr),
-    })
+    edges_list.append(
+        {
+            "id": request.tx_hash,
+            "source": from_addr,
+            "target": to_addr,
+            "value": _safe_float(seed["value"]),
+            "chain": request.blockchain,
+            "timestamp": seed["ts"],
+            "tx_hash": request.tx_hash,
+            "block_number": seed.get("block_num"),
+            "edge_type": _classify_edge(from_addr, to_addr),
+        }
+    )
 
     # Follow hops from the destination address using variable-length path
     if request.follow_hops > 0:
@@ -467,16 +498,18 @@ async def trace_transaction(
             if nxt and nxt not in nodes_map:
                 nodes_map[nxt] = _make_address_node(nxt, request.blockchain)
             if hop and nxt:
-                edges_list.append({
-                    "id": rec.get("tx_hash", f"{hop}-{nxt}"),
-                    "source": hop,
-                    "target": nxt,
-                    "value": _safe_float(rec.get("value")),
-                    "chain": request.blockchain,
-                    "timestamp": rec.get("ts"),
-                    "tx_hash": rec.get("tx_hash"),
-                    "block_number": rec.get("block_num"),
-                })
+                edges_list.append(
+                    {
+                        "id": rec.get("tx_hash", f"{hop}-{nxt}"),
+                        "source": hop,
+                        "target": nxt,
+                        "value": _safe_float(rec.get("value")),
+                        "chain": request.blockchain,
+                        "timestamp": rec.get("ts"),
+                        "tx_hash": rec.get("tx_hash"),
+                        "block_number": rec.get("block_num"),
+                    }
+                )
 
     await _enrich_sanctions(nodes_map, request.blockchain)
     await _enrich_entities(nodes_map, request.blockchain)
@@ -526,7 +559,8 @@ async def graph_search(
             OPTIONAL MATCH (a)-[r:SENT|RECEIVED]-()
             RETURN a, count(r) AS tx_count
             """,
-            q=q, bc=request.blockchain,
+            q=q,
+            bc=request.blockchain,
         )
         rec = await result.single()
 
@@ -545,7 +579,8 @@ async def graph_search(
                 WHERE true {bc_filter_t}
                 RETURN t, from_a.address AS from_addr, to_a.address AS to_addr
                 """,
-                q=q, bc=request.blockchain,
+                q=q,
+                bc=request.blockchain,
             )
             rec = await result.single()
 
@@ -558,16 +593,18 @@ async def graph_search(
                 nodes_map[from_a] = _make_address_node(from_a, chain)
             if to_a:
                 nodes_map[to_a] = _make_address_node(to_a, chain)
-            edges_list.append({
-                "id": q,
-                "source": from_a,
-                "target": to_a,
-                "value": _safe_float(t.get("value")),
-                "chain": chain,
-                "timestamp": t.get("timestamp"),
-                "tx_hash": q,
-                "block_number": t.get("block_number"),
-            })
+            edges_list.append(
+                {
+                    "id": q,
+                    "source": from_a,
+                    "target": to_a,
+                    "value": _safe_float(t.get("value")),
+                    "chain": chain,
+                    "timestamp": t.get("timestamp"),
+                    "tx_hash": q,
+                    "block_number": t.get("block_number"),
+                }
+            )
         else:
             # Live RPC fallback — try as address then tx
             chain = request.blockchain or "ethereum"
@@ -578,11 +615,17 @@ async def graph_search(
                     addr_info = await client.get_address_info(q)
                     if addr_info:
                         node = _make_address_node(q, chain)
-                        node.update({
-                            "balance": float(addr_info.balance) if addr_info.balance else 0.0,
-                            "tx_count": addr_info.transaction_count,
-                            "type": addr_info.type,
-                        })
+                        node.update(
+                            {
+                                "balance": (
+                                    float(addr_info.balance)
+                                    if addr_info.balance
+                                    else 0.0
+                                ),
+                                "tx_count": addr_info.transaction_count,
+                                "type": addr_info.type,
+                            }
+                        )
                         nodes_map[q] = node
                 except Exception as exc:
                     logger.warning(f"Graph search RPC address fallback failed: {exc}")
@@ -598,16 +641,22 @@ async def graph_search(
                         if ta:
                             nodes_map[ta] = _make_address_node(ta, chain)
                         if fa and ta:
-                            edges_list.append({
-                                "id": tx.hash,
-                                "source": fa,
-                                "target": ta,
-                                "value": float(tx.value) if tx.value else 0.0,
-                                "chain": chain,
-                                "timestamp": tx.timestamp.isoformat() if tx.timestamp else None,
-                                "tx_hash": tx.hash,
-                                "block_number": tx.block_number,
-                            })
+                            edges_list.append(
+                                {
+                                    "id": tx.hash,
+                                    "source": fa,
+                                    "target": ta,
+                                    "value": float(tx.value) if tx.value else 0.0,
+                                    "chain": chain,
+                                    "timestamp": (
+                                        tx.timestamp.isoformat()
+                                        if tx.timestamp
+                                        else None
+                                    ),
+                                    "tx_hash": tx.hash,
+                                    "block_number": tx.block_number,
+                                }
+                            )
                 except Exception as exc:
                     logger.warning(f"Graph search RPC tx fallback failed: {exc}")
 
@@ -665,25 +714,28 @@ async def address_summary(
                  max(COALESCE(recv_t.timestamp, sent_t.timestamp)) AS last_activity
             RETURN a, tx_count, sent_count, recv_count, first_activity, last_activity
             """,
-            addr=addr, bc=bc,
+            addr=addr,
+            bc=bc,
         )
         rec = await result.single()
 
     if rec and rec["a"]:
         props = dict(rec["a"])
-        data.update({
-            "balance": _safe_float(props.get("balance")),
-            "tx_count": rec["tx_count"],
-            "sent_count": rec["sent_count"],
-            "recv_count": rec["recv_count"],
-            "type": props.get("type", "unknown"),
-            "risk_score": _safe_float(props.get("risk_score")),
-            "labels": props.get("labels", []),
-            "first_seen": rec.get("first_activity"),
-            "last_seen": rec.get("last_activity"),
-            "sanctioned": props.get("sanctioned", False),
-            "data_source": "neo4j",
-        })
+        data.update(
+            {
+                "balance": _safe_float(props.get("balance")),
+                "tx_count": rec["tx_count"],
+                "sent_count": rec["sent_count"],
+                "recv_count": rec["recv_count"],
+                "type": props.get("type", "unknown"),
+                "risk_score": _safe_float(props.get("risk_score")),
+                "labels": props.get("labels", []),
+                "first_seen": rec.get("first_activity"),
+                "last_seen": rec.get("last_activity"),
+                "sanctioned": props.get("sanctioned", False),
+                "data_source": "neo4j",
+            }
+        )
     else:
         # Live RPC fallback
         client = get_rpc_client(bc)
@@ -691,15 +743,19 @@ async def address_summary(
             try:
                 addr_info = await client.get_address_info(addr)
                 if addr_info:
-                    data.update({
-                        "balance": float(addr_info.balance) if addr_info.balance else 0.0,
-                        "tx_count": addr_info.transaction_count,
-                        "type": addr_info.type,
-                        "risk_score": 0.0,
-                        "labels": [],
-                        "sanctioned": False,
-                        "data_source": "live_rpc",
-                    })
+                    data.update(
+                        {
+                            "balance": (
+                                float(addr_info.balance) if addr_info.balance else 0.0
+                            ),
+                            "tx_count": addr_info.transaction_count,
+                            "type": addr_info.type,
+                            "risk_score": 0.0,
+                            "labels": [],
+                            "sanctioned": False,
+                            "data_source": "live_rpc",
+                        }
+                    )
             except Exception as exc:
                 logger.warning(f"Address summary RPC fallback failed: {exc}")
 
@@ -764,14 +820,16 @@ async def cluster_addresses(
             input_addr = entry.get("input_addr", "")
             tx_hash = entry.get("tx_hash") or f"{input_addr}-{cp}"
             value = _safe_float(entry.get("tx_value"))
-            edges_list.append({
-                "id": tx_hash,
-                "source": input_addr,
-                "target": cp,
-                "value": value,
-                "chain": request.blockchain,
-                "tx_hash": tx_hash if tx_hash != f"{input_addr}-{cp}" else None,
-            })
+            edges_list.append(
+                {
+                    "id": tx_hash,
+                    "source": input_addr,
+                    "target": cp,
+                    "value": value,
+                    "chain": request.blockchain,
+                    "tx_hash": tx_hash if tx_hash != f"{input_addr}-{cp}" else None,
+                }
+            )
 
     # Also find direct transactions between input addresses
     cypher_direct = """
@@ -792,15 +850,17 @@ async def cluster_addresses(
         direct_records = await result.data()
 
     for rec in direct_records:
-        edges_list.append({
-            "id": rec["tx_hash"],
-            "source": rec["a1"],
-            "target": rec["a2"],
-            "value": _safe_float(rec.get("value")),
-            "chain": request.blockchain,
-            "timestamp": rec.get("ts"),
-            "tx_hash": rec["tx_hash"],
-        })
+        edges_list.append(
+            {
+                "id": rec["tx_hash"],
+                "source": rec["a1"],
+                "target": rec["a2"],
+                "value": _safe_float(rec.get("value")),
+                "chain": request.blockchain,
+                "timestamp": rec.get("ts"),
+                "tx_hash": rec["tx_hash"],
+            }
+        )
 
     await _enrich_sanctions(nodes_map, request.blockchain)
     await _enrich_entities(nodes_map, request.blockchain)
@@ -845,7 +905,9 @@ def _make_address_node(address: str, blockchain: str) -> Dict[str, Any]:
     }
 
 
-async def _enrich_entities(nodes_map: Dict[str, Dict[str, Any]], blockchain: str) -> None:
+async def _enrich_entities(
+    nodes_map: Dict[str, Dict[str, Any]], blockchain: str
+) -> None:
     """Best-effort: tag nodes with entity attribution labels."""
     addresses = list(nodes_map.keys())
     if not addresses:
@@ -868,7 +930,9 @@ async def _enrich_entities(nodes_map: Dict[str, Dict[str, Any]], blockchain: str
         pass  # entity DB may not be initialised yet
 
 
-async def _enrich_sanctions(nodes_map: Dict[str, Dict[str, Any]], blockchain: str) -> None:
+async def _enrich_sanctions(
+    nodes_map: Dict[str, Dict[str, Any]], blockchain: str
+) -> None:
     """Best-effort: tag nodes that appear in the sanctions database."""
     for addr, node in nodes_map.items():
         try:
@@ -898,7 +962,10 @@ _mixer_addresses: Optional[set] = None
 def _get_known_bridge_addresses() -> set:
     global _bridge_addresses
     if _bridge_addresses is None:
-        from src.analysis.protocol_registry import get_known_bridge_addresses as _reg_bridges
+        from src.analysis.protocol_registry import (
+            get_known_bridge_addresses as _reg_bridges,
+        )
+
         _bridge_addresses = _reg_bridges()
     return _bridge_addresses
 
@@ -906,7 +973,10 @@ def _get_known_bridge_addresses() -> set:
 def _get_known_mixer_addresses() -> set:
     global _mixer_addresses
     if _mixer_addresses is None:
-        from src.analysis.protocol_registry import get_known_mixer_addresses as _reg_mixers
+        from src.analysis.protocol_registry import (
+            get_known_mixer_addresses as _reg_mixers,
+        )
+
         _mixer_addresses = _reg_mixers()
     return _mixer_addresses
 
@@ -927,6 +997,7 @@ def _classify_edge(source: str, target: str) -> str:
         return "mixer"
     # DEX check via protocol registry
     from src.analysis.protocol_registry import get_known_dex_addresses
+
     dex_addrs = get_known_dex_addresses()
     if src in dex_addrs or tgt in dex_addrs:
         return "dex"

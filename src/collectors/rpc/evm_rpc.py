@@ -5,17 +5,25 @@ Uses only aiohttp — no Web3.py dependency.
 """
 
 import logging
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Union
+from datetime import datetime
+from datetime import timezone
+from typing import Any
+from typing import Dict
+from typing import List
+from typing import Optional
+from typing import Union
 
-from src.collectors.base import Transaction, Block, Address
-from src.collectors.rpc.base_rpc import BaseRPCClient, RPCError
+from src.collectors.base import Address
+from src.collectors.base import Block
+from src.collectors.base import Transaction
+from src.collectors.rpc.base_rpc import BaseRPCClient
+from src.collectors.rpc.base_rpc import RPCError
 
 logger = logging.getLogger(__name__)
 
 # Wei conversion constants
-WEI_PER_ETH = 10 ** 18
-WEI_PER_GWEI = 10 ** 9
+WEI_PER_ETH = 10**18
+WEI_PER_GWEI = 10**9
 
 # Native currency symbols per chain
 NATIVE_SYMBOL: Dict[str, str] = {
@@ -88,7 +96,9 @@ class EvmRpcClient(BaseRPCClient):
 
         status = "confirmed"
         if receipt:
-            status = "confirmed" if _hex_to_int(receipt.get("status")) == 1 else "failed"
+            status = (
+                "confirmed" if _hex_to_int(receipt.get("status")) == 1 else "failed"
+            )
         elif block_number == 0:
             status = "pending"
 
@@ -211,16 +221,16 @@ class EvmRpcClient(BaseRPCClient):
         else:
             if not str(block_id).startswith("0x"):
                 block_id = "0x" + str(block_id)
-            block_data = await self._json_rpc(
-                "eth_getBlockByHash", [block_id, False]
-            )
+            block_data = await self._json_rpc("eth_getBlockByHash", [block_id, False])
 
         if block_data is None:
             return None
 
         raw_ts = block_data.get("timestamp")
         if raw_ts is None or not isinstance(raw_ts, str) or not raw_ts.startswith("0x"):
-            logger.warning(f"[{self.blockchain}] Block missing or invalid timestamp: {raw_ts}")
+            logger.warning(
+                f"[{self.blockchain}] Block missing or invalid timestamp: {raw_ts}"
+            )
             return None
         timestamp = datetime.fromtimestamp(_hex_to_int(raw_ts), tz=timezone.utc)
 

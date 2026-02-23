@@ -11,7 +11,7 @@ license = {text = "MIT"}
 readme = "README.md"
 requires-python = ">=3.8"
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Financial and Insurance Industry",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
@@ -155,11 +155,10 @@ precision = 2
 
 [tool.bandit]
 exclude_dirs = ["tests", "migrations"]
-skips = ["B101", "B601"]
+skips = ["B101"]
 
 [tool.pylint.messages_control]
 disable = [
-    "C0330", "C0326",
     "R0903", "R0913",
     "W0613",
 ]

@@ -3,17 +3,19 @@ Jackdaw Sentry - Authentication Router
 Login, token refresh, and user management endpoints
 """
 
-from fastapi import APIRouter, HTTPException, Request, status
 import logging
 
-from src.api.auth import (
-    LoginRequest,
-    TokenResponse,
-    authenticate_user,
-    create_user_token,
-    log_access_attempt,
-    settings,
-)
+from fastapi import APIRouter
+from fastapi import HTTPException
+from fastapi import Request
+from fastapi import status
+
+from src.api.auth import LoginRequest
+from src.api.auth import TokenResponse
+from src.api.auth import authenticate_user
+from src.api.auth import create_user_token
+from src.api.auth import log_access_attempt
+from src.api.auth import settings
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +25,9 @@ router = APIRouter()
 @router.post("/login", response_model=TokenResponse)
 async def login(request: Request, login_data: LoginRequest):
     """Authenticate user and return JWT token"""
-    client_ip = request.headers.get("X-Forwarded-For", request.client.host if request.client else "unknown")
+    client_ip = request.headers.get(
+        "X-Forwarded-For", request.client.host if request.client else "unknown"
+    )
 
     user = await authenticate_user(login_data.username, login_data.password)
 

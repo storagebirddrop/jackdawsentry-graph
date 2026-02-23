@@ -4,11 +4,19 @@ Lightweight async client for Solana using JSON-RPC 2.0 via aiohttp.
 """
 
 import logging
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Union
+from datetime import datetime
+from datetime import timezone
+from typing import Any
+from typing import Dict
+from typing import List
+from typing import Optional
+from typing import Union
 
-from src.collectors.base import Transaction, Block, Address
-from src.collectors.rpc.base_rpc import BaseRPCClient, RPCError
+from src.collectors.base import Address
+from src.collectors.base import Block
+from src.collectors.base import Transaction
+from src.collectors.rpc.base_rpc import BaseRPCClient
+from src.collectors.rpc.base_rpc import RPCError
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +92,9 @@ class SolanaRpcClient(BaseRPCClient):
         if result is None:
             return None
 
-        balance_lamports = result.get("value", 0) if isinstance(result, dict) else result
+        balance_lamports = (
+            result.get("value", 0) if isinstance(result, dict) else result
+        )
 
         # Get transaction count via getSignaturesForAddress
         tx_count = 0
@@ -120,7 +130,7 @@ class SolanaRpcClient(BaseRPCClient):
             return []
 
         sigs = [item["signature"] for item in sigs_result if item.get("signature")]
-        sigs = sigs[offset: offset + limit]
+        sigs = sigs[offset : offset + limit]
 
         transactions = []
         for sig in sigs:
@@ -142,7 +152,14 @@ class SolanaRpcClient(BaseRPCClient):
         slot = int(block_id)
         result = await self._json_rpc(
             "getBlock",
-            [slot, {"encoding": "json", "maxSupportedTransactionVersion": 0, "transactionDetails": "signatures"}],
+            [
+                slot,
+                {
+                    "encoding": "json",
+                    "maxSupportedTransactionVersion": 0,
+                    "transactionDetails": "signatures",
+                },
+            ],
         )
         if result is None:
             return None

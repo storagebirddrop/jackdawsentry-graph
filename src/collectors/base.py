@@ -4,16 +4,24 @@ Abstract base class for all blockchain collectors
 """
 
 import asyncio
-import logging
-from abc import ABC, abstractmethod
-from typing import Dict, List, Optional, Any, Union
-from datetime import datetime, timedelta, timezone
-from dataclasses import dataclass
-import json
 import hashlib
+import json
+import logging
+from abc import ABC
+from abc import abstractmethod
+from dataclasses import dataclass
+from datetime import datetime
+from datetime import timedelta
+from datetime import timezone
+from typing import Any
+from typing import Dict
+from typing import List
+from typing import Optional
+from typing import Union
 
-from src.api.database import get_neo4j_session, get_redis_connection
 from src.api.config import settings
+from src.api.database import get_neo4j_session
+from src.api.database import get_redis_connection
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +29,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class Transaction:
     """Standardized transaction structure"""
+
     hash: str
     blockchain: str
     from_address: str
@@ -37,7 +46,7 @@ class Transaction:
     memo: Optional[str] = None
     contract_address: Optional[str] = None
     token_transfers: List[Dict] = None
-    
+
     def __post_init__(self):
         if self.token_transfers is None:
             self.token_transfers = []
@@ -46,6 +55,7 @@ class Transaction:
 @dataclass
 class Block:
     """Standardized block structure"""
+
     hash: str
     blockchain: str
     number: int
@@ -60,6 +70,7 @@ class Block:
 @dataclass
 class Address:
     """Standardized address structure"""
+
     address: str
     blockchain: str
     balance: Union[float, str] = 0
@@ -69,7 +80,7 @@ class Address:
     type: str = "unknown"  # eoa, contract, exchange, mixer, etc.
     risk_score: float = 0.0
     labels: List[str] = None
-    
+
     def __post_init__(self):
         if self.labels is None:
             self.labels = []
@@ -77,86 +88,88 @@ class Address:
 
 class BaseCollector(ABC):
     """Abstract base class for blockchain collectors"""
-    
+
     def __init__(self, blockchain: str, config: Dict[str, Any]):
         self.blockchain = blockchain
         self.config = config
         self.is_running = False
         self.last_block_processed = 0
-        self.collection_interval = config.get('collection_interval', 60)  # seconds
-        
+        self.collection_interval = config.get("collection_interval", 60)  # seconds
+
         # Performance metrics
         self.metrics = {
-            'transactions_collected': 0,
-            'blocks_processed': 0,
-            'errors': 0,
-            'last_collection': None,
-            'collection_rate': 0.0
+            "transactions_collected": 0,
+            "blocks_processed": 0,
+            "errors": 0,
+            "last_collection": None,
+            "collection_rate": 0.0,
         }
-    
+
     @abstractmethod
     async def connect(self) -> bool:
         """Connect to blockchain node/rpc"""
         pass
-    
+
     @abstractmethod
     async def disconnect(self):
         """Disconnect from blockchain node/rpc"""
         pass
-    
+
     @abstractmethod
     async def get_latest_block_number(self) -> int:
         """Get latest block number"""
         pass
-    
+
     @abstractmethod
     async def get_block(self, block_number: int) -> Optional[Block]:
         """Get block by number"""
         pass
-    
+
     @abstractmethod
     async def get_transaction(self, tx_hash: str) -> Optional[Transaction]:
         """Get transaction by hash"""
         pass
-    
+
     @abstractmethod
     async def get_address_balance(self, address: str) -> Union[float, str]:
         """Get address balance"""
         pass
-    
+
     @abstractmethod
-    async def get_address_transactions(self, address: str, limit: int = 100) -> List[Transaction]:
+    async def get_address_transactions(
+        self, address: str, limit: int = 100
+    ) -> List[Transaction]:
         """Get address transaction history"""
         pass
-    
+
     async def start(self):
         """Start the collector"""
         logger.info(f"Starting {self.blockchain} collector...")
-        
+
         if not await self.connect():
             logger.error(f"Failed to connect to {self.blockchain}")
             return
-        
+
         self.is_running = True
-        
+
         try:
             # Load last processed block
             await self.load_last_processed_block()
-            
+
             # Start collection loop
             await self.collection_loop()
-            
+
         except Exception as e:
             logger.error(f"Error in {self.blockchain} collector: {e}")
         finally:
             await self.stop()
-    
+
     async def stop(self):
         """Stop the collector"""
         logger.info(f"Stopping {self.blockchain} collector...")
         self.is_running = False
         await self.disconnect()
-    
+
     async def collection_loop(self):
         """Main collection loop"""
         while self.is_running:
@@ -165,80 +178,86 @@ class BaseCollector(ABC):
                 await asyncio.sleep(self.collection_interval)
             except Exception as e:
                 logger.error(f"Error in collection loop for {self.blockchain}: {e}")
-                self.metrics['errors'] += 1
+                self.metrics["errors"] += 1
                 await asyncio.sleep(10)  # Wait before retrying
-    
+
     async def collect_new_blocks(self):
         """Collect and process new blocks"""
         try:
             latest_block = await self.get_latest_block_number()
-            
+
             if latest_block <= self.last_block_processed:
                 return
-            
+
             # Process blocks in batches
-            batch_size = self.config.get('batch_size', 10)
+            batch_size = self.config.get("batch_size", 10)
             start_block = self.last_block_processed + 1
             end_block = min(latest_block, start_block + batch_size - 1)
-            
+
             for block_num in range(start_block, end_block + 1):
                 await self.process_block(block_num)
                 self.last_block_processed = block_num
-            
+
             # Save progress
             await self.save_last_processed_block()
-            
+
             # Update metrics
-            self.metrics['blocks_processed'] += (end_block - start_block + 1)
-            self.metrics['last_collection'] = datetime.now(timezone.utc)
-            
-            logger.info(f"Processed blocks {start_block}-{end_block} for {self.blockchain}")
-            
+            self.metrics["blocks_processed"] += end_block - start_block + 1
+            self.metrics["last_collection"] = datetime.now(timezone.utc)
+
+            logger.info(
+                f"Processed blocks {start_block}-{end_block} for {self.blockchain}"
+            )
+
         except Exception as e:
             logger.error(f"Error collecting blocks for {self.blockchain}: {e}")
-            self.metrics['errors'] += 1
-    
+            self.metrics["errors"] += 1
+
     async def process_block(self, block_number: int):
         """Process a single block"""
         try:
             block = await self.get_block(block_number)
             if not block:
                 return
-            
+
             # Store block in Neo4j
             await self.store_block(block)
-            
+
             # Process transactions
             for tx_hash in await self.get_block_transactions(block_number):
                 await self.process_transaction(tx_hash)
-                
+
         except Exception as e:
-            logger.error(f"Error processing block {block_number} for {self.blockchain}: {e}")
-    
+            logger.error(
+                f"Error processing block {block_number} for {self.blockchain}: {e}"
+            )
+
     async def process_transaction(self, tx_hash: str):
         """Process a single transaction"""
         try:
             tx = await self.get_transaction(tx_hash)
             if not tx:
                 return
-            
+
             # Store transaction in Neo4j
             await self.store_transaction(tx)
-            
+
             # Update address information
             await self.update_address_info(tx.from_address, tx)
             if tx.to_address:
                 await self.update_address_info(tx.to_address, tx)
-            
+
             # Check for stablecoin transfers
             await self.process_stablecoin_transfers(tx)
-            
+
             # Update metrics
-            self.metrics['transactions_collected'] += 1
-            
+            self.metrics["transactions_collected"] += 1
+
         except Exception as e:
-            logger.error(f"Error processing transaction {tx_hash} for {self.blockchain}: {e}")
-    
+            logger.error(
+                f"Error processing transaction {tx_hash} for {self.blockchain}: {e}"
+            )
+
     async def store_block(self, block: Block):
         """Store block in Neo4j"""
         query = """
@@ -252,9 +271,10 @@ class BaseCollector(ABC):
             b.size = $size,
             b.processed_at = timestamp()
         """
-        
+
         async with get_neo4j_session() as session:
-            await session.run(query, 
+            await session.run(
+                query,
                 hash=block.hash,
                 blockchain=block.blockchain,
                 number=block.number,
@@ -263,9 +283,9 @@ class BaseCollector(ABC):
                 parent_hash=block.parent_hash,
                 miner=block.miner,
                 difficulty=block.difficulty,
-                size=block.size
+                size=block.size,
             )
-    
+
     async def store_transaction(self, tx: Transaction):
         """Store transaction in Neo4j"""
         query = """
@@ -293,7 +313,7 @@ class BaseCollector(ABC):
         
         // Create or update to address if exists
         """
-        
+
         if tx.to_address:
             query += """
         MERGE (to_addr:Address {address: $to_address, blockchain: $blockchain})
@@ -323,9 +343,10 @@ class BaseCollector(ABC):
             r.fee = $fee,
             r.status = $status
             """
-        
+
         async with get_neo4j_session() as session:
-            await session.run(query,
+            await session.run(
+                query,
                 hash=tx.hash,
                 blockchain=tx.blockchain,
                 from_address=tx.from_address,
@@ -340,52 +361,52 @@ class BaseCollector(ABC):
                 status=tx.status,
                 confirmations=tx.confirmations,
                 memo=tx.memo,
-                contract_address=tx.contract_address
+                contract_address=tx.contract_address,
             )
-    
+
     async def update_address_info(self, address: str, tx: Transaction):
         """Update address information"""
         # Cache address info in Redis for performance
         cache_key = f"address:{self.blockchain}:{address}"
-        
+
         async with get_redis_connection() as redis:
             cached_info = await redis.get(cache_key)
-            
+
             if cached_info:
                 info = json.loads(cached_info)
-                info['last_seen'] = tx.timestamp.isoformat()
-                info['transaction_count'] += 1
+                info["last_seen"] = tx.timestamp.isoformat()
+                info["transaction_count"] += 1
             else:
                 balance = await self.get_address_balance(address)
                 info = {
-                    'address': address,
-                    'blockchain': self.blockchain,
-                    'balance': str(balance),
-                    'transaction_count': 1,
-                    'first_seen': tx.timestamp.isoformat(),
-                    'last_seen': tx.timestamp.isoformat(),
-                    'type': 'unknown',
-                    'risk_score': 0.0,
-                    'labels': []
+                    "address": address,
+                    "blockchain": self.blockchain,
+                    "balance": str(balance),
+                    "transaction_count": 1,
+                    "first_seen": tx.timestamp.isoformat(),
+                    "last_seen": tx.timestamp.isoformat(),
+                    "type": "unknown",
+                    "risk_score": 0.0,
+                    "labels": [],
                 }
-            
+
             await redis.setex(cache_key, 3600, json.dumps(info))  # Cache for 1 hour
-    
+
     async def process_stablecoin_transfers(self, tx: Transaction):
         """Process stablecoin transfers and create cross-chain relationships"""
         if not tx.token_transfers:
             return
-        
+
         for transfer in tx.token_transfers:
-            stablecoin_symbol = transfer.get('symbol')
+            stablecoin_symbol = transfer.get("symbol")
             if not stablecoin_symbol:
                 continue
-            
+
             # Check if this is a supported stablecoin
             supported_stablecoins = get_supported_stablecoins()
             if stablecoin_symbol not in supported_stablecoins:
                 continue
-            
+
             # Create stablecoin transfer relationship
             query = """
             MATCH (t:Transaction {hash: $tx_hash})
@@ -396,22 +417,23 @@ class BaseCollector(ABC):
                 r.to_address = $to_address,
                 r.decimals = $decimals
             """
-            
+
             async with get_neo4j_session() as session:
-                await session.run(query,
+                await session.run(
+                    query,
                     tx_hash=tx.hash,
                     symbol=stablecoin_symbol,
                     blockchain=self.blockchain,
-                    amount=transfer.get('amount'),
-                    from_address=transfer.get('from_address'),
-                    to_address=transfer.get('to_address'),
-                    decimals=transfer.get('decimals', 18)
+                    amount=transfer.get("amount"),
+                    from_address=transfer.get("from_address"),
+                    to_address=transfer.get("to_address"),
+                    decimals=transfer.get("decimals", 18),
                 )
-    
+
     async def load_last_processed_block(self):
         """Load last processed block from Redis"""
         cache_key = f"last_block:{self.blockchain}"
-        
+
         async with get_redis_connection() as redis:
             last_block = await redis.get(cache_key)
             if last_block:
@@ -419,24 +441,24 @@ class BaseCollector(ABC):
             else:
                 # Start from latest block minus 100 for safety
                 self.last_block_processed = await self.get_latest_block_number() - 100
-    
+
     async def save_last_processed_block(self):
         """Save last processed block to Redis"""
         cache_key = f"last_block:{self.blockchain}"
-        
+
         async with get_redis_connection() as redis:
             await redis.set(cache_key, self.last_block_processed)
-    
+
     async def get_metrics(self) -> Dict[str, Any]:
         """Get collector metrics"""
         return {
-            'blockchain': self.blockchain,
-            'is_running': self.is_running,
-            'last_block_processed': self.last_block_processed,
-            'collection_interval': self.collection_interval,
-            **self.metrics
+            "blockchain": self.blockchain,
+            "is_running": self.is_running,
+            "last_block_processed": self.last_block_processed,
+            "collection_interval": self.collection_interval,
+            **self.metrics,
         }
-    
+
     @abstractmethod
     async def get_block_transactions(self, block_number: int) -> List[str]:
         """Get transaction hashes for a block"""
@@ -446,8 +468,18 @@ class BaseCollector(ABC):
 def get_supported_stablecoins() -> List[str]:
     """Get list of supported stablecoins"""
     return [
-        "USDT", "USDC", "RLUSD", "USDe", "USDS", "USD1",
-        "BUSD", "A7A5", "EURC", "EURT", "BRZ", "EURS"
+        "USDT",
+        "USDC",
+        "RLUSD",
+        "USDe",
+        "USDS",
+        "USD1",
+        "BUSD",
+        "A7A5",
+        "EURC",
+        "EURT",
+        "BRZ",
+        "EURS",
     ]
 
 

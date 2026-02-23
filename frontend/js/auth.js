@@ -18,7 +18,11 @@ const Auth = (function () {
 
     /** Get stored JWT or null */
     function getToken() {
-        return localStorage.getItem(TOKEN_KEY);
+        try {
+            return localStorage.getItem(TOKEN_KEY);
+        } catch (_) {
+            return null;
+        }
     }
 
     /** Get stored user object or null */

@@ -5,14 +5,21 @@ JWT-based authentication with GDPR compliance
 
 import logging
 import uuid
-from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional
+from datetime import datetime
+from datetime import timedelta
+from datetime import timezone
+from typing import Dict
+from typing import List
+from typing import Optional
 from uuid import UUID
 
 import bcrypt
 import jwt
-from fastapi import Depends, HTTPException, status
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi import Depends
+from fastapi import HTTPException
+from fastapi import status
+from fastapi.security import HTTPAuthorizationCredentials
+from fastapi.security import HTTPBearer
 from pydantic import BaseModel
 
 from src.api.config import settings

@@ -5,12 +5,13 @@ Instantiates the correct RPC client for a given blockchain.
 
 import logging
 import threading
-from typing import Dict, Optional
+from typing import Dict
+from typing import Optional
 
 from src.api.config import get_blockchain_config
 from src.collectors.rpc.base_rpc import BaseRPCClient
-from src.collectors.rpc.evm_rpc import EvmRpcClient
 from src.collectors.rpc.bitcoin_rpc import BitcoinRpcClient
+from src.collectors.rpc.evm_rpc import EvmRpcClient
 from src.collectors.rpc.solana_rpc import SolanaRpcClient
 from src.collectors.rpc.tron_rpc import TronRpcClient
 from src.collectors.rpc.xrpl_rpc import XrplRpcClient
@@ -50,8 +51,13 @@ def get_rpc_client(blockchain: str) -> Optional[BaseRPCClient]:
         # aiohttp clients use plain HTTP/S POST — WebSocket URLs won't work.
         # Prefer the fallback HTTP URL when the primary is a WebSocket endpoint.
         if rpc_url.startswith("wss://") or rpc_url.startswith("ws://"):
-            if fallback_url and (fallback_url.startswith("http://") or fallback_url.startswith("https://")):
-                logger.debug(f"Primary URL for {blockchain} is WSS; using HTTP fallback for RPC client")
+            if fallback_url and (
+                fallback_url.startswith("http://")
+                or fallback_url.startswith("https://")
+            ):
+                logger.debug(
+                    f"Primary URL for {blockchain} is WSS; using HTTP fallback for RPC client"
+                )
                 rpc_url = fallback_url
 
         client: Optional[BaseRPCClient] = None
@@ -72,9 +78,7 @@ def get_rpc_client(blockchain: str) -> Optional[BaseRPCClient]:
         elif family == "xrpl":
             client = XrplRpcClient(rpc_url, blockchain)
         else:
-            logger.debug(
-                f"RPC family '{family}' for {blockchain} not yet implemented"
-            )
+            logger.debug(f"RPC family '{family}' for {blockchain} not yet implemented")
             return None
 
         _clients[blockchain] = client

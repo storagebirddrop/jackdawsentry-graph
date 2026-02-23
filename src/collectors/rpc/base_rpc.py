@@ -6,14 +6,22 @@ Abstract async JSON-RPC client with rate limiting, retries, and timeout handling
 import asyncio
 import logging
 import time
-from abc import ABC, abstractmethod
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Union
+from abc import ABC
+from abc import abstractmethod
+from datetime import datetime
+from datetime import timezone
+from typing import Any
+from typing import Dict
+from typing import List
+from typing import Optional
+from typing import Union
 
 import aiohttp
 
 from src.api.config import settings
-from src.collectors.base import Transaction, Block, Address
+from src.collectors.base import Address
+from src.collectors.base import Block
+from src.collectors.base import Transaction
 
 logger = logging.getLogger(__name__)
 
@@ -169,7 +177,9 @@ class BaseRPCClient(ABC):
                         )
 
                     self.metrics["requests_sent"] += 1
-                    self.metrics["last_request"] = datetime.now(timezone.utc).isoformat()
+                    self.metrics["last_request"] = datetime.now(
+                        timezone.utc
+                    ).isoformat()
                     return body.get("result")
 
             except RPCError as rpc_exc:

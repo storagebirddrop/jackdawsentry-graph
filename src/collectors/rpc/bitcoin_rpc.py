@@ -5,14 +5,22 @@ Uses only aiohttp — no python-bitcoinlib dependency.
 """
 
 import logging
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Union
+from datetime import datetime
+from datetime import timezone
+from typing import Any
+from typing import Dict
+from typing import List
+from typing import Optional
+from typing import Union
 
 import aiohttp
 
 from src.api.config import settings
-from src.collectors.base import Transaction, Block, Address
-from src.collectors.rpc.base_rpc import BaseRPCClient, RPCError
+from src.collectors.base import Address
+from src.collectors.base import Block
+from src.collectors.base import Transaction
+from src.collectors.rpc.base_rpc import BaseRPCClient
+from src.collectors.rpc.base_rpc import RPCError
 
 logger = logging.getLogger(__name__)
 
@@ -42,9 +50,9 @@ class BitcoinRpcClient(BaseRPCClient):
         super().__init__(rpc_url, blockchain, **kwargs)
         self.rpc_user = rpc_user
         self.rpc_password = rpc_password
-        self.blockstream_url = (
-            blockstream_url or settings.BLOCKSTREAM_API_URL
-        ).rstrip("/")
+        self.blockstream_url = (blockstream_url or settings.BLOCKSTREAM_API_URL).rstrip(
+            "/"
+        )
         self._use_blockstream = False
 
     # ------------------------------------------------------------------
@@ -77,9 +85,7 @@ class BitcoinRpcClient(BaseRPCClient):
         last_exc: Optional[Exception] = None
         for attempt in range(1, retries + 2):
             try:
-                async with session.post(
-                    self.rpc_url, json=payload, auth=auth
-                ) as resp:
+                async with session.post(self.rpc_url, json=payload, auth=auth) as resp:
                     if resp.status == 401:
                         raise RPCError(
                             "Authentication failed — check BITCOIN_RPC_USER/PASSWORD",
@@ -103,7 +109,9 @@ class BitcoinRpcClient(BaseRPCClient):
                             blockchain=self.blockchain,
                         )
                     self.metrics["requests_sent"] += 1
-                    self.metrics["last_request"] = datetime.now(timezone.utc).isoformat()
+                    self.metrics["last_request"] = datetime.now(
+                        timezone.utc
+                    ).isoformat()
                     return body.get("result")
             except RPCError:
                 raise
@@ -112,6 +120,7 @@ class BitcoinRpcClient(BaseRPCClient):
                 last_exc = exc
                 if attempt <= retries:
                     import asyncio
+
                     await asyncio.sleep(0.5 * (2 ** (attempt - 1)))
 
         # Fallback to Blockstream
@@ -213,9 +222,7 @@ class BitcoinRpcClient(BaseRPCClient):
             timestamp = datetime.fromtimestamp(raw["time"], tz=timezone.utc)
 
         # Sum outputs for value (Bitcoin Core returns values in BTC)
-        total_value = sum(
-            vout.get("value", 0) for vout in raw.get("vout", [])
-        )
+        total_value = sum(vout.get("value", 0) for vout in raw.get("vout", []))
 
         # Extract first input address and first output address
         from_addr = ""
@@ -280,9 +287,9 @@ class BitcoinRpcClient(BaseRPCClient):
             )
 
         # Sum outputs (Blockstream returns values in satoshis; convert to BTC)
-        total_value = sum(
-            vout.get("value", 0) for vout in data.get("vout", [])
-        ) / SATS_PER_BTC
+        total_value = (
+            sum(vout.get("value", 0) for vout in data.get("vout", [])) / SATS_PER_BTC
+        )
 
         # First input address
         from_addr = ""
@@ -352,9 +359,7 @@ class BitcoinRpcClient(BaseRPCClient):
         spent = chain_stats.get("spent_txo_sum", 0)
         balance = (funded - spent) / SATS_PER_BTC
 
-        tx_count = (
-            chain_stats.get("tx_count", 0) + mempool_stats.get("tx_count", 0)
-        )
+        tx_count = chain_stats.get("tx_count", 0) + mempool_stats.get("tx_count", 0)
 
         return Address(
             address=address,
@@ -430,19 +435,21 @@ class BitcoinRpcClient(BaseRPCClient):
 
             value_btc = vout.get("value", 0) / SATS_PER_BTC
 
-            result.append(Transaction(
-                hash=data["txid"],
-                blockchain="bitcoin",
-                from_address=primary_from,
-                to_address=to_addr,
-                value=value_btc,
-                timestamp=timestamp,
-                block_number=block_height,
-                block_hash=status_obj.get("block_hash"),
-                fee=fee_btc,
-                status="confirmed" if confirmed else "pending",
-                confirmations=confirmations,
-            ))
+            result.append(
+                Transaction(
+                    hash=data["txid"],
+                    blockchain="bitcoin",
+                    from_address=primary_from,
+                    to_address=to_addr,
+                    value=value_btc,
+                    timestamp=timestamp,
+                    block_number=block_height,
+                    block_hash=status_obj.get("block_hash"),
+                    fee=fee_btc,
+                    status="confirmed" if confirmed else "pending",
+                    confirmations=confirmations,
+                )
+            )
 
         # Fallback: if no spendable outputs, return the old single-output form
         if not result:
@@ -459,9 +466,7 @@ class BitcoinRpcClient(BaseRPCClient):
         # Resolve height → hash if needed
         if isinstance(block_id, int):
             # Blockstream returns the hash as plain text for this endpoint
-            block_hash = await self._blockstream_get_text(
-                f"/block-height/{block_id}"
-            )
+            block_hash = await self._blockstream_get_text(f"/block-height/{block_id}")
             if block_hash is None:
                 return None
             block_id = block_hash.strip()
@@ -470,9 +475,7 @@ class BitcoinRpcClient(BaseRPCClient):
         if data is None:
             return None
 
-        timestamp = datetime.fromtimestamp(
-            data.get("timestamp", 0), tz=timezone.utc
-        )
+        timestamp = datetime.fromtimestamp(data.get("timestamp", 0), tz=timezone.utc)
 
         return Block(
             hash=data.get("id", str(block_id)),
