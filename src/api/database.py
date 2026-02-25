@@ -135,6 +135,10 @@ def get_postgres_pool() -> asyncpg.Pool:
     return _postgres_pool
 
 
+# Alias for backwards compatibility
+get_db_pool = get_postgres_pool
+
+
 def get_neo4j_driver() -> AsyncGraphDatabase.driver:
     """Get Neo4j driver"""
     if _neo4j_driver is None:
