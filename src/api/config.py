@@ -217,6 +217,16 @@ class Settings(BaseSettings):
 
     # Optional block explorer API keys (for indexed tx history)
     ETHERSCAN_API_KEY: Optional[str] = None
+
+    # =============================================================================
+    # Professional Tools API Keys
+    # =============================================================================
+    CHAINALYSIS_API_KEY: Optional[str] = None
+    ELLIPTIC_API_KEY: Optional[str] = None
+    CIPHERBLADE_API_KEY: Optional[str] = None
+    ARKHAM_API_KEY: Optional[str] = None
+    # AnChain.ai — free tier available at https://aml.anchainai.com
+    ANCHAIN_API_KEY: Optional[str] = None
     BLOCKSTREAM_API_URL: str = "https://blockstream.info/api"
 
     # Cache Configuration
