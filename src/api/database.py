@@ -23,10 +23,30 @@ _postgres_pool: Optional[asyncpg.Pool] = None
 _neo4j_driver: Optional[AsyncGraphDatabase.driver] = None
 _redis_pool: Optional[redis_async.ConnectionPool] = None
 
+NEO4J_CONNECT_MAX_ATTEMPTS = 10
+NEO4J_CONNECT_RETRY_DELAY_SECONDS = 2.0
+
 # Initialization lock to prevent race conditions
 _init_lock = asyncio.Lock()
 _init_event = asyncio.Event()
 _initialized = False
+
+
+def _build_neo4j_driver():
+    """Create a fresh Neo4j driver instance."""
+    return AsyncGraphDatabase.driver(
+        settings.NEO4J_URI,
+        auth=(settings.NEO4J_USER, settings.NEO4J_PASSWORD),
+        max_connection_lifetime=3600,
+        max_connection_pool_size=50,
+    )
+
+
+async def _verify_neo4j_driver(driver) -> None:
+    """Verify the Neo4j driver can execute a simple query."""
+    async with driver.session(database=settings.NEO4J_DATABASE) as session:
+        result = await session.run("RETURN 1")
+        await result.consume()
 
 
 async def init_databases():
@@ -89,22 +109,43 @@ async def init_neo4j():
     """Initialize Neo4j driver"""
     global _neo4j_driver
 
-    try:
-        _neo4j_driver = AsyncGraphDatabase.driver(
-            settings.NEO4J_URI,
-            auth=(settings.NEO4J_USER, settings.NEO4J_PASSWORD),
-            max_connection_lifetime=3600,
-            max_connection_pool_size=50,
-        )
+    last_error: Optional[Exception] = None
+    _neo4j_driver = None
 
-        # Test connection
-        async with _neo4j_driver.session() as session:
-            await session.run("RETURN 1")
+    for attempt in range(1, NEO4J_CONNECT_MAX_ATTEMPTS + 1):
+        driver = _build_neo4j_driver()
 
-        logger.info("✅ Neo4j driver initialized")
-    except Exception as e:
-        logger.error(f"❌ Failed to initialize Neo4j: {e}")
-        raise
+        try:
+            await _verify_neo4j_driver(driver)
+            _neo4j_driver = driver
+            logger.info(
+                "✅ Neo4j driver initialized on attempt %s/%s",
+                attempt,
+                NEO4J_CONNECT_MAX_ATTEMPTS,
+            )
+            return
+        except Exception as exc:
+            last_error = exc
+            logger.warning(
+                "Neo4j connection attempt %s/%s failed: %s",
+                attempt,
+                NEO4J_CONNECT_MAX_ATTEMPTS,
+                exc,
+            )
+            try:
+                await driver.close()
+            except Exception:
+                logger.debug("Ignoring Neo4j driver close error", exc_info=True)
+
+            if attempt == NEO4J_CONNECT_MAX_ATTEMPTS:
+                break
+
+            await asyncio.sleep(NEO4J_CONNECT_RETRY_DELAY_SECONDS)
+
+    logger.error(f"❌ Failed to initialize Neo4j: {last_error}")
+    if last_error is None:
+        raise RuntimeError("Neo4j initialization failed without an exception")
+    raise last_error
 
 
 async def init_redis():
