@@ -3,6 +3,7 @@ Jackdaw Sentry - Configuration Settings
 GDPR-compliant configuration management
 """
 
+from typing import Any
 from typing import List
 from typing import Optional
 
@@ -251,6 +252,39 @@ class Settings(BaseSettings):
     # =============================================================================
 
     model_config = ConfigDict(env_file=".env", case_sensitive=True, extra="ignore")
+
+    @staticmethod
+    def _parse_bool_alias(value: Any) -> Any:
+        """Accept explicit boolean indicators for environment flags."""
+        if not isinstance(value, str):
+            return value
+
+        normalized = value.strip().lower()
+        truthy_aliases = {"1", "true", "t", "yes", "y", "on"}
+        falsy_aliases = {"0", "false", "f", "no", "n", "off"}
+
+        if normalized in truthy_aliases:
+            return True
+        if normalized in falsy_aliases:
+            return False
+        return value
+
+    @field_validator(
+        "DARK_WEB_MONITORING_ENABLED",
+        "AUTO_DELETE_EXPIRED_DATA",
+        "GDPR_CONSENT_REQUIRED",
+        "GDPR_DATA_SUBJECT_REQUESTS_ENABLED",
+        "METRICS_ENABLED",
+        "DEBUG",
+        "TESTING",
+        "TRUST_PROXY_HEADERS",
+        "RATE_LIMIT_ENABLED",
+        mode="before",
+    )
+    @classmethod
+    def normalize_bool_env_flags(cls, v):
+        """Normalize bool-like environment values before Pydantic validation."""
+        return cls._parse_bool_alias(v)
 
     @field_validator("ENCRYPTION_KEY")
     @classmethod
