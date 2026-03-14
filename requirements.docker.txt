@@ -8,7 +8,7 @@
 
 # Additional runtime deps required by the application
 pydantic-settings==2.1.0
-PyJWT==2.8.0
+PyJWT==2.12.0
 bcrypt==4.1.2
 asyncpg==0.29.0
 httpx==0.25.2
@@ -55,6 +55,6 @@ pillow>=10.0.0 # not directly required, pinned by Snyk to avoid a vulnerability
 h11>=0.16.0 # not directly required, pinned by Snyk to avoid a vulnerability
 urllib3>=2.6.3 # not directly required, pinned by Snyk to avoid a vulnerability
 protobuf>=4.25.8 # not directly required, pinned by Snyk to avoid a vulnerability
-anyio>=3.7.1,<4.0.0 # FastAPI 0.104.x requires AnyIO <4 in the Docker image
+anyio>=4.4.0 # FastAPI 0.104.x requires AnyIO <4 in the Docker image
 zipp>=3.19.1 # not directly required, pinned by Snyk to avoid a vulnerability
 requests>=2.32.2 # not directly required, pinned by Snyk to avoid a vulnerability
