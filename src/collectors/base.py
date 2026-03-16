@@ -46,6 +46,10 @@ class Transaction:
     memo: Optional[str] = None
     contract_address: Optional[str] = None
     token_transfers: List[Dict] = None
+    # CoinJoin flag: True if this transaction has been heuristically identified
+    # as a CoinJoin candidate.  Taint analysis MUST halt at CoinJoin txs and
+    # flag as AMBIGUOUS — never silently propagate through.
+    is_coinjoin: bool = False
 
     def __post_init__(self):
         if self.token_transfers is None:
@@ -344,20 +348,29 @@ class BaseCollector(ABC):
             r.status = $status
             """
 
+        # Normalise EVM addresses to lowercase for consistent lookups.
+        # Bitcoin/Solana addresses are case-sensitive — leave them as-is.
+        # A simple heuristic: EVM addresses start with "0x".
+        def _norm(addr: Optional[str]) -> Optional[str]:
+            if addr and addr.startswith("0x"):
+                return addr.lower()
+            return addr
+
         async with get_neo4j_session() as session:
             await session.run(
                 query,
                 hash=tx.hash,
                 blockchain=tx.blockchain,
-                from_address=tx.from_address,
-                to_address=tx.to_address,
-                value=tx.value,
+                from_address=_norm(tx.from_address),
+                to_address=_norm(tx.to_address),
+                # Neo4j does not accept Python Decimal — convert to float.
+                value=float(tx.value) if tx.value is not None else None,
                 timestamp=tx.timestamp,
                 block_number=tx.block_number,
                 block_hash=tx.block_hash,
-                gas_used=tx.gas_used,
-                gas_price=tx.gas_price,
-                fee=tx.fee,
+                gas_used=int(tx.gas_used) if tx.gas_used is not None else None,
+                gas_price=int(tx.gas_price) if tx.gas_price is not None else None,
+                fee=float(tx.fee) if tx.fee is not None else None,
                 status=tx.status,
                 confirmations=tx.confirmations,
                 memo=tx.memo,

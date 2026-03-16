@@ -10,7 +10,7 @@ PostgreSQL, Neo4j, and Redis — skip them with: pytest -m "not integration"
 import os
 import pytest
 from typing import Generator
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import fastapi.testclient as fastapi_testclient
 
@@ -73,6 +73,32 @@ def client():
     ):
         with TestClient(app, raise_server_exceptions=False, base_url="http://localhost") as c:
             yield c
+
+
+@pytest.fixture
+def mock_postgres_conn():
+    """Async context manager mock for get_postgres_connection().
+    
+    Use this in unit tests that need to patch DB access without a running pool.
+    The fixture returns a tuple (mock_conn, mock_cm) where:
+    - mock_conn: AsyncMock connection object with execute/fetch/fetchrow/fetchval methods
+    - mock_cm: AsyncMock context manager with __aenter__ and __aexit__ methods
+    
+    Example usage:
+        mock_conn, mock_cm = mock_postgres_conn()
+        mock_cm.__aenter__.return_value = mock_conn
+    """
+    mock_conn = AsyncMock()
+    mock_conn.execute = AsyncMock()
+    mock_conn.fetch = AsyncMock(return_value=[])
+    mock_conn.fetchrow = AsyncMock(return_value=None)
+    mock_conn.fetchval = AsyncMock(return_value=None)
+
+    mock_cm = MagicMock()
+    mock_cm.__aenter__ = AsyncMock(return_value=mock_conn)
+    mock_cm.__aexit__ = AsyncMock(return_value=False)
+
+    return mock_conn, mock_cm
 
 
 @pytest.fixture

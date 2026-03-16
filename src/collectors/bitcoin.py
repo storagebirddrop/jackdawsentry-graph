@@ -25,6 +25,69 @@ from .base import Transaction
 
 logger = logging.getLogger(__name__)
 
+# External UTXO indexers — no local Bitcoin node required for arbitrary address tracing.
+# Primary: mempool.space (esplora API). Fallback: blockstream.info (same API format).
+_MEMPOOL_SPACE_BASE = "https://mempool.space/api"
+_BLOCKSTREAM_BASE = "https://blockstream.info/api"
+
+# CoinJoin detection thresholds.
+# A transaction is flagged when ≥ this fraction of outputs share the same value.
+_COINJOIN_EQUAL_OUTPUT_THRESHOLD = 0.8
+# Minimum distinct input addresses to consider a CoinJoin candidate.
+_COINJOIN_MIN_INPUTS = 2
+
+
+def _detect_coinjoin(
+    tx_hash: str,
+    input_addresses: List[str],
+    output_values: List[float],
+) -> bool:
+    """Heuristically detect a CoinJoin transaction.
+
+    Confidence: HIGH (~0.90).  Failure mode: batch-payment processors and
+    some exchange sweeps also produce equal-denomination outputs.
+
+    A transaction is flagged when:
+    - At least ``_COINJOIN_MIN_INPUTS`` distinct input addresses, AND
+    - At least ``_COINJOIN_EQUAL_OUTPUT_THRESHOLD`` fraction of outputs
+      share the same value (equal-denomination pattern).
+
+    The caller must treat a positive result as AMBIGUOUS — never propagate
+    taint silently through a CoinJoin.
+
+    Args:
+        tx_hash: Transaction ID (for logging).
+        input_addresses: All input addresses extracted from vin.
+        output_values: All vout values in BTC.
+
+    Returns:
+        True if the transaction matches the CoinJoin heuristic.
+    """
+    if len(set(input_addresses)) < _COINJOIN_MIN_INPUTS:
+        return False
+    if not output_values:
+        return False
+
+    # Count outputs by rounded value (8 dp to absorb floating-point noise).
+    value_counts: Dict[str, int] = {}
+    for v in output_values:
+        key = f"{v:.8f}"
+        value_counts[key] = value_counts.get(key, 0) + 1
+
+    modal_count = max(value_counts.values())
+    equal_fraction = modal_count / len(output_values)
+
+    if equal_fraction >= _COINJOIN_EQUAL_OUTPUT_THRESHOLD:
+        logger.debug(
+            "_detect_coinjoin: txid=%s distinct_inputs=%d equal_output_fraction=%.2f → flagged",
+            tx_hash,
+            len(set(input_addresses)),
+            equal_fraction,
+        )
+        return True
+
+    return False
+
 
 class BitcoinCollector(BaseCollector):
     """Bitcoin blockchain collector with Lightning Network support"""
@@ -49,8 +112,16 @@ class BitcoinCollector(BaseCollector):
         try:
             import aiohttp
 
+            # aiohttp.BasicAuth raises ValueError for None credentials.
+            # Public nodes (e.g. publicnode.com) require no auth; handle gracefully.
+            auth = None
+            if self.rpc_user or self.rpc_password:
+                auth = aiohttp.BasicAuth(
+                    self.rpc_user or "", self.rpc_password or ""
+                )
+
             self.rpc_session = aiohttp.ClientSession(
-                auth=aiohttp.BasicAuth(self.rpc_user, self.rpc_password),
+                auth=auth,
                 timeout=aiohttp.ClientTimeout(total=30),
             )
 
@@ -161,6 +232,8 @@ class BitcoinCollector(BaseCollector):
             from_address = None
             to_address = None
             value = 0
+            # Collect all distinct input addresses for CoinJoin detection.
+            input_addresses: list = []
 
             # Process inputs
             if "vin" in tx_data:
@@ -184,16 +257,34 @@ class BitcoinCollector(BaseCollector):
                                 addresses = prev_out["scriptPubKey"]["addresses"]
                                 if addresses:
                                     from_address = addresses[0]
+                                    input_addresses.append(addresses[0])
 
-            # Process outputs
+            # Process outputs — collect values for CoinJoin detection.
+            output_values: list = []
             if "vout" in tx_data:
                 for vout in tx_data["vout"]:
+                    output_values.append(vout.get("value", 0))
                     if "scriptPubKey" in vout and "addresses" in vout["scriptPubKey"]:
                         addresses = vout["scriptPubKey"]["addresses"]
                         if addresses:
                             if not to_address:
                                 to_address = addresses[0]
                             value += vout.get("value", 0)
+
+            # CoinJoin heuristic: equal-denomination outputs + multiple distinct
+            # input addresses.  Confidence HIGH (0.90+) but not deterministic.
+            # Failure mode: some non-CoinJoin batch payments also have equal outputs.
+            is_coinjoin = _detect_coinjoin(
+                tx_hash=tx_data["txid"],
+                input_addresses=input_addresses,
+                output_values=output_values,
+            )
+            if is_coinjoin:
+                logger.warning(
+                    "CoinJoin candidate detected: txid=%s — taint analysis "
+                    "will halt at this transaction (AMBIGUOUS).",
+                    tx_data["txid"],
+                )
 
             # Calculate fee
             fee = total_input - value if from_address != "coinbase" else 0
@@ -210,6 +301,7 @@ class BitcoinCollector(BaseCollector):
                 fee=fee,
                 status="confirmed" if block_number else "mempool",
                 confirmations=tx_data.get("confirmations", 0),
+                is_coinjoin=is_coinjoin,
             )
 
         except Exception as e:
@@ -217,12 +309,53 @@ class BitcoinCollector(BaseCollector):
 
         return None
 
+    async def _fetch_utxos_from_indexer(self, address: str) -> Optional[List[Dict]]:
+        """Fetch UTXOs from mempool.space (primary) with blockstream.info fallback.
+
+        Uses public esplora-compatible REST APIs so arbitrary addresses can be
+        traced without a locally synced Bitcoin node or watched-wallet setup.
+
+        Args:
+            address: Bitcoin address (any script type).
+
+        Returns:
+            List of UTXO dicts with keys ``txid``, ``vout``, ``value`` (satoshis),
+            and ``status`` sub-dict, or ``None`` if both indexers fail.
+        """
+        import aiohttp
+
+        endpoints = [
+            f"{_MEMPOOL_SPACE_BASE}/address/{address}/utxo",
+            f"{_BLOCKSTREAM_BASE}/address/{address}/utxo",
+        ]
+        timeout = aiohttp.ClientTimeout(total=15)
+
+        for url in endpoints:
+            try:
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    async with session.get(url) as resp:
+                        if resp.status == 200:
+                            return await resp.json()
+                        logger.debug("UTXO indexer %s returned %s", url, resp.status)
+            except Exception as exc:
+                logger.debug("UTXO indexer %s unreachable: %s", url, exc)
+
+        logger.error("All UTXO indexers failed for address %s", address)
+        return None
+
     async def get_address_balance(self, address: str) -> float:
-        """Get address balance"""
+        """Get address balance via external UTXO indexer (mempool.space / blockstream).
+
+        Returns confirmed + unconfirmed UTXO sum in BTC.
+        Falls back to 0.0 if both indexers are unreachable.
+        """
         try:
-            unspent = await self.rpc_call("listunspent", [0, 9999999, [address]])
-            balance = sum(utxo.get("amount", 0) for utxo in unspent or [])
-            return balance
+            utxos = await self._fetch_utxos_from_indexer(address)
+            if not utxos:
+                return 0.0
+            # value field is in satoshis
+            balance_sat = sum(utxo.get("value", 0) for utxo in utxos)
+            return balance_sat / 1e8
         except Exception as e:
             logger.error(f"Error getting Bitcoin address balance for {address}: {e}")
             return 0.0
@@ -230,15 +363,26 @@ class BitcoinCollector(BaseCollector):
     async def get_address_transactions(
         self, address: str, limit: int = 100
     ) -> List[Transaction]:
-        """Get address transaction history"""
+        """Get address transaction history via external UTXO indexer.
+
+        Retrieves all UTXOs for the address via mempool.space (primary) or
+        blockstream.info (fallback), then fetches full transaction data for each.
+        This supports arbitrary Bitcoin addresses — not just locally watched wallets.
+
+        Args:
+            address: Bitcoin address to query.
+            limit: Maximum number of transactions to return.
+
+        Returns:
+            List of Transaction objects.
+        """
         try:
-            # Use listunspent to get transaction history
-            unspent = await self.rpc_call("listunspent", [0, 9999999, [address]])
-            if not unspent:
+            utxos = await self._fetch_utxos_from_indexer(address)
+            if not utxos:
                 return []
 
             transactions = []
-            for utxo in unspent[:limit]:
+            for utxo in utxos[:limit]:
                 tx = await self.get_transaction(utxo["txid"])
                 if tx:
                     transactions.append(tx)
@@ -365,12 +509,12 @@ class BitcoinCollector(BaseCollector):
             )
 
     async def track_utxos(self, address: str):
-        """Track UTXOs for an address"""
+        """Track UTXOs for an address via external indexer and cache in Redis."""
         if not self.utxo_tracking:
             return
 
         try:
-            unspent = await self.rpc_call("listunspent", [0, 9999999, [address]])
+            unspent = await self._fetch_utxos_from_indexer(address)
             if not unspent:
                 return
 
@@ -383,7 +527,9 @@ class BitcoinCollector(BaseCollector):
                 utxo_data = {
                     "address": address,
                     "utxos": unspent,
-                    "total_value": sum(utxo.get("amount", 0) for utxo in unspent),
+                    # value is in satoshis from the indexer API
+                    "total_value_sat": sum(utxo.get("value", 0) for utxo in unspent),
+                    "total_value_btc": sum(utxo.get("value", 0) for utxo in unspent) / 1e8,
                     "updated_at": datetime.now(timezone.utc).isoformat(),
                 }
                 await redis.setex(

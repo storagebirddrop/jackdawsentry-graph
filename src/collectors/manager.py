@@ -39,6 +39,19 @@ class CollectorManager:
             "last_update": None,
         }
 
+    @staticmethod
+    def _http_url(primary: str, fallback: str) -> str:
+        """Return the first HTTP(S) URL from primary/fallback pair.
+
+        Web3.HTTPProvider cannot handle wss:// URLs.  If the primary is a
+        WebSocket URL, fall back to the HTTP endpoint.
+        """
+        if primary and not primary.startswith("wss://"):
+            return primary
+        if fallback and not fallback.startswith("wss://"):
+            return fallback
+        return primary  # no HTTP option; caller handles the connection error
+
     async def initialize(self):
         """Initialize all collectors"""
         logger.info("Initializing blockchain collectors...")
@@ -61,7 +74,7 @@ class CollectorManager:
         # Initialize Ethereum collector
         if settings.ETHEREUM_RPC_URL:
             ethereum_config = {
-                "rpc_url": settings.ETHEREUM_RPC_URL,
+                "rpc_url": self._http_url(settings.ETHEREUM_RPC_URL, settings.ETHEREUM_RPC_FALLBACK),
                 "network": settings.ETHEREUM_NETWORK,
                 "erc20_tracking": True,
                 "contract_tracking": True,
@@ -87,7 +100,7 @@ class CollectorManager:
         # Initialize Polygon collector
         if settings.POLYGON_RPC_URL:
             polygon_config = {
-                "rpc_url": settings.POLYGON_RPC_URL,
+                "rpc_url": self._http_url(settings.POLYGON_RPC_URL, settings.POLYGON_RPC_FALLBACK),
                 "network": settings.POLYGON_NETWORK,
                 "erc20_tracking": True,
                 "contract_tracking": True,
@@ -100,7 +113,7 @@ class CollectorManager:
         # Initialize Arbitrum collector
         if settings.ARBITRUM_RPC_URL:
             arbitrum_config = {
-                "rpc_url": settings.ARBITRUM_RPC_URL,
+                "rpc_url": self._http_url(settings.ARBITRUM_RPC_URL, settings.ARBITRUM_RPC_FALLBACK),
                 "network": settings.ARBITRUM_NETWORK,
                 "erc20_tracking": True,
                 "contract_tracking": True,
@@ -141,7 +154,7 @@ class CollectorManager:
         # Initialize Solana collector
         if settings.SOLANA_RPC_URL:
             solana_config = {
-                "rpc_url": settings.SOLANA_RPC_URL,
+                "rpc_url": self._http_url(settings.SOLANA_RPC_URL, settings.SOLANA_RPC_FALLBACK),
                 "network": settings.SOLANA_NETWORK,
                 "collection_interval": 30,
                 "batch_size": 50,

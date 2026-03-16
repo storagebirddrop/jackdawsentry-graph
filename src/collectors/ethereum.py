@@ -20,7 +20,16 @@ try:
     from eth_utils import from_wei
     from eth_utils import to_checksum_address
     from web3 import Web3
-    from web3.middleware import geth_poa_middleware
+
+    # geth_poa_middleware was removed in web3.py v7 (renamed / restructured).
+    # Import it conditionally so we stay compatible with both v6 and v7.
+    try:
+        from web3.middleware import geth_poa_middleware  # web3 < 7
+    except ImportError:
+        try:
+            from web3.middleware import ExtraDataToPOAMiddleware as geth_poa_middleware  # web3 >= 7
+        except ImportError:
+            geth_poa_middleware = None  # not needed for mainnet
 
     WEB3_AVAILABLE = True
 except ImportError:
@@ -125,8 +134,9 @@ class EthereumCollector(BaseCollector):
             # Configure Web3
             self.w3 = Web3(Web3.HTTPProvider(self.rpc_url))
 
-            # Add POA middleware for networks like BSC, Polygon
-            if self.blockchain in ["bsc", "polygon", "arbitrum", "base", "avalanche"]:
+            # Add POA middleware for networks like BSC, Polygon (only if available).
+            if self.blockchain in ["bsc", "polygon", "arbitrum", "base", "avalanche"] \
+                    and geth_poa_middleware is not None:
                 self.w3.middleware_onion.inject(geth_poa_middleware, layer=0)
 
             # Test connection
@@ -240,7 +250,8 @@ class EthereumCollector(BaseCollector):
                 gas_price=gas_price,
                 fee=fee,
                 status="confirmed" if receipt and receipt["status"] == 1 else "failed",
-                confirmations=receipt["confirmations"] if receipt else 0,
+                # web3.py v7 no longer includes "confirmations" in receipts.
+                confirmations=receipt.get("confirmations", 0) if receipt else 0,
                 contract_address=(
                     receipt["contractAddress"].hex()
                     if receipt and receipt["contractAddress"]
@@ -323,7 +334,12 @@ class EthereumCollector(BaseCollector):
             if not block:
                 return []
 
-            return [tx["hash"].hex() for tx in block["transactions"]]
+            # web3.py v7: transactions are HexBytes when full_transactions=False;
+            # v6: they are dicts with a "hash" key.  Handle both.
+            return [
+                tx.hex() if isinstance(tx, bytes) else tx["hash"].hex()
+                for tx in block["transactions"]
+            ]
 
         except Exception as e:
             logger.error(

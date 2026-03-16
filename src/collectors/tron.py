@@ -198,10 +198,24 @@ class TronCollector(BaseCollector):
                     contract_address = trigger.get("contract_address", "")
                     parameter = trigger.get("data", "")
 
-                    # Parse TRC20 transfer function call
-                    if parameter.startswith("a9059cbb"):  # transfer function signature
-                        # This is a simplified parsing - would need more complex logic
-                        pass
+                    # Parse TRC20 transfer(address,uint256) ABI call.
+                    # Selector: a9059cbb (4 bytes / 8 hex chars).
+                    # Layout after selector: 32-byte padded recipient + 32-byte amount.
+                    # Total minimum data length: 8 + 64 + 64 = 136 hex chars.
+                    if parameter.startswith("a9059cbb") and len(parameter) >= 136:
+                        # Recipient: last 20 bytes of the first 32-byte word (40 hex chars).
+                        # Prepend Tron network prefix 41 to get a full Tron hex address.
+                        to_hex_raw = parameter[8 + 24 : 8 + 64]  # chars 32-71
+                        to_address_hex = "41" + to_hex_raw
+                        to_address = self.hex_to_base58(to_address_hex)
+                        # Amount: second 32-byte word as big-endian integer (sun units).
+                        amount_hex = parameter[72:136]
+                        amount_raw = int(amount_hex, 16)
+                        
+                        # For TRC20 tokens, check if we know the decimals to normalize value
+                        # USDT/USDC on Tron use 6 decimals
+                        decimals = 6  # Default for most Tron stablecoins
+                        value = amount_raw / (10 ** decimals)  # Normalize to token units
 
             # Get block info
             ref_block = raw_data.get("ref_block_hash", "")
@@ -316,7 +330,12 @@ class TronCollector(BaseCollector):
         transfers = []
 
         try:
-            contract_data = tx_data.get("raw_data", {}).get("contract", [])
+            raw_data = tx_data.get("raw_data", {})
+            contract_data = raw_data.get("contract", [])
+            
+            # Extract sender address from transaction owner_address
+            from_address_hex = raw_data.get("owner_address", "")
+            from_address = self.hex_to_base58(from_address_hex) if from_address_hex else ""
 
             for contract in contract_data:
                 if contract.get("type") == "TriggerSmartContract":
@@ -331,17 +350,23 @@ class TronCollector(BaseCollector):
                             stablecoin_symbol = symbol
                             break
 
-                    if stablecoin_symbol and parameter.startswith("a9059cbb"):
-                        # Parse transfer parameters (simplified)
-                        # Would need proper ABI decoding here
+                    if stablecoin_symbol and parameter.startswith("a9059cbb") and len(parameter) >= 136:
+                        # Decode transfer(address,uint256) ABI call.
+                        # Recipient: last 20 bytes of first 32-byte word; prepend 41 for Tron.
+                        to_hex_raw = parameter[8 + 24 : 8 + 64]
+                        to_addr_b58 = self.hex_to_base58("41" + to_hex_raw)
+                        amount_raw = int(parameter[72:136], 16)
+                        # Determine decimals: USDT/USDC on Tron use 6; default to 6.
+                        decimals = 6
                         transfers.append(
                             {
                                 "symbol": stablecoin_symbol,
                                 "contract_address": contract_address,
-                                "from_address": "",  # Would parse from parameter
-                                "to_address": "",  # Would parse from parameter
-                                "amount": 0,  # Would parse from parameter
-                                "decimals": 6,  # USDT on Tron uses 6 decimals
+                                "from_address": from_address,
+                                "to_address": to_addr_b58,
+                                "amount": amount_raw,
+                                "amount_normalized": amount_raw / (10 ** decimals),
+                                "decimals": decimals,
                             }
                         )
 
