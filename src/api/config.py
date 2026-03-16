@@ -230,6 +230,12 @@ class Settings(BaseSettings):
     ANCHAIN_API_KEY: Optional[str] = None
     BLOCKSTREAM_API_URL: str = "https://blockstream.info/api"
 
+    # Dune Analytics — optional, address label sync (free tier at dune.com)
+    DUNE_API_KEY: Optional[str] = None
+
+    # Chainabuse — community abuse reports (free API key at chainabuse.com)
+    CHAINABUSE_API_KEY: Optional[str] = None
+
     # Cache Configuration
     CACHE_TTL_SECONDS: int = 300
     CACHE_MAX_SIZE: int = 1000
