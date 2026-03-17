@@ -932,6 +932,192 @@ async def cluster_addresses(
 
 
 # =============================================================================
+# Bridge expansion (Phase 8)
+# =============================================================================
+
+
+class ExpandBridgeRequest(BaseModel):
+    """Request to follow a bridge hop from source chain to destination chain."""
+
+    source_tx_hash: str
+    source_blockchain: str
+    bridge_protocol: Optional[str] = None  # auto-detected if omitted
+    to_address: Optional[str] = None  # contract address for protocol detection
+    branch_id: Optional[str] = None  # if None, a new UUID branch is created
+    insertion_depth: int = 1
+    parent_node_id: Optional[str] = None
+
+
+@router.post("/expand-bridge", response_model=ExpansionResponse)
+async def expand_bridge(
+    request: ExpandBridgeRequest,
+    current_user: User = Depends(check_permissions([PERMISSIONS["read_blockchain"]])),
+):
+    """Follow a bridge hop from source chain to destination chain.
+
+    Looks up the ``bridge_correlations`` table for a stored correlation.
+    If none is found, triggers ``BridgeTracer.detect_bridge_hop()`` to query
+    the relevant bridge API in real time.
+
+    Returns an ``ExpansionResponse`` containing a ``BridgeNode`` and, when
+    the egress has been confirmed, a destination-chain ``AddressNode``.
+    Both nodes carry ``branch_id``, ``depth``, and ``parent_id`` for
+    correct frontend graph insertion.
+    """
+    from src.tracing.bridge_tracer import BridgeCorrelation, BridgeTracer
+
+    tracer = BridgeTracer()
+    branch_id = request.branch_id or str(uuid4())
+    parent_node_id = (
+        request.parent_node_id
+        or f"{request.source_blockchain}:{request.source_tx_hash}"
+    )
+    depth = request.insertion_depth
+
+    # 1. Try stored correlation first (fast path)
+    correlation = await tracer.lookup_correlation(
+        request.source_blockchain, request.source_tx_hash
+    )
+
+    # 2. Fall back to live API detection
+    if correlation is None:
+        correlation = await tracer.detect_bridge_hop(
+            tx_hash=request.source_tx_hash,
+            blockchain=request.source_blockchain,
+            to_address=request.to_address,
+        )
+        if correlation is not None:
+            await tracer.store_correlation(correlation)
+
+    # 3. If still nothing, return a generic pending node
+    if correlation is None:
+        protocol = request.bridge_protocol or "unknown"
+        bridge_node_id = f"bridge:{protocol}:{request.source_tx_hash}"
+        bridge_node = {
+            "node_id": bridge_node_id,
+            "node_type": "bridge",
+            "bridge_protocol": protocol,
+            "source_chain": request.source_blockchain,
+            "source_tx_id": f"{request.source_blockchain}:tx:{request.source_tx_hash}",
+            "status": "pending",
+            "depth": depth,
+            "parent_id": parent_node_id,
+            "branch_id": branch_id,
+            "path_id": str(uuid4()),
+        }
+        return ExpansionResponse(
+            operation_id=str(uuid4()),
+            operation_type="expand_bridge",
+            parent_node_id=parent_node_id,
+            branch_id=branch_id,
+            insertion_depth=depth,
+            new_nodes=[bridge_node],
+            new_edges=[],
+            expansion_metadata={"status": "pending", "note": "Bridge correlation not yet resolved"},
+            timestamp=datetime.now(timezone.utc),
+        )
+
+    # 4. Build the BridgeNode from the stored/fetched correlation
+    bridge_node_id = f"bridge:{correlation.protocol}:{request.source_tx_hash}"
+    path_id = str(uuid4())
+    bridge_node = {
+        "node_id": bridge_node_id,
+        "node_type": "bridge",
+        "bridge_protocol": correlation.protocol,
+        "bridge_mechanism": correlation.mechanism,
+        "source_chain": correlation.source_chain,
+        "destination_chain": correlation.destination_chain,
+        "source_tx_id": f"{correlation.source_chain}:tx:{correlation.source_tx_hash}",
+        "destination_tx_id": (
+            f"{correlation.destination_chain}:tx:{correlation.destination_tx_hash}"
+            if correlation.destination_tx_hash and correlation.destination_chain
+            else None
+        ),
+        "source_asset": correlation.source_asset,
+        "destination_asset": correlation.destination_asset,
+        "source_amount": correlation.source_amount,
+        "destination_amount": correlation.destination_amount,
+        "time_delta_seconds": correlation.time_delta_seconds,
+        "status": correlation.status,
+        "correlation_confidence": correlation.correlation_confidence,
+        "depth": depth,
+        "parent_id": parent_node_id,
+        "branch_id": branch_id,
+        "path_id": path_id,
+    }
+
+    new_nodes = [bridge_node]
+    new_edges = [
+        {
+            "edge_id": f"bridge_ingress:{request.source_tx_hash}",
+            "edge_type": "bridge_ingress",
+            "source_node_id": parent_node_id,
+            "target_node_id": bridge_node_id,
+            "asset_symbol": correlation.source_asset,
+            "amount_native": correlation.source_amount,
+            "fiat_value_at_transfer": correlation.source_fiat_value,
+            "depth": depth,
+            "branch_id": branch_id,
+        }
+    ]
+
+    # 5. If egress is confirmed, add the destination address node
+    if correlation.destination_address and correlation.destination_chain:
+        dest_node_id = f"{correlation.destination_chain}:{correlation.destination_address}"
+        dest_node = {
+            "node_id": dest_node_id,
+            "node_type": "address",
+            "address": correlation.destination_address,
+            "blockchain": correlation.destination_chain,
+            "depth": depth + 1,
+            "parent_id": bridge_node_id,
+            "branch_id": branch_id,
+            "path_id": path_id,
+        }
+        new_nodes.append(dest_node)
+        new_edges.append(
+            {
+                "edge_id": (
+                    f"bridge_egress:"
+                    f"{correlation.destination_tx_hash or request.source_tx_hash}"
+                ),
+                "edge_type": "bridge_egress",
+                "source_node_id": bridge_node_id,
+                "target_node_id": dest_node_id,
+                "asset_symbol": correlation.destination_asset,
+                "amount_native": correlation.destination_amount,
+                "fiat_value_at_transfer": correlation.destination_fiat_value,
+                "depth": depth + 1,
+                "branch_id": branch_id,
+            }
+        )
+
+    return ExpansionResponse(
+        operation_id=str(uuid4()),
+        operation_type="expand_bridge",
+        parent_node_id=parent_node_id,
+        branch_id=branch_id,
+        insertion_depth=depth,
+        new_nodes=new_nodes,
+        new_edges=new_edges,
+        expansion_metadata={
+            "protocol": correlation.protocol,
+            "mechanism": correlation.mechanism,
+            "status": correlation.status,
+            "confidence": correlation.correlation_confidence,
+            "has_destination": correlation.destination_address is not None,
+        },
+        asset_context={
+            "source_asset": correlation.source_asset,
+            "destination_asset": correlation.destination_asset,
+            "source_amount": correlation.source_amount,
+            "destination_amount": correlation.destination_amount,
+        },
+        timestamp=datetime.now(timezone.utc),
+    )
+
+
+# =============================================================================
 # Helpers
 # =============================================================================
 
