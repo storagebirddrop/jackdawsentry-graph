@@ -19,14 +19,18 @@ from datetime import datetime
 from datetime import timezone
 from typing import Any
 from typing import Dict
+from typing import List
 from typing import Optional
 
+from src.trace_compiler.chains.bitcoin import UTXOChainCompiler
+from src.trace_compiler.chains.evm import EVMChainCompiler
 from src.trace_compiler.lineage import new_operation_id
 from src.trace_compiler.models import AssetContext
 from src.trace_compiler.models import BridgeHopStatusResponse
 from src.trace_compiler.models import ChainContext
 from src.trace_compiler.models import ExpandRequest
 from src.trace_compiler.models import ExpansionResponseV2
+from src.trace_compiler.models import InvestigationEdge
 from src.trace_compiler.models import InvestigationNode
 from src.trace_compiler.models import LayoutHints
 from src.trace_compiler.models import PaginationMeta
@@ -56,6 +60,16 @@ class TraceCompiler:
         self._neo4j = neo4j_driver
         self._pg = postgres_pool
         self._redis = redis_client
+
+        # Chain compiler registry: keyed by chain name.
+        _evm = EVMChainCompiler(postgres_pool, neo4j_driver, redis_client)
+        _btc = UTXOChainCompiler(postgres_pool, neo4j_driver, redis_client)
+        self._chain_compilers: Dict[str, Any] = {
+            chain: _evm for chain in _evm.supported_chains
+        }
+        self._chain_compilers.update(
+            {chain: _btc for chain in _btc.supported_chains}
+        )
 
     async def create_session(
         self, request: SessionCreateRequest
@@ -128,18 +142,89 @@ class TraceCompiler:
         Returns:
             ExpansionResponseV2 with lineage-tagged nodes and edges.
         """
-        # TODO Phase 4: dispatch to chain-specific compiler based on seed chain.
         from src.trace_compiler.lineage import branch_id as mk_branch
-        from src.trace_compiler.lineage import new_operation_id
 
-        chain = request.seed_node_id.split(":")[0] if ":" in request.seed_node_id else "unknown"
+        # Derive chain from the canonical node_id format: "{chain}:{type}:{id}".
+        parts = request.seed_node_id.split(":", 2)
+        chain = parts[0] if parts else "unknown"
+        node_type = parts[1] if len(parts) > 1 else "address"
+        identifier = parts[2] if len(parts) > 2 else request.seed_node_id
+
         _branch = mk_branch(session_id, request.seed_node_id, 0)
 
-        logger.debug(
-            "TraceCompiler.expand stub: session=%s op=%s seed=%s",
-            session_id,
-            request.operation_type,
-            request.seed_node_id,
+        added_nodes: List[InvestigationNode] = []
+        added_edges: List[InvestigationEdge] = []
+
+        compiler = self._chain_compilers.get(chain)
+        if compiler is not None and node_type == "address":
+            try:
+                op = request.operation_type
+                if op == "expand_next":
+                    added_nodes, added_edges = await compiler.expand_next(
+                        session_id=session_id,
+                        branch_id=_branch,
+                        path_sequence=0,
+                        depth=0,
+                        seed_address=identifier,
+                        chain=chain,
+                        options=request.options,
+                    )
+                elif op in ("expand_prev", "expand_previous"):
+                    added_nodes, added_edges = await compiler.expand_prev(
+                        session_id=session_id,
+                        branch_id=_branch,
+                        path_sequence=0,
+                        depth=0,
+                        seed_address=identifier,
+                        chain=chain,
+                        options=request.options,
+                    )
+                elif op == "expand_neighbors":
+                    fwd_n, fwd_e = await compiler.expand_next(
+                        session_id=session_id,
+                        branch_id=_branch,
+                        path_sequence=0,
+                        depth=0,
+                        seed_address=identifier,
+                        chain=chain,
+                        options=request.options,
+                    )
+                    bwd_n, bwd_e = await compiler.expand_prev(
+                        session_id=session_id,
+                        branch_id=_branch,
+                        path_sequence=1,
+                        depth=0,
+                        seed_address=identifier,
+                        chain=chain,
+                        options=request.options,
+                    )
+                    # Deduplicate nodes by node_id.
+                    seen = {n.node_id for n in fwd_n}
+                    added_nodes = fwd_n + [n for n in bwd_n if n.node_id not in seen]
+                    added_edges = fwd_e + bwd_e
+                else:
+                    logger.debug(
+                        "TraceCompiler.expand: unhandled op=%s (no chain compiler for it)",
+                        op,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "TraceCompiler.expand chain compiler failed (chain=%s op=%s): %s",
+                    chain,
+                    request.operation_type,
+                    exc,
+                )
+        else:
+            logger.debug(
+                "TraceCompiler.expand: no compiler for chain=%s node_type=%s",
+                chain,
+                node_type,
+            )
+
+        has_more = len(added_nodes) >= request.options.max_results
+        unique_chains = list({n.chain for n in added_nodes} | {chain})
+        unique_assets = list(
+            {e.asset_symbol for e in added_edges if e.asset_symbol}
         )
 
         return ExpansionResponseV2(
@@ -150,19 +235,26 @@ class TraceCompiler:
             seed_lineage_id=request.seed_lineage_id,
             branch_id=_branch,
             expansion_depth=request.options.depth,
-            added_nodes=[],
-            added_edges=[],
-            has_more=False,
+            added_nodes=added_nodes,
+            added_edges=added_edges,
+            has_more=has_more,
             pagination=PaginationMeta(
                 page_size=request.options.page_size,
                 max_results=request.options.max_results,
+                has_more=has_more,
             ),
-            layout_hints=LayoutHints(),
+            layout_hints=LayoutHints(
+                suggested_layout="layered",
+                anchor_node_ids=[request.seed_node_id],
+                new_branch_root_id=added_nodes[0].node_id if added_nodes else None,
+            ),
             chain_context=ChainContext(
                 primary_chain=chain,
-                chains_present=[chain],
+                chains_present=unique_chains,
             ),
-            asset_context=AssetContext(),
+            asset_context=AssetContext(
+                assets_present=unique_assets,
+            ),
             timestamp=datetime.now(timezone.utc),
         )
 
