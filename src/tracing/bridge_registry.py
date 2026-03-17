@@ -358,6 +358,11 @@ def get_all_contract_addresses() -> Dict[str, List[str]]:
     return merged
 
 
+def detect_protocol_by_id(protocol_id: str) -> Optional[BridgeProtocol]:
+    """Return the BridgeProtocol entry for a given protocol_id, or None."""
+    return BRIDGE_REGISTRY.get(protocol_id)
+
+
 def detect_protocol_by_contract(
     chain: str, contract_address: str
 ) -> Optional[BridgeProtocol]:
