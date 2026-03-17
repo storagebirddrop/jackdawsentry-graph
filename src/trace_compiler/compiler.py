@@ -1,3 +1,6 @@
+# Copyright (c) 2024 DAWGUS. All rights reserved.
+# This file is proprietary and confidential. Unauthorized use is prohibited.
+
 """
 TraceCompiler — orchestrates chain-specific compilers to produce
 ``ExpansionResponse v2`` payloads from the raw event store.
@@ -93,9 +96,12 @@ class TraceCompiler:
     async def create_session(
         self, request: SessionCreateRequest
     ) -> SessionCreateResponse:
-        """Create a new investigation session and return the root node.
+        """Create a new investigation session and persist it to PostgreSQL.
 
-        Phase 3 stub: generates a session ID and a placeholder root node.
+        Generates a stable session_id, builds the seed root node, and writes
+        a row to ``graph_sessions`` so the session survives a browser refresh.
+        Persistence failures are swallowed — the session is still returned to
+        the caller.
 
         Args:
             request: Session creation parameters (seed address, chain, optional case_id).
@@ -103,8 +109,6 @@ class TraceCompiler:
         Returns:
             SessionCreateResponse with session_id and root InvestigationNode.
         """
-        # TODO Phase 4: persist session to Neo4j InvestigationAnnotation, resolve
-        # seed address into a full InvestigationNode from the canonical graph.
         import uuid
         from src.trace_compiler.lineage import branch_id as mk_branch
         from src.trace_compiler.lineage import lineage_id as mk_lineage
@@ -118,6 +122,9 @@ class TraceCompiler:
         _path = mk_path(_branch, 0)
         _lineage = mk_lineage(session_id, _branch, _path, 0)
 
+        label = request.seed_address
+        display_label = label[:12] + "\u2026" if len(label) > 12 else label
+
         root_node = InvestigationNode(
             node_id=_node_id,
             lineage_id=_lineage,
@@ -125,7 +132,7 @@ class TraceCompiler:
             branch_id=_branch,
             path_id=_path,
             depth=0,
-            display_label=request.seed_address[:12] + "…",
+            display_label=display_label,
             chain=request.seed_chain,
             expandable_directions=["prev", "next", "neighbors"],
             address_data=AddressNodeData(
@@ -134,10 +141,35 @@ class TraceCompiler:
             ),
         )
 
+        created_at = datetime.now(timezone.utc)
+
+        # Persist session to PostgreSQL so it survives browser refresh.
+        if self._pg is not None:
+            try:
+                async with self._pg.acquire() as conn:
+                    await conn.execute(
+                        """
+                        INSERT INTO graph_sessions
+                            (session_id, seed_address, seed_chain, case_id, created_at, updated_at)
+                        VALUES ($1, $2, $3, $4, $5, $5)
+                        ON CONFLICT (session_id) DO NOTHING
+                        """,
+                        uuid.UUID(session_id),
+                        request.seed_address,
+                        request.seed_chain,
+                        getattr(request, "case_id", None),
+                        created_at,
+                    )
+                logger.debug("graph_sessions: persisted session %s", session_id)
+            except Exception as exc:
+                logger.warning(
+                    "graph_sessions: failed to persist session %s: %s", session_id, exc
+                )
+
         return SessionCreateResponse(
             session_id=session_id,
             root_node=root_node,
-            created_at=datetime.now(timezone.utc),
+            created_at=created_at,
         )
 
     async def expand(

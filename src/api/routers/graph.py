@@ -1,3 +1,6 @@
+# Copyright (c) 2024 DAWGUS. All rights reserved.
+# This file is proprietary and confidential. Unauthorized use is prohibited.
+
 """
 Jackdaw Sentry - Transaction Graph Router (M9.2)
 Returns {nodes, edges} JSON for the frontend Cytoscape.js graph renderer.
@@ -36,6 +39,7 @@ from src.api.database import cache_get
 from src.api.database import cache_set
 from src.api.database import get_neo4j_read_session
 from src.api.database import get_neo4j_session
+from src.api.database import get_postgres_pool
 from src.collectors.rpc.factory import get_rpc_client
 from src.services.entity_attribution import lookup_addresses_bulk as _entity_lookup_bulk
 from src.services.price_oracle import get_price_oracle
@@ -1925,12 +1929,34 @@ async def save_session_snapshot(
 ):
     """Persist a frontend session snapshot (node positions, filters, UI state).
 
-    Phase 3 status: stub — acknowledges the save without persisting.
+    Writes the serialised ``node_states`` list to the ``snapshot`` JSONB column
+    in ``graph_sessions``.  The session row must already exist (created by
+    ``POST /sessions``); if it does not, the snapshot is silently ignored.
     """
-    # TODO Phase 4: persist node_states to Neo4j InvestigationAnnotation.
+    saved_at = datetime.now(timezone.utc)
+    snapshot_id = str(uuid4())
+
+    try:
+        pg = get_postgres_pool()
+        async with pg.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE graph_sessions
+                SET snapshot = $1::jsonb,
+                    snapshot_saved_at = $2
+                WHERE session_id = $3::uuid
+                """,
+                json.dumps([ns.model_dump(mode="json") for ns in session_snapshot.node_states]),
+                saved_at,
+                session_id,
+            )
+        logger.debug("Snapshot saved for session %s (%d nodes)", session_id, len(session_snapshot.node_states))
+    except Exception as exc:
+        logger.warning("Failed to save snapshot for session %s: %s", session_id, exc)
+
     return SessionSnapshotResponse(
-        snapshot_id=str(uuid4()),
-        saved_at=datetime.now(timezone.utc),
+        snapshot_id=snapshot_id,
+        saved_at=saved_at,
     )
 
 
