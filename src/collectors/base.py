@@ -573,6 +573,24 @@ class BaseCollector(ABC):
                     outputs=output_params
                 )
 
+        # Address monitoring hook (fire-and-forget)
+        try:
+            from src.services.address_monitor import get_address_monitor
+            monitor = get_address_monitor()
+            addresses = []
+            if tx.from_address:
+                addresses.append(tx.from_address)
+            if tx.to_address:
+                addresses.append(tx.to_address)
+            for t in (tx.token_transfers or []):
+                addresses.extend([t.from_address, t.to_address])
+            if addresses:
+                asyncio.create_task(
+                    monitor.notify_if_watched(tx.hash, addresses, tx.blockchain)
+                )
+        except Exception:
+            pass  # monitoring is non-critical; never block indexing
+
     async def process_token_transfers(self, tx: Transaction):
         """Process token transfers using bipartite graph model.
 
