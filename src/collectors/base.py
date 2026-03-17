@@ -10,6 +10,7 @@ import logging
 from abc import ABC
 from abc import abstractmethod
 from dataclasses import dataclass
+from dataclasses import field
 from datetime import datetime
 from datetime import timedelta
 from datetime import timezone
@@ -27,33 +28,103 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class TokenTransfer:
+    """A single token transfer event emitted by a transaction.
+
+    Replaces the opaque ``List[Dict]`` that was previously stored on
+    ``Transaction.token_transfers``.  Using a typed dataclass makes these
+    movements first-class graph objects that can be stored as ``:TRANSFER``
+    relationships in Neo4j and traversed in Cypher.
+    """
+
+    tx_hash: str
+    blockchain: str
+    transfer_index: int
+    asset_type: str  # erc20 | native | spl | trc20 | bep20 | internal
+    asset_symbol: str
+    from_address: str
+    to_address: str
+    amount_raw: str  # raw integer string (no decimals applied)
+    amount_normalized: float  # human-readable amount
+    asset_contract: Optional[str] = None
+    fiat_value_at_transfer: Optional[float] = None
+    # Canonical cross-chain asset identity (e.g. "usdt", "usdc", "btc").
+    # Preserved across bridge wraps so USDT on ETH and USDT on BSC are
+    # recognisable as the same asset in the investigation view.
+    canonical_asset_id: Optional[str] = None
+
+
+@dataclass
+class UTXOInput:
+    """One input (spent UTXO) in a Bitcoin-style transaction."""
+
+    prev_tx_hash: str
+    prev_output_index: int
+    address: str
+    value_satoshis: int
+    sequence: int = 0xFFFFFFFF
+
+
+@dataclass
+class UTXOOutput:
+    """One output (new UTXO) created by a Bitcoin-style transaction."""
+
+    output_index: int
+    value_satoshis: int
+    script_type: str  # p2pkh | p2sh | p2wpkh | p2wsh | p2tr | op_return
+    address: Optional[str] = None  # None for OP_RETURN outputs
+    is_op_return: bool = False
+    # Heuristic flags set by the collector or analyser.
+    is_probable_change: bool = False
+
+
+@dataclass
 class Transaction:
-    """Standardized transaction structure"""
+    """Standardized transaction structure.
+
+    Supports both account-based chains (EVM, Solana, Tron) and UTXO chains
+    (Bitcoin).
+
+    **Graph model**: This dataclass drives the bipartite Neo4j graph:
+    ``(Address)-[:SENT]->(Transaction)-[:RECEIVED]->(Address)``
+    Token movements are stored as ``(Transaction)-[:TRANSFER]->(Address)``.
+    Never model value flow as a direct ``(Address)-[:SENT]->(Address)`` edge —
+    that loses execution context and makes multi-output transactions impossible.
+    """
 
     hash: str
     blockchain: str
-    from_address: str
-    to_address: Optional[str]
-    value: Union[float, str]
     timestamp: datetime
-    block_number: Optional[int] = None
-    block_hash: Optional[str] = None
+    # --- Account-based fields (EVM / Solana / Tron) ---
+    # from_address is Optional because UTXO transactions have N inputs, not
+    # a single sender.  Collectors for account-based chains always set this.
+    from_address: Optional[str] = None
+    to_address: Optional[str] = None
+    value: Optional[Union[float, str]] = None
     gas_used: Optional[int] = None
     gas_price: Optional[int] = None
+    memo: Optional[str] = None
+    contract_address: Optional[str] = None
+    method_id: Optional[str] = None
+    # Typed token transfer list.  Use TokenTransfer, never raw Dict.
+    token_transfers: List[TokenTransfer] = field(default_factory=list)
+    # --- UTXO fields (Bitcoin and UTXO-based chains) ---
+    inputs: List[UTXOInput] = field(default_factory=list)
+    outputs: List[UTXOOutput] = field(default_factory=list)
+    # --- Shared metadata ---
+    block_number: Optional[int] = None
+    block_hash: Optional[str] = None
     fee: Optional[float] = None
     status: str = "confirmed"
     confirmations: int = 0
-    memo: Optional[str] = None
-    contract_address: Optional[str] = None
-    token_transfers: List[Dict] = None
     # CoinJoin flag: True if this transaction has been heuristically identified
     # as a CoinJoin candidate.  Taint analysis MUST halt at CoinJoin txs and
     # flag as AMBIGUOUS — never silently propagate through.
     is_coinjoin: bool = False
-
-    def __post_init__(self):
-        if self.token_transfers is None:
-            self.token_transfers = []
+    # Bridge flags set by the collector when a bridge contract interaction is detected.
+    is_bridge_ingress: bool = False
+    is_bridge_egress: bool = False
+    bridge_protocol: Optional[str] = None
 
 
 @dataclass
@@ -237,22 +308,34 @@ class BaseCollector(ABC):
             )
 
     async def process_transaction(self, tx_hash: str):
-        """Process a single transaction"""
+        """Process a single transaction."""
         try:
             tx = await self.get_transaction(tx_hash)
             if not tx:
                 return
 
-            # Store transaction in Neo4j
+            # Store transaction in Neo4j using the bipartite model.
             await self.store_transaction(tx)
 
-            # Update address information
-            await self.update_address_info(tx.from_address, tx)
+            # Update address info for account-based chains.
+            if tx.from_address:
+                await self.update_address_info(tx.from_address, tx)
             if tx.to_address:
                 await self.update_address_info(tx.to_address, tx)
 
-            # Check for stablecoin transfers
+            # For UTXO chains, update info for each input/output address.
+            for utxo_input in tx.inputs:
+                await self.update_address_info(utxo_input.address, tx)
+            for utxo_output in tx.outputs:
+                if utxo_output.address and not utxo_output.is_op_return:
+                    await self.update_address_info(utxo_output.address, tx)
+
+            # Check for stablecoin transfers.
             await self.process_stablecoin_transfers(tx)
+
+            # Process token transfers if present.
+            if tx.token_transfers:
+                await self.process_token_transfers(tx)
 
             # Update metrics
             self.metrics["transactions_collected"] += 1
@@ -291,12 +374,34 @@ class BaseCollector(ABC):
             )
 
     async def store_transaction(self, tx: Transaction):
-        """Store transaction in Neo4j"""
-        query = """
+        """Store transaction in Neo4j using the bipartite graph model.
+
+        The canonical model is:
+            ``(Address)-[:SENT]->(Transaction)-[:RECEIVED]->(Address)``
+
+        Token movements are stored as additional ``:TRANSFER`` relationships
+        from the Transaction node to each destination Address.  UTXO inputs
+        are stored as ``:SENT`` edges from each input Address to the
+        Transaction; UTXO outputs are stored as ``:RECEIVED`` edges from the
+        Transaction to each output Address (with UTXO metadata on the edge).
+
+        Direct ``(Address)-[:SENT]->(Address)`` edges are never created here.
+        """
+
+        # ------------------------------------------------------------------
+        # Normalise EVM addresses to lowercase for consistent lookups.
+        # Bitcoin/Solana addresses are case-sensitive — leave them as-is.
+        # ------------------------------------------------------------------
+        def _norm(addr: Optional[str]) -> Optional[str]:
+            """Return lowercase EVM address; leave non-EVM addresses unchanged."""
+            if addr and addr.startswith("0x"):
+                return addr.lower()
+            return addr
+
+        # Upsert the Transaction node.
+        tx_query = """
         MERGE (t:Transaction {hash: $hash, blockchain: $blockchain})
-        SET t.from_address = $from_address,
-            t.to_address = $to_address,
-            t.value = $value,
+        SET t.value = $value,
             t.timestamp = $timestamp,
             t.block_number = $block_number,
             t.block_hash = $block_hash,
@@ -307,63 +412,19 @@ class BaseCollector(ABC):
             t.confirmations = $confirmations,
             t.memo = $memo,
             t.contract_address = $contract_address,
+            t.method_id = $method_id,
+            t.is_coinjoin = $is_coinjoin,
+            t.is_bridge_ingress = $is_bridge_ingress,
+            t.is_bridge_egress = $is_bridge_egress,
+            t.bridge_protocol = $bridge_protocol,
             t.processed_at = timestamp()
-        
-        // Create or update from address
-        MERGE (from_addr:Address {address: $from_address, blockchain: $blockchain})
-        ON CREATE SET from_addr.first_seen = $timestamp
-        ON MATCH SET from_addr.last_seen = $timestamp,
-                     from_addr.transaction_count = from_addr.transaction_count + 1
-        
-        // Create or update to address if exists
         """
-
-        if tx.to_address:
-            query += """
-        MERGE (to_addr:Address {address: $to_address, blockchain: $blockchain})
-        ON CREATE SET to_addr.first_seen = $timestamp
-        ON MATCH SET to_addr.last_seen = $timestamp,
-                     to_addr.transaction_count = to_addr.transaction_count + 1
-        
-        // Create relationships
-        MERGE (from_addr)-[r:SENT]->(to_addr)
-        SET r.transaction_hash = $hash,
-            r.value = $value,
-            r.timestamp = $timestamp,
-            r.blockchain = $blockchain,
-            r.gas_used = $gas_used,
-            r.fee = $fee,
-            r.status = $status
-            """
-        else:
-            query += """
-        // Create self-loop for contract creation or mining rewards
-        MERGE (from_addr)-[r:SENT]->(from_addr)
-        SET r.transaction_hash = $hash,
-            r.value = $value,
-            r.timestamp = $timestamp,
-            r.blockchain = $blockchain,
-            r.gas_used = $gas_used,
-            r.fee = $fee,
-            r.status = $status
-            """
-
-        # Normalise EVM addresses to lowercase for consistent lookups.
-        # Bitcoin/Solana addresses are case-sensitive — leave them as-is.
-        # A simple heuristic: EVM addresses start with "0x".
-        def _norm(addr: Optional[str]) -> Optional[str]:
-            if addr and addr.startswith("0x"):
-                return addr.lower()
-            return addr
 
         async with get_neo4j_session() as session:
             await session.run(
-                query,
+                tx_query,
                 hash=tx.hash,
                 blockchain=tx.blockchain,
-                from_address=_norm(tx.from_address),
-                to_address=_norm(tx.to_address),
-                # Neo4j does not accept Python Decimal — convert to float.
                 value=float(tx.value) if tx.value is not None else None,
                 timestamp=tx.timestamp,
                 block_number=tx.block_number,
@@ -375,7 +436,193 @@ class BaseCollector(ABC):
                 confirmations=tx.confirmations,
                 memo=tx.memo,
                 contract_address=tx.contract_address,
+                method_id=getattr(tx, "method_id", None),
+                is_coinjoin=tx.is_coinjoin,
+                is_bridge_ingress=tx.is_bridge_ingress,
+                is_bridge_egress=tx.is_bridge_egress,
+                bridge_protocol=tx.bridge_protocol,
             )
+
+        # ------------------------------------------------------------------
+        # Account-based chains: single from/to pair
+        # Model: (from_addr)-[:SENT]->(tx)-[:RECEIVED]->(to_addr)
+        # ------------------------------------------------------------------
+        if tx.from_address:
+            from_addr = _norm(tx.from_address)
+            account_from_query = """
+            MATCH (t:Transaction {hash: $hash, blockchain: $blockchain})
+            MERGE (from_addr:Address {address: $from_address, blockchain: $blockchain})
+            ON CREATE SET from_addr.first_seen = $timestamp
+            ON MATCH SET from_addr.last_seen = $timestamp,
+                         from_addr.transaction_count = coalesce(from_addr.transaction_count, 0) + 1
+                         /* Note: Non-atomic increment acceptable for approximate counts.
+                            Race conditions may cause occasional inaccuracies but don't affect
+                            core functionality. Exact accuracy not required for this use case. */
+            MERGE (from_addr)-[:SENT {blockchain: $blockchain}]->(t)
+            """
+            async with get_neo4j_session() as session:
+                await session.run(
+                    account_from_query,
+                    hash=tx.hash,
+                    blockchain=tx.blockchain,
+                    from_address=from_addr,
+                    timestamp=tx.timestamp,
+                )
+
+        if tx.to_address:
+            to_addr = _norm(tx.to_address)
+            account_to_query = """
+            MATCH (t:Transaction {hash: $hash, blockchain: $blockchain})
+            MERGE (to_addr:Address {address: $to_address, blockchain: $blockchain})
+            ON CREATE SET to_addr.first_seen = $timestamp
+            ON MATCH SET to_addr.last_seen = $timestamp,
+                         to_addr.transaction_count = coalesce(to_addr.transaction_count, 0) + 1
+            MERGE (t)-[:RECEIVED {blockchain: $blockchain, value: $value}]->(to_addr)
+            """
+            async with get_neo4j_session() as session:
+                await session.run(
+                    account_to_query,
+                    hash=tx.hash,
+                    blockchain=tx.blockchain,
+                    to_address=to_addr,
+                    timestamp=tx.timestamp,
+                    value=float(tx.value) if tx.value is not None else None,
+                )
+
+        # ------------------------------------------------------------------
+        # UTXO chains: N inputs → Transaction → M outputs
+        # Each input: (input_addr)-[:SENT]->(tx)
+        # Each output: (tx)-[:RECEIVED {output_index, value_satoshis}]->(out_addr)
+        # ------------------------------------------------------------------
+        
+        # Batch UTXO inputs
+        if tx.inputs:
+            input_query = """
+            UNWIND $inputs AS input
+            MATCH (t:Transaction {hash: $hash, blockchain: $blockchain})
+            MERGE (in_addr:Address {address: input.address, blockchain: $blockchain})
+            ON CREATE SET in_addr.first_seen = input.timestamp
+            ON MATCH SET in_addr.last_seen = input.timestamp,
+                         in_addr.transaction_count = coalesce(in_addr.transaction_count, 0) + 1
+            MERGE (in_addr)-[:SENT {
+                blockchain: $blockchain,
+                prev_tx_hash: input.prev_tx_hash,
+                prev_output_index: input.prev_output_index,
+                value_satoshis: input.value_satoshis
+            }]->(t)
+            """
+            
+            input_params = [
+                {
+                    "address": utxo_input.address,
+                    "timestamp": tx.timestamp,
+                    "prev_tx_hash": utxo_input.prev_tx_hash,
+                    "prev_output_index": utxo_input.prev_output_index,
+                    "value_satoshis": utxo_input.value_satoshis
+                }
+                for utxo_input in tx.inputs
+            ]
+            
+            async with get_neo4j_session() as session:
+                await session.run(
+                    input_query,
+                    hash=tx.hash,
+                    blockchain=tx.blockchain,
+                    inputs=input_params
+                )
+
+        # Batch UTXO outputs
+        valid_outputs = [
+            utxo_output for utxo_output in tx.outputs
+            if not utxo_output.is_op_return and utxo_output.address
+        ]
+        
+        if valid_outputs:
+            output_query = """
+            UNWIND $outputs AS output
+            MATCH (t:Transaction {hash: $hash, blockchain: $blockchain})
+            MERGE (out_addr:Address {address: output.address, blockchain: $blockchain})
+            ON CREATE SET out_addr.first_seen = output.timestamp, out_addr.transaction_count = 1
+            ON MATCH SET out_addr.last_seen = output.timestamp, out_addr.transaction_count = coalesce(out_addr.transaction_count, 0) + 1
+            MERGE (t)-[:RECEIVED {
+                blockchain: $blockchain,
+                output_index: output.output_index,
+                value_satoshis: output.value_satoshis,
+                script_type: output.script_type,
+                is_probable_change: output.is_probable_change
+            }]->(out_addr)
+            """
+            
+            output_params = [
+                {
+                    "address": utxo_output.address,
+                    "timestamp": tx.timestamp,
+                    "output_index": utxo_output.output_index,
+                    "value_satoshis": utxo_output.value_satoshis,
+                    "script_type": utxo_output.script_type,
+                    "is_probable_change": utxo_output.is_probable_change
+                }
+                for utxo_output in valid_outputs
+            ]
+            
+            async with get_neo4j_session() as session:
+                await session.run(
+                    output_query,
+                    hash=tx.hash,
+                    blockchain=tx.blockchain,
+                    outputs=output_params
+                )
+
+    async def process_token_transfers(self, tx: Transaction):
+        """Process token transfers using bipartite graph model.
+
+        Token movements are stored as ``:TRANSFER`` relationships from the
+        Transaction node to each destination Address.  This keeps the core
+        ``(Address)-[:SENT]->(Transaction)-[:RECEIVED]->(Address)`` model
+        clean while still capturing token flow.
+
+        Args:
+            tx: Transaction with token_transfers list
+        """
+        if not tx.token_transfers:
+            return
+
+        for transfer in tx.token_transfers:
+            transfer_query = """
+            MATCH (t:Transaction {hash: $hash, blockchain: $blockchain})
+            MERGE (to_addr:Address {address: $to_address, blockchain: $blockchain})
+            ON CREATE SET to_addr.first_seen = $timestamp
+            MERGE (t)-[:TRANSFER {
+                transfer_index: $transfer_index,
+                asset_type: $asset_type,
+                asset_symbol: $asset_symbol,
+                asset_contract: $asset_contract,
+                from_address: $from_address,
+                to_address: $to_address,
+                amount_raw: $amount_raw,
+                amount_normalized: $amount_normalized,
+                fiat_value_at_transfer: $fiat_value_at_transfer,
+                canonical_asset_id: $canonical_asset_id,
+                blockchain: $blockchain
+            }]->(to_addr)
+            """
+            async with get_neo4j_session() as session:
+                await session.run(
+                    transfer_query,
+                    hash=tx.hash,
+                    blockchain=tx.blockchain,
+                    to_address=transfer.to_address,
+                    timestamp=tx.timestamp,
+                    transfer_index=transfer.transfer_index,
+                    asset_type=transfer.asset_type,
+                    asset_symbol=transfer.asset_symbol,
+                    asset_contract=transfer.asset_contract,
+                    from_address=transfer.from_address,
+                    amount_raw=transfer.amount_raw,
+                    amount_normalized=transfer.amount_normalized,
+                    fiat_value_at_transfer=transfer.fiat_value_at_transfer,
+                    canonical_asset_id=transfer.canonical_asset_id,
+                )
 
     async def update_address_info(self, address: str, tx: Transaction):
         """Update address information"""
@@ -406,42 +653,61 @@ class BaseCollector(ABC):
             await redis.setex(cache_key, 3600, json.dumps(info))  # Cache for 1 hour
 
     async def process_stablecoin_transfers(self, tx: Transaction):
-        """Process stablecoin transfers and create cross-chain relationships"""
+        """Link stablecoin TokenTransfer objects to their Stablecoin nodes.
+
+        Each matching ``TokenTransfer`` gets a ``:STABLECOIN_TRANSFER``
+        relationship from the ``Transaction`` node to the ``Stablecoin`` node.
+        The ``:TRANSFER`` edge to the destination ``Address`` is created by
+        ``store_transaction()``.
+        """
         if not tx.token_transfers:
             return
 
+        supported_stablecoins = get_supported_stablecoins()
+
         for transfer in tx.token_transfers:
-            stablecoin_symbol = transfer.get("symbol")
-            if not stablecoin_symbol:
+            if transfer.asset_symbol not in supported_stablecoins:
                 continue
 
-            # Check if this is a supported stablecoin
-            supported_stablecoins = get_supported_stablecoins()
-            if stablecoin_symbol not in supported_stablecoins:
-                continue
-
-            # Create stablecoin transfer relationship
             query = """
             MATCH (t:Transaction {hash: $tx_hash})
-            MATCH (s:Stablecoin {symbol: $symbol, blockchain: $blockchain})
+            MERGE (s:Stablecoin {symbol: $symbol, blockchain: $blockchain})
+            SET s += $stablecoinProps
             MERGE (t)-[r:STABLECOIN_TRANSFER]->(s)
-            SET r.amount = $amount,
+            SET r.amount_normalized = $amount_normalized,
+                r.amount_raw = $amount_raw,
                 r.from_address = $from_address,
                 r.to_address = $to_address,
-                r.decimals = $decimals
+                r.transfer_index = $transfer_index,
+                r.canonical_asset_id = $canonical_asset_id
             """
 
             async with get_neo4j_session() as session:
-                await session.run(
+                result = await session.run(
                     query,
                     tx_hash=tx.hash,
-                    symbol=stablecoin_symbol,
+                    symbol=transfer.asset_symbol,
                     blockchain=self.blockchain,
-                    amount=transfer.get("amount"),
-                    from_address=transfer.get("from_address"),
-                    to_address=transfer.get("to_address"),
-                    decimals=transfer.get("decimals", 18),
+                    stablecoinProps={
+                        "name": transfer.asset_symbol,
+                        "type": "stablecoin",
+                        "updated_at": datetime.now(timezone.utc)
+                    },
+                    amount_normalized=transfer.amount_normalized,
+                    amount_raw=transfer.amount_raw,
+                    from_address=transfer.from_address,
+                    to_address=transfer.to_address,
+                    transfer_index=transfer.transfer_index,
+                    canonical_asset_id=transfer.canonical_asset_id,
                 )
+                
+                # Check if relationship was created
+                summary = result.consume()
+                if summary.relationships_created == 0:
+                    logger.debug(
+                        f"Failed to create STABLECOIN_TRANSFER relationship for tx {tx.hash} "
+                        f"and stablecoin {transfer.asset_symbol}"
+                    )
 
     async def load_last_processed_block(self):
         """Load last processed block from Redis"""
