@@ -1117,6 +1117,340 @@ async def expand_bridge(
     )
 
 
+class ExpandUTXORequest(BaseModel):
+    """Request to expand a Bitcoin address as a UTXO sub-graph.
+
+    Returns UTXONode objects (one per output) with change-output annotations
+    and a CoinJoin halt node when the spending transaction is a CoinJoin.
+    """
+
+    address: str
+    blockchain: str = "bitcoin"
+    direction: str = "out"  # out | in | both
+    min_value_satoshis: Optional[int] = None
+    branch_id: Optional[str] = None
+    insertion_depth: int = 1
+    parent_node_id: Optional[str] = None
+
+    @field_validator("blockchain")
+    @classmethod
+    def validate_blockchain(cls, v: str) -> str:
+        """Only UTXO chains are supported."""
+        if v.lower() != "bitcoin":
+            raise ValueError("expand-utxo currently supports bitcoin only")
+        return v.lower()
+
+    @field_validator("direction")
+    @classmethod
+    def validate_direction(cls, v: str) -> str:
+        """Validate expansion direction."""
+        if v not in ("in", "out", "both"):
+            raise ValueError("direction must be 'in', 'out', or 'both'")
+        return v
+
+
+@router.post("/expand-utxo", response_model=ExpansionResponse)
+async def expand_utxo(
+    request: ExpandUTXORequest,
+    current_user: User = Depends(check_permissions([PERMISSIONS["read_blockchain"]])),
+):
+    """Expand a Bitcoin address returning its UTXO sub-graph.
+
+    Queries Neo4j for spending transactions (outbound) or funding transactions
+    (inbound) linked to the address via the bipartite
+    ``(Address)-[:SENT]->(Transaction)-[:RECEIVED]->(Address)`` model.
+    UTXO metadata (``output_index``, ``value_satoshis``, ``script_type``,
+    ``is_probable_change``) is carried on the ``:RECEIVED`` relationship
+    properties and promoted to individual ``UTXONode`` dicts.
+
+    CoinJoin transactions are returned as halt nodes (``is_coinjoin_halt:
+    true``) — taint analysis must not propagate through them.
+
+    Falls back to the live Bitcoin RPC client when no data exists in Neo4j.
+    """
+    branch_id = request.branch_id or str(uuid4())
+    parent_node_id = request.parent_node_id or f"bitcoin:{request.address}"
+    depth = request.insertion_depth
+    path_id_base = str(uuid4())
+
+    value_filter = (
+        "AND r.value_satoshis >= $min_sat" if request.min_value_satoshis is not None else ""
+    )
+
+    # ------------------------------------------------------------------
+    # Build Cypher queries for each direction.
+    # We fetch the Transaction node and the :RECEIVED relationship
+    # properties (output_index, value_satoshis, script_type,
+    # is_probable_change) for every output of that spending tx.
+    # ------------------------------------------------------------------
+    records: List[Dict[str, Any]] = []
+
+    async with get_neo4j_session() as session:
+        if request.direction in ("out", "both"):
+            cypher_out = f"""
+            MATCH (a:Address {{address: $addr, blockchain: $bc}})-[:SENT]->(t:Transaction)
+            MATCH (t)-[r:RECEIVED]->(out_addr:Address)
+            WHERE out_addr.address <> $addr {value_filter}
+            RETURN t.hash AS tx_hash,
+                   t.block_number AS block_number,
+                   t.timestamp AS tx_ts,
+                   t.is_coinjoin AS is_coinjoin,
+                   t.fee AS fee,
+                   out_addr.address AS output_address,
+                   r.output_index AS output_index,
+                   r.value_satoshis AS value_satoshis,
+                   r.script_type AS script_type,
+                   r.is_probable_change AS is_probable_change,
+                   'out' AS direction
+            ORDER BY t.timestamp DESC
+            LIMIT $lim
+            """
+            res = await session.run(
+                cypher_out,
+                addr=request.address,
+                bc=request.blockchain,
+                lim=MAX_GRAPH_NODES,
+                min_sat=request.min_value_satoshis,
+            )
+            records.extend(await res.data())
+
+        if request.direction in ("in", "both"):
+            cypher_in = f"""
+            MATCH (src:Address)-[:SENT]->(t:Transaction)-[:RECEIVED {{}}]->(a:Address {{address: $addr, blockchain: $bc}})
+            MATCH (t)-[r:RECEIVED]->(out_addr:Address)
+            WHERE 1=1 {value_filter}
+            RETURN t.hash AS tx_hash,
+                   t.block_number AS block_number,
+                   t.timestamp AS tx_ts,
+                   t.is_coinjoin AS is_coinjoin,
+                   t.fee AS fee,
+                   out_addr.address AS output_address,
+                   r.output_index AS output_index,
+                   r.value_satoshis AS value_satoshis,
+                   r.script_type AS script_type,
+                   r.is_probable_change AS is_probable_change,
+                   'in' AS direction
+            ORDER BY t.timestamp DESC
+            LIMIT $lim
+            """
+            res = await session.run(
+                cypher_in,
+                addr=request.address,
+                bc=request.blockchain,
+                lim=MAX_GRAPH_NODES,
+                min_sat=request.min_value_satoshis,
+            )
+            records.extend(await res.data())
+
+    # ------------------------------------------------------------------
+    # RPC fallback: if nothing in Neo4j, fetch live and synthesise nodes
+    # ------------------------------------------------------------------
+    if not records:
+        client = get_rpc_client(request.blockchain)
+        if client:
+            try:
+                txs = await client.get_address_transactions(request.address, limit=25)
+                for tx in txs:
+                    # Build synthetic records from UTXOOutput objects
+                    for out in tx.outputs:
+                        if out.is_op_return or not out.address:
+                            continue
+                        if (
+                            request.min_value_satoshis is not None
+                            and out.value_satoshis < request.min_value_satoshis
+                        ):
+                            continue
+                        is_out_direction = (
+                            any(inp.address == request.address for inp in tx.inputs)
+                        )
+                        is_in_direction = out.address == request.address
+                        relevant = (
+                            (request.direction == "out" and is_out_direction)
+                            or (request.direction == "in" and is_in_direction)
+                            or request.direction == "both"
+                        )
+                        if not relevant:
+                            continue
+                        records.append(
+                            {
+                                "tx_hash": tx.hash,
+                                "block_number": tx.block_number,
+                                "tx_ts": (
+                                    tx.timestamp.isoformat() if tx.timestamp else None
+                                ),
+                                "is_coinjoin": tx.is_coinjoin,
+                                "fee": tx.fee,
+                                "output_address": out.address,
+                                "output_index": out.output_index,
+                                "value_satoshis": out.value_satoshis,
+                                "script_type": out.script_type,
+                                "is_probable_change": out.is_probable_change,
+                                "direction": "out" if is_out_direction else "in",
+                            }
+                        )
+            except Exception as exc:
+                logger.warning(f"UTXO expand RPC fallback failed: {exc}")
+
+    # ------------------------------------------------------------------
+    # Build response nodes and edges from records.
+    # Group records by tx_hash so each transaction becomes one (or zero)
+    # transaction node and N UTXONodes (one per output).
+    # ------------------------------------------------------------------
+    new_nodes: List[Dict[str, Any]] = []
+    new_edges: List[Dict[str, Any]] = []
+    seen_tx_hashes: set = set()
+    seen_utxo_ids: set = set()
+    total_value_sat: int = 0
+
+    for rec in records:
+        tx_hash = rec.get("tx_hash") or ""
+        if not tx_hash:
+            continue
+
+        # Transaction node (one per tx_hash)
+        if tx_hash not in seen_tx_hashes:
+            seen_tx_hashes.add(tx_hash)
+            is_coinjoin = bool(rec.get("is_coinjoin"))
+            tx_node_id = f"bitcoin:tx:{tx_hash}"
+            tx_node: Dict[str, Any] = {
+                "node_id": tx_node_id,
+                "node_type": "transaction",
+                "tx_hash": tx_hash,
+                "blockchain": "bitcoin",
+                "block_number": rec.get("block_number"),
+                "timestamp": rec.get("tx_ts"),
+                "fee": rec.get("fee"),
+                "is_coinjoin": is_coinjoin,
+                "is_coinjoin_halt": is_coinjoin,
+                "depth": depth,
+                "parent_id": parent_node_id,
+                "branch_id": branch_id,
+                "path_id": path_id_base,
+            }
+            new_nodes.append(tx_node)
+
+            # Edge: seed address → transaction
+            new_edges.append(
+                {
+                    "edge_id": f"sent:{request.address}:{tx_hash}",
+                    "edge_type": "sent",
+                    "source_node_id": parent_node_id,
+                    "target_node_id": tx_node_id,
+                    "blockchain": "bitcoin",
+                    "depth": depth,
+                    "branch_id": branch_id,
+                }
+            )
+
+        # UTXONode for this output (skip if CoinJoin — halt, don't expand)
+        if bool(rec.get("is_coinjoin")):
+            continue
+
+        output_index = rec.get("output_index")
+        output_address = rec.get("output_address") or ""
+        value_sat = int(rec.get("value_satoshis") or 0)
+        if output_index is None or not output_address:
+            continue
+
+        utxo_node_id = f"bitcoin:utxo:{tx_hash}:{output_index}"
+        if utxo_node_id in seen_utxo_ids:
+            continue
+        seen_utxo_ids.add(utxo_node_id)
+
+        is_probable_change = bool(rec.get("is_probable_change"))
+        script_type = rec.get("script_type") or "unknown"
+        total_value_sat += value_sat
+
+        utxo_node: Dict[str, Any] = {
+            "node_id": utxo_node_id,
+            "node_type": "utxo",
+            "tx_hash": tx_hash,
+            "output_index": output_index,
+            "blockchain": "bitcoin",
+            "address": output_address,
+            "value_satoshis": value_sat,
+            "value_btc": round(value_sat / 1e8, 8),
+            "script_type": script_type,
+            "is_probable_change": is_probable_change,
+            "depth": depth + 1,
+            "parent_id": f"bitcoin:tx:{tx_hash}",
+            "branch_id": branch_id,
+            "path_id": path_id_base,
+        }
+        new_nodes.append(utxo_node)
+
+        # Address node for the output recipient
+        addr_node_id = f"bitcoin:{output_address}"
+        new_nodes.append(
+            {
+                "node_id": addr_node_id,
+                "node_type": "address",
+                "address": output_address,
+                "blockchain": "bitcoin",
+                "depth": depth + 2,
+                "parent_id": utxo_node_id,
+                "branch_id": branch_id,
+                "path_id": path_id_base,
+                "is_probable_change_recipient": is_probable_change,
+            }
+        )
+
+        # Edge: transaction → UTXO
+        new_edges.append(
+            {
+                "edge_id": f"utxo_out:{tx_hash}:{output_index}",
+                "edge_type": "utxo_output",
+                "source_node_id": f"bitcoin:tx:{tx_hash}",
+                "target_node_id": utxo_node_id,
+                "value_satoshis": value_sat,
+                "script_type": script_type,
+                "is_probable_change": is_probable_change,
+                "depth": depth + 1,
+                "branch_id": branch_id,
+            }
+        )
+
+        # Edge: UTXO → address
+        new_edges.append(
+            {
+                "edge_id": f"utxo_addr:{tx_hash}:{output_index}:{output_address}",
+                "edge_type": "utxo_to_address",
+                "source_node_id": utxo_node_id,
+                "target_node_id": addr_node_id,
+                "value_satoshis": value_sat,
+                "depth": depth + 2,
+                "branch_id": branch_id,
+            }
+        )
+
+    coinjoin_tx_count = sum(
+        1 for n in new_nodes if n.get("node_type") == "transaction" and n.get("is_coinjoin")
+    )
+
+    return ExpansionResponse(
+        operation_id=str(uuid4()),
+        operation_type="expand_utxo",
+        parent_node_id=parent_node_id,
+        branch_id=branch_id,
+        insertion_depth=depth,
+        new_nodes=new_nodes,
+        new_edges=new_edges,
+        expansion_metadata={
+            "tx_count": len(seen_tx_hashes),
+            "utxo_count": len(seen_utxo_ids),
+            "coinjoin_halt_count": coinjoin_tx_count,
+            "total_value_satoshis": total_value_sat,
+            "total_value_btc": round(total_value_sat / 1e8, 8),
+        },
+        asset_context={
+            "assets_present": ["BTC"],
+            "dominant_asset": "BTC",
+            "total_value_satoshis": total_value_sat,
+        },
+        timestamp=datetime.now(timezone.utc),
+    )
+
+
 # =============================================================================
 # Helpers
 # =============================================================================
