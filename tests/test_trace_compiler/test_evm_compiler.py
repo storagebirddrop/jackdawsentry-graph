@@ -299,3 +299,143 @@ def aiter_from_list(items):
         for item in items:
             yield item
     return _gen().__aiter__()
+
+
+# ---------------------------------------------------------------------------
+# Price oracle integration (T7.4 wiring into EVMChainCompiler)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_expand_next_annotates_edge_value_fiat():
+    """Edges carry value_fiat when price oracle returns a price."""
+    row = _pg_row(
+        counterparty="0xdest",
+        tx_hash="0xtx",
+        value_native=2.0,
+        asset_symbol="ETH",
+        canonical_asset_id="ethereum",
+        timestamp=_TS,
+    )
+    # First fetch returns native txs; second returns no token transfers.
+    conn = MagicMock()
+    conn.fetch = AsyncMock(side_effect=[[row], []])
+    pg = MagicMock()
+    pg.acquire = MagicMock(return_value=_AsyncCtxMgr(conn))
+    compiler = _make_compiler(pg=pg)
+
+    with patch(
+        "src.trace_compiler.chains.evm.price_oracle.get_prices_bulk",
+        new_callable=AsyncMock,
+        return_value={"ethereum": 3000.0},
+    ):
+        nodes, edges = await compiler.expand_next(
+            session_id="s", branch_id="b", path_sequence=0,
+            depth=0, seed_address="0xseed", chain="ethereum",
+            options=ExpandOptions(max_results=10),
+        )
+
+    assert len(edges) == 1
+    assert edges[0].value_fiat == pytest.approx(6000.0)
+
+
+@pytest.mark.asyncio
+async def test_expand_next_no_price_leaves_value_fiat_none():
+    """Edges have value_fiat=None when price oracle returns no data."""
+    row = _pg_row(
+        counterparty="0xdest",
+        tx_hash="0xtx",
+        value_native=1.5,
+        asset_symbol="ETH",
+        canonical_asset_id="ethereum",
+        timestamp=_TS,
+    )
+    conn = MagicMock()
+    conn.fetch = AsyncMock(side_effect=[[row], []])
+    pg = MagicMock()
+    pg.acquire = MagicMock(return_value=_AsyncCtxMgr(conn))
+    compiler = _make_compiler(pg=pg)
+
+    with patch(
+        "src.trace_compiler.chains.evm.price_oracle.get_prices_bulk",
+        new_callable=AsyncMock,
+        return_value={"ethereum": None},
+    ):
+        nodes, edges = await compiler.expand_next(
+            session_id="s", branch_id="b", path_sequence=0,
+            depth=0, seed_address="0xseed", chain="ethereum",
+            options=ExpandOptions(max_results=10),
+        )
+
+    assert len(edges) == 1
+    assert edges[0].value_fiat is None
+
+
+@pytest.mark.asyncio
+async def test_expand_next_min_value_fiat_filters_low_transfers():
+    """Transfers below min_value_fiat are excluded from the result."""
+    rows = [
+        _pg_row(
+            counterparty="0xrich",
+            tx_hash="0xtx1",
+            value_native=10.0,
+            asset_symbol="ETH",
+            canonical_asset_id="ethereum",
+            timestamp=_TS,
+        ),
+        _pg_row(
+            counterparty="0xpoor",
+            tx_hash="0xtx2",
+            value_native=0.001,
+            asset_symbol="ETH",
+            canonical_asset_id="ethereum",
+            timestamp=_TS,
+        ),
+    ]
+    pg = _pg_pool_returning(rows)
+    compiler = _make_compiler(pg=pg)
+
+    with patch(
+        "src.trace_compiler.chains.evm.price_oracle.get_prices_bulk",
+        new_callable=AsyncMock,
+        return_value={"ethereum": 3000.0},
+    ):
+        nodes, edges = await compiler.expand_next(
+            session_id="s", branch_id="b", path_sequence=0,
+            depth=0, seed_address="0xseed", chain="ethereum",
+            options=ExpandOptions(max_results=10, min_value_fiat=100.0),
+        )
+
+    # Only the 10 ETH * $3000 = $30,000 transfer survives the $100 filter.
+    node_addresses = [n.address_data.address for n in nodes]
+    assert "0xrich" in node_addresses
+    assert "0xpoor" not in node_addresses
+
+
+@pytest.mark.asyncio
+async def test_expand_next_min_value_fiat_skips_filter_when_no_price():
+    """When price oracle returns None, transfers are NOT filtered out."""
+    row = _pg_row(
+        counterparty="0xdest",
+        tx_hash="0xtx",
+        value_native=0.0001,
+        asset_symbol="ETH",
+        canonical_asset_id="ethereum",
+        timestamp=_TS,
+    )
+    pg = _pg_pool_returning([row])
+    compiler = _make_compiler(pg=pg)
+
+    with patch(
+        "src.trace_compiler.chains.evm.price_oracle.get_prices_bulk",
+        new_callable=AsyncMock,
+        return_value={"ethereum": None},
+    ):
+        nodes, edges = await compiler.expand_next(
+            session_id="s", branch_id="b", path_sequence=0,
+            depth=0, seed_address="0xseed", chain="ethereum",
+            options=ExpandOptions(max_results=10, min_value_fiat=1000.0),
+        )
+
+    # Cannot filter without price data — transfer is kept.
+    assert len(nodes) == 1
