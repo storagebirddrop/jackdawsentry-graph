@@ -108,6 +108,11 @@ export interface GraphState {
   setRfPositions: (positions: Map<string, { x: number; y: number }>) => void;
   setExpandingNode: (nodeId: string, expanding: boolean) => void;
   reset: () => void;
+
+  /** Serialise current graph state to a JSON string (for session snapshot). */
+  exportSnapshot: () => string;
+  /** Restore graph state from a JSON string previously produced by exportSnapshot. */
+  importSnapshot: (json: string) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -190,5 +195,44 @@ export const useGraphStore = create<GraphState>((set, get) => ({
       rfEdges: [],
       expandingNodeIds: new Set(),
     });
+  },
+
+  exportSnapshot() {
+    const { sessionId, nodeMap, edgeMap, rfNodes } = get();
+    // Capture current positions from rfNodes so they survive round-trip
+    const positions: Record<string, { x: number; y: number }> = {};
+    for (const n of rfNodes) positions[n.id] = n.position;
+    return JSON.stringify({
+      sessionId,
+      nodes: Array.from(nodeMap.values()),
+      edges: Array.from(edgeMap.values()),
+      positions,
+    });
+  },
+
+  importSnapshot(json) {
+    try {
+      const data = JSON.parse(json) as {
+        sessionId: string;
+        nodes: InvestigationNode[];
+        edges: InvestigationEdge[];
+        positions: Record<string, { x: number; y: number }>;
+      };
+      const nodeMap = new Map<string, InvestigationNode>(
+        data.nodes.map((n) => [n.node_id, n]),
+      );
+      const edgeMap = new Map<string, InvestigationEdge>(
+        data.edges.map((e) => [e.edge_id, e]),
+      );
+      const rfNodes = data.nodes.map((n) => {
+        const rf = toRfNode(n);
+        const pos = data.positions[n.node_id];
+        return pos ? { ...rf, position: pos } : rf;
+      });
+      const rfEdges = data.edges.map(toRfEdge);
+      set({ sessionId: data.sessionId, nodeMap, edgeMap, rfNodes, rfEdges });
+    } catch (err) {
+      console.error('importSnapshot failed:', err);
+    }
   },
 }));

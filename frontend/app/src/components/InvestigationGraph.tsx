@@ -6,9 +6,11 @@
  * - Triggers ELK layout after delta updates.
  * - Handles node expand clicks (dispatches to API, then applies delta).
  * - Shows overload warning at NODE_OVERLOAD_THRESHOLD.
+ * - Hosts the filter panel (client-side node/edge hiding).
+ * - Opens the bridge hop side drawer on BridgeHopNode click.
  */
 
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ReactFlow,
   Background,
@@ -18,35 +20,89 @@ import {
   useEdgesState,
   type Node,
   type Edge,
+  type NodeMouseHandler,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 
 import { useGraphStore } from '../store/graphStore';
 import { expandNode } from '../api/client';
 import { computeElkLayout } from '../layout/elkLayout';
-import type { ExpandRequest } from '../types/graph';
+import type { ExpandRequest, BridgeHopData, InvestigationNode } from '../types/graph';
 
 import AddressNode from './nodes/AddressNode';
 import EntityNode from './nodes/EntityNode';
 import BridgeHopNode from './nodes/BridgeHopNode';
 import ClusterSummaryNode from './nodes/ClusterSummaryNode';
+import UTXONode from './nodes/UTXONode';
+import SolanaInstructionNode from './nodes/SolanaInstructionNode';
+import SwapEventNode from './nodes/SwapEventNode';
+import FilterPanel, { type FilterState, DEFAULT_FILTERS } from './FilterPanel';
+import BridgeHopDrawer from './BridgeHopDrawer';
 
 const NODE_TYPES = {
   address: AddressNode,
   entity: EntityNode,
   bridge_hop: BridgeHopNode,
   cluster_summary: ClusterSummaryNode,
-  // Remaining types render as address-style by default
-  utxo: AddressNode,
-  swap_event: BridgeHopNode,
+  utxo: UTXONode,
+  swap_event: SwapEventNode,
   service: EntityNode,
-  solana_instruction: AddressNode,
+  solana_instruction: SolanaInstructionNode,
 };
 
 const NODE_OVERLOAD_THRESHOLD = 500;
 
 interface Props {
   sessionId: string;
+}
+
+/** Apply filter state to raw nodes/edges, returning the visible subset. */
+function applyFilters(
+  nodes: Node[],
+  edges: Edge[],
+  filters: FilterState,
+): { nodes: Node[]; edges: Edge[] } {
+  let visibleNodes = nodes;
+  let visibleEdges = edges;
+
+  if (filters.chainFilter.length > 0) {
+    visibleNodes = visibleNodes.filter((n) => {
+      const chain = (n.data as Record<string, unknown>)?.chain as string | undefined;
+      return !chain || filters.chainFilter.includes(chain);
+    });
+    const visibleIds = new Set(visibleNodes.map((n) => n.id));
+    visibleEdges = visibleEdges.filter(
+      (e) => visibleIds.has(e.source) && visibleIds.has(e.target),
+    );
+  }
+
+  if (filters.maxDepth < 20) {
+    visibleNodes = visibleNodes.filter((n) => {
+      const depth = (n.data as Record<string, unknown>)?.depth as number | undefined;
+      return depth === undefined || depth <= filters.maxDepth;
+    });
+    const visibleIds = new Set(visibleNodes.map((n) => n.id));
+    visibleEdges = visibleEdges.filter(
+      (e) => visibleIds.has(e.source) && visibleIds.has(e.target),
+    );
+  }
+
+  if (filters.minFiatValue > 0) {
+    visibleEdges = visibleEdges.filter((e) => {
+      const val = (e.data as Record<string, unknown>)?.fiat_value_usd as number | undefined;
+      return val === undefined || val >= filters.minFiatValue;
+    });
+  }
+
+  if (filters.assetFilter.trim()) {
+    const q = filters.assetFilter.trim().toLowerCase();
+    visibleEdges = visibleEdges.filter((e) => {
+      const sym = (e.data as Record<string, unknown>)?.asset_symbol as string | undefined;
+      return !sym || sym.toLowerCase().includes(q);
+    });
+  }
+
+  return { nodes: visibleNodes, edges: visibleEdges };
 }
 
 export default function InvestigationGraph({ sessionId }: Props) {
@@ -57,21 +113,29 @@ export default function InvestigationGraph({ sessionId }: Props) {
     applyExpansionDelta,
     setExpandingNode,
     expandingNodeIds,
+    exportSnapshot,
+    importSnapshot,
   } = useGraphStore();
 
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>(rfNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>(rfEdges);
 
-  // Keep local RF state in sync with store
-  useEffect(() => {
-    setNodes(rfNodes);
-  }, [rfNodes, setNodes]);
+  const [filters, setFilters] = useState<FilterState>(DEFAULT_FILTERS);
+  const [filterVisible, setFilterVisible] = useState(false);
 
-  useEffect(() => {
-    setEdges(rfEdges);
-  }, [rfEdges, setEdges]);
+  const [selectedBridgeNode, setSelectedBridgeNode] = useState<{
+    nodeId: string;
+    hopData: BridgeHopData;
+  } | null>(null);
 
-  // Re-run ELK layout whenever node/edge count changes
+  // Keep local RF state in sync with store, applying current filters
+  useEffect(() => {
+    const { nodes: fn, edges: fe } = applyFilters(rfNodes, rfEdges, filters);
+    setNodes(fn);
+    setEdges(fe);
+  }, [rfNodes, rfEdges, filters, setNodes, setEdges]);
+
+  // Re-run ELK layout whenever node count changes
   const prevNodeCount = useRef(0);
   useEffect(() => {
     if (rfNodes.length === prevNodeCount.current) return;
@@ -103,7 +167,15 @@ export default function InvestigationGraph({ sessionId }: Props) {
     [sessionId, rfNodes.length, expandingNodeIds, setExpandingNode, applyExpansionDelta],
   );
 
-  // Inject expand handler into node data
+  // Open bridge drawer on BridgeHopNode click
+  const handleNodeClick: NodeMouseHandler = useCallback((_evt, node) => {
+    if (node.type === 'bridge_hop') {
+      const invNode = node.data as unknown as InvestigationNode;
+      setSelectedBridgeNode({ nodeId: node.id, hopData: invNode.node_data as BridgeHopData });
+    }
+  }, []);
+
+  // Inject expand handlers into node data
   const enrichedNodes = nodes.map((n) => ({
     ...n,
     data: {
@@ -115,13 +187,71 @@ export default function InvestigationGraph({ sessionId }: Props) {
   }));
 
   return (
-    <div style={{ width: '100%', height: '100vh', background: '#0f172a' }}>
+    <div style={{ width: '100%', height: '100vh', background: '#0f172a', position: 'relative' }}>
+
+      {/* Toolbar */}
+      <div
+        style={{
+          position: 'absolute',
+          top: 12,
+          left: 12,
+          zIndex: 100,
+          display: 'flex',
+          gap: 8,
+        }}
+      >
+        <button
+          onClick={() => setFilterVisible((v) => !v)}
+          style={toolbarBtnStyle}
+        >
+          Filters {filters.chainFilter.length + (filters.minFiatValue > 0 ? 1 : 0) > 0 ? '●' : ''}
+        </button>
+        <button
+          onClick={() => {
+            const json = exportSnapshot();
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
+            a.download = `session-${sessionId.slice(0, 8)}.json`;
+            a.click();
+          }}
+          style={toolbarBtnStyle}
+          title="Save session snapshot"
+        >
+          Save
+        </button>
+        <label style={{ ...toolbarBtnStyle, cursor: 'pointer' }} title="Restore session snapshot">
+          Restore
+          <input
+            type="file"
+            accept=".json"
+            style={{ display: 'none' }}
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (!file) return;
+              file.text().then(importSnapshot);
+            }}
+          />
+        </label>
+        <span style={{ color: '#475569', fontSize: 11, alignSelf: 'center' }}>
+          {rfNodes.length} nodes · {rfEdges.length} edges
+        </span>
+      </div>
+
+      {/* Filter panel */}
+      <FilterPanel
+        filters={filters}
+        onChange={setFilters}
+        visible={filterVisible}
+        onClose={() => setFilterVisible(false)}
+      />
+
       <ReactFlow
         nodes={enrichedNodes}
         edges={edges}
         nodeTypes={NODE_TYPES}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
+        onNodeClick={handleNodeClick}
         fitView
         minZoom={0.1}
         maxZoom={2}
@@ -133,6 +263,27 @@ export default function InvestigationGraph({ sessionId }: Props) {
           style={{ background: '#1e293b' }}
         />
       </ReactFlow>
+
+      {/* Bridge hop side drawer */}
+      {selectedBridgeNode && (
+        <BridgeHopDrawer
+          sessionId={sessionId}
+          nodeId={selectedBridgeNode.nodeId}
+          hopData={selectedBridgeNode.hopData}
+          onClose={() => setSelectedBridgeNode(null)}
+        />
+      )}
     </div>
   );
 }
+
+const toolbarBtnStyle: React.CSSProperties = {
+  padding: '4px 12px',
+  background: '#1e293b',
+  border: '1px solid #334155',
+  borderRadius: 5,
+  color: '#94a3b8',
+  fontSize: 11,
+  cursor: 'pointer',
+  fontFamily: 'sans-serif',
+};

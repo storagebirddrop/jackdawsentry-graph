@@ -14,6 +14,8 @@ Reference: PHASE3_IMPLEMENTATION_SPEC.md Section 5 (Service 2 — Trace
 Compiler).
 """
 
+import hashlib
+import json
 import logging
 from datetime import datetime
 from datetime import timezone
@@ -38,6 +40,23 @@ from src.trace_compiler.models import SessionCreateRequest
 from src.trace_compiler.models import SessionCreateResponse
 
 logger = logging.getLogger(__name__)
+
+_EXPANSION_CACHE_TTL = 900  # 15 minutes
+
+
+def _expansion_cache_key(
+    session_id: str,
+    seed_node_id: str,
+    operation_type: str,
+    max_results: Optional[int],
+) -> str:
+    """Deterministic Redis cache key for an expansion result.
+
+    Keyed on session + node + operation + result-size so different page sizes
+    don't collide.  SHA-256 keeps the key short and safe for Redis.
+    """
+    raw = f"expand:{session_id}:{seed_node_id}:{operation_type}:{max_results}"
+    return "tc:" + hashlib.sha256(raw.encode()).hexdigest()
 
 
 class TraceCompiler:
@@ -144,6 +163,40 @@ class TraceCompiler:
         """
         from src.trace_compiler.lineage import branch_id as mk_branch
 
+        # Check Redis cache for a previous identical expansion (15-min TTL).
+        if self._redis is not None:
+            try:
+                cache_key = _expansion_cache_key(
+                    session_id, request.seed_node_id, request.operation_type,
+                    request.options.max_results,
+                )
+                cached = await self._redis.get(cache_key)
+                if cached:
+                    data = json.loads(cached)
+                    return ExpansionResponseV2(
+                        operation_id=new_operation_id(),
+                        operation_type=request.operation_type,
+                        session_id=session_id,
+                        seed_node_id=request.seed_node_id,
+                        seed_lineage_id=request.seed_lineage_id,
+                        branch_id="cached",
+                        expansion_depth=request.options.depth,
+                        added_nodes=[InvestigationNode(**n) for n in data["nodes"]],
+                        added_edges=[InvestigationEdge(**e) for e in data["edges"]],
+                        has_more=False,
+                        pagination=PaginationMeta(
+                            page_size=request.options.page_size,
+                            max_results=request.options.max_results,
+                            has_more=False,
+                        ),
+                        layout_hints=LayoutHints(suggested_layout="layered"),
+                        chain_context=ChainContext(primary_chain="cached", chains_present=[]),
+                        asset_context=AssetContext(assets_present=[]),
+                        timestamp=datetime.now(timezone.utc),
+                    )
+            except Exception as cache_exc:
+                logger.debug("Redis cache read failed: %s", cache_exc)
+
         # Derive chain from the canonical node_id format: "{chain}:{type}:{id}".
         parts = request.seed_node_id.split(":", 2)
         chain = parts[0] if parts else "unknown"
@@ -201,7 +254,15 @@ class TraceCompiler:
                     # Deduplicate nodes by node_id.
                     seen = {n.node_id for n in fwd_n}
                     added_nodes = fwd_n + [n for n in bwd_n if n.node_id not in seen]
-                    added_edges = fwd_e + bwd_e
+                    
+                    # Deduplicate edges by (src, dst, label) tuple.
+                    seen_edges = set()
+                    added_edges = []
+                    for edge in fwd_e + bwd_e:
+                        edge_key = (edge.source_node_id, edge.target_node_id, edge.edge_type)
+                        if edge_key not in seen_edges:
+                            seen_edges.add(edge_key)
+                            added_edges.append(edge)
                 else:
                     logger.debug(
                         "TraceCompiler.expand: unhandled op=%s (no chain compiler for it)",
@@ -214,6 +275,7 @@ class TraceCompiler:
                     request.operation_type,
                     exc,
                 )
+                raise  # Re-raise to allow caller to handle
         else:
             logger.debug(
                 "TraceCompiler.expand: no compiler for chain=%s node_type=%s",
@@ -221,7 +283,26 @@ class TraceCompiler:
                 node_type,
             )
 
-        has_more = len(added_nodes) >= request.options.max_results
+        # Cache successful non-empty results in Redis (15-minute TTL).
+        if added_nodes and self._redis is not None:
+            try:
+                cache_key = _expansion_cache_key(
+                    session_id, request.seed_node_id, request.operation_type,
+                    request.options.max_results,
+                )
+                payload = json.dumps({
+                    "nodes": [n.model_dump(mode="json") for n in added_nodes],
+                    "edges": [e.model_dump(mode="json") for e in added_edges],
+                })
+                await self._redis.setex(cache_key, 900, payload)  # 15 min TTL
+            except Exception as cache_exc:
+                logger.debug("Redis cache write failed: %s", cache_exc)
+
+        has_more = (
+            request.options.max_results is not None
+            and request.options.max_results > 0
+            and len(added_nodes) >= request.options.max_results
+        )
         unique_chains = list({n.chain for n in added_nodes} | {chain})
         unique_assets = list(
             {e.asset_symbol for e in added_edges if e.asset_symbol}
@@ -272,7 +353,30 @@ class TraceCompiler:
         Returns:
             BridgeHopStatusResponse with current status fields.
         """
-        # TODO Phase 4: query bridge_correlations table by hop_id.
+        if self._pg is not None:
+            try:
+                from src.api.database import get_postgres_connection
+                query = """
+                SELECT status, destination_tx_hash, destination_chain,
+                       destination_address, updated_at
+                FROM bridge_correlations
+                WHERE source_tx_hash = $1
+                LIMIT 1
+                """
+                async with get_postgres_connection() as conn:
+                    row = await conn.fetchrow(query, hop_id)
+                if row:
+                    return BridgeHopStatusResponse(
+                        hop_id=hop_id,
+                        status=row["status"],
+                        destination_tx_hash=row.get("destination_tx_hash"),
+                        destination_chain=row.get("destination_chain"),
+                        destination_address=row.get("destination_address"),
+                        updated_at=row.get("updated_at") or datetime.now(timezone.utc),
+                    )
+            except Exception as exc:
+                logger.debug("get_bridge_hop_status DB lookup failed: %s", exc)
+
         return BridgeHopStatusResponse(
             hop_id=hop_id,
             status="pending",
