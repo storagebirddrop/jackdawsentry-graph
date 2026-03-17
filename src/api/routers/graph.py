@@ -28,6 +28,12 @@ from src.api.auth import User
 from src.api.auth import check_permissions
 from src.api.middleware import get_graph_latency_stats
 from src.api.config import get_supported_blockchains
+import hashlib
+import json
+
+from src.api.database import cache_get
+from src.api.database import cache_set
+from src.api.database import get_neo4j_read_session
 from src.api.database import get_neo4j_session
 from src.collectors.rpc.factory import get_rpc_client
 from src.services.entity_attribution import lookup_addresses_bulk as _entity_lookup_bulk
@@ -742,13 +748,26 @@ async def graph_search(
     )
 
 
+_ADDRESS_SUMMARY_TTL = 300  # 5 minutes (T7.3)
+
+
+def _address_summary_cache_key(addr: str, bc: str) -> str:
+    """Deterministic Redis key for address-summary cache entries."""
+    raw = f"addr_summary:{bc}:{addr}"
+    return "as:" + hashlib.sha256(raw.encode()).hexdigest()
+
+
 @router.get("/address/{address}/summary")
 async def address_summary(
     address: str,
     blockchain: str = Query(default="ethereum"),
     current_user: User = Depends(check_permissions([PERMISSIONS["read_blockchain"]])),
 ):
-    """Node metadata: balance, tx count, risk score, labels, sanctions status, first/last seen."""
+    """Node metadata: balance, tx count, risk score, labels, sanctions status, first/last seen.
+
+    Results are cached in Redis for 5 minutes (T7.3).
+    Neo4j reads are routed to the read replica when configured (T7.1).
+    """
     start = time.monotonic()
     addr = address.lower()
     bc = blockchain.lower()
@@ -756,10 +775,23 @@ async def address_summary(
     if bc not in get_supported_blockchains():
         raise HTTPException(status_code=400, detail=f"Unsupported blockchain: {bc}")
 
+    # --- T7.3: Redis address summary cache ---
+    cache_key = _address_summary_cache_key(addr, bc)
+    cached = await cache_get(cache_key)
+    if cached:
+        try:
+            payload = json.loads(cached)
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+            payload["metadata"]["processing_time_ms"] = elapsed_ms
+            payload["metadata"]["cache_hit"] = True
+            return payload
+        except Exception:
+            pass  # corrupt cache entry — fall through to live query
+
     data: Dict[str, Any] = {"address": addr, "blockchain": bc}
 
-    # Neo4j lookup
-    async with get_neo4j_session() as session:
+    # Neo4j lookup — uses read replica when configured (T7.1)
+    async with get_neo4j_read_session() as session:
         result = await session.run(
             """
             OPTIONAL MATCH (a:Address {address: $addr, blockchain: $bc})
@@ -822,12 +854,20 @@ async def address_summary(
             raise HTTPException(status_code=404, detail="Address not found")
 
     elapsed_ms = int((time.monotonic() - start) * 1000)
-    return {
+    response = {
         "success": True,
         "summary": data,
-        "metadata": {"processing_time_ms": elapsed_ms},
-        "timestamp": datetime.now(timezone.utc),
+        "metadata": {"processing_time_ms": elapsed_ms, "cache_hit": False},
+        "timestamp": datetime.now(timezone.utc).isoformat(),
     }
+
+    # Store in Redis cache (failures are swallowed — T7.3)
+    try:
+        await cache_set(cache_key, json.dumps(response), ttl=_ADDRESS_SUMMARY_TTL)
+    except Exception:
+        pass
+
+    return response
 
 
 @router.post("/cluster", response_model=GraphResponse)
@@ -1796,11 +1836,26 @@ _trace_compiler = None
 
 
 def _get_trace_compiler():
-    """Return the singleton TraceCompiler, constructing it on first call."""
+    """Return the singleton TraceCompiler, constructing it on first call.
+
+    The compiler is injected with the Neo4j *read* driver (T7.1) so that
+    investigation-graph expansions are routed to the read replica when
+    ``NEO4J_READ_URI`` is configured.
+    """
     global _trace_compiler
     if _trace_compiler is None:
         from src.trace_compiler.compiler import TraceCompiler
-        _trace_compiler = TraceCompiler()
+        from src.api.database import get_neo4j_read_driver, get_postgres_pool, get_redis_client
+        try:
+            neo4j = get_neo4j_read_driver()
+            pg = get_postgres_pool()
+            redis = get_redis_client()
+        except RuntimeError:
+            # Databases not yet initialised (e.g. test environment).
+            neo4j = None
+            pg = None
+            redis = None
+        _trace_compiler = TraceCompiler(neo4j_driver=neo4j, postgres_pool=pg, redis_client=redis)
     return _trace_compiler
 
 

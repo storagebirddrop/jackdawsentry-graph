@@ -13,6 +13,7 @@ from typing import Optional
 import asyncpg
 import redis.asyncio as redis_async
 from neo4j import AsyncGraphDatabase
+from neo4j import READ_ACCESS
 
 from src.api.config import settings
 
@@ -21,6 +22,8 @@ logger = logging.getLogger(__name__)
 # Global connection pools
 _postgres_pool: Optional[asyncpg.Pool] = None
 _neo4j_driver: Optional[AsyncGraphDatabase.driver] = None
+# Separate driver for read-only queries; points to replica URI when configured.
+_neo4j_read_driver: Optional[AsyncGraphDatabase.driver] = None
 _redis_pool: Optional[redis_async.ConnectionPool] = None
 
 NEO4J_CONNECT_MAX_ATTEMPTS = 10
@@ -32,10 +35,14 @@ _init_event = asyncio.Event()
 _initialized = False
 
 
-def _build_neo4j_driver():
-    """Create a fresh Neo4j driver instance."""
+def _build_neo4j_driver(uri: Optional[str] = None):
+    """Create a fresh Neo4j driver instance.
+
+    Args:
+        uri: Bolt URI to connect to.  Defaults to ``settings.NEO4J_URI``.
+    """
     return AsyncGraphDatabase.driver(
-        settings.NEO4J_URI,
+        uri or settings.NEO4J_URI,
         auth=(settings.NEO4J_USER, settings.NEO4J_PASSWORD),
         max_connection_lifetime=3600,
         max_connection_pool_size=50,
@@ -106,8 +113,8 @@ async def init_postgres():
 
 
 async def init_neo4j():
-    """Initialize Neo4j driver"""
-    global _neo4j_driver
+    """Initialize Neo4j primary driver and, if configured, the read-replica driver."""
+    global _neo4j_driver, _neo4j_read_driver
 
     last_error: Optional[Exception] = None
     _neo4j_driver = None
@@ -123,7 +130,7 @@ async def init_neo4j():
                 attempt,
                 NEO4J_CONNECT_MAX_ATTEMPTS,
             )
-            return
+            break
         except Exception as exc:
             last_error = exc
             logger.warning(
@@ -138,14 +145,32 @@ async def init_neo4j():
                 logger.debug("Ignoring Neo4j driver close error", exc_info=True)
 
             if attempt == NEO4J_CONNECT_MAX_ATTEMPTS:
-                break
+                logger.error(f"❌ Failed to initialize Neo4j: {last_error}")
+                if last_error is None:
+                    raise RuntimeError("Neo4j initialization failed without an exception")
+                raise last_error
 
             await asyncio.sleep(NEO4J_CONNECT_RETRY_DELAY_SECONDS)
 
-    logger.error(f"❌ Failed to initialize Neo4j: {last_error}")
-    if last_error is None:
-        raise RuntimeError("Neo4j initialization failed without an exception")
-    raise last_error
+    # Initialise the read driver — points to the replica URI when configured,
+    # otherwise shares the primary URI (falls back gracefully on single-node).
+    read_uri = settings.NEO4J_READ_URI
+    if read_uri and read_uri != settings.NEO4J_URI:
+        try:
+            read_driver = _build_neo4j_driver(uri=read_uri)
+            await _verify_neo4j_driver(read_driver)
+            _neo4j_read_driver = read_driver
+            logger.info("✅ Neo4j read-replica driver initialised (%s)", read_uri)
+        except Exception as exc:
+            logger.warning(
+                "Neo4j read-replica unavailable (%s); falling back to primary: %s",
+                read_uri,
+                exc,
+            )
+            _neo4j_read_driver = _neo4j_driver
+    else:
+        # No separate replica configured — read sessions use the primary driver.
+        _neo4j_read_driver = _neo4j_driver
 
 
 async def init_redis():
@@ -181,10 +206,23 @@ get_db_pool = get_postgres_pool
 
 
 def get_neo4j_driver() -> AsyncGraphDatabase.driver:
-    """Get Neo4j driver"""
+    """Return the Neo4j write driver (primary)."""
     if _neo4j_driver is None:
         raise RuntimeError("Neo4j driver not initialized")
     return _neo4j_driver
+
+
+def get_neo4j_read_driver() -> AsyncGraphDatabase.driver:
+    """Return the Neo4j read driver.
+
+    When ``NEO4J_READ_URI`` is configured and reachable, this driver points to
+    the read replica so that investigation-graph reads (trace compiler, address
+    summaries) do not compete with collector write traffic on the primary.
+    Falls back to the primary driver when no replica is configured.
+    """
+    if _neo4j_read_driver is None:
+        raise RuntimeError("Neo4j read driver not initialized")
+    return _neo4j_read_driver
 
 
 def get_redis_pool() -> redis_async.ConnectionPool:
@@ -214,9 +252,22 @@ async def get_postgres_connection():
 
 @asynccontextmanager
 async def get_neo4j_session():
-    """Get Neo4j session from driver with session reuse optimization"""
-    async with get_neo4j_driver().session() as session:
-        # Configure session for better performance
+    """Get a Neo4j write session from the primary driver."""
+    async with get_neo4j_driver().session(database=settings.NEO4J_DATABASE) as session:
+        yield session
+
+
+@asynccontextmanager
+async def get_neo4j_read_session():
+    """Get a read-only Neo4j session routed to the read replica when configured.
+
+    Using ``access_mode=READ_ACCESS`` allows the Neo4j driver to route the
+    session to a follower / read replica on causal clusters.  On single-node
+    deployments this is a no-op — the session runs on the primary.
+    """
+    async with get_neo4j_read_driver().session(
+        database=settings.NEO4J_DATABASE, default_access_mode=READ_ACCESS
+    ) as session:
         yield session
 
 
@@ -245,6 +296,11 @@ async def close_databases():
     if _neo4j_driver:
         await _neo4j_driver.close()
         logger.info("✅ Neo4j driver closed")
+
+    # Close the read driver only if it's a distinct instance from the primary.
+    if _neo4j_read_driver and _neo4j_read_driver is not _neo4j_driver:
+        await _neo4j_read_driver.close()
+        logger.info("✅ Neo4j read-replica driver closed")
 
     if _redis_pool:
         await _redis_pool.disconnect()

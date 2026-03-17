@@ -37,6 +37,10 @@ class Settings(BaseSettings):
     NEO4J_USER: str = "neo4j"
     NEO4J_PASSWORD: str
     NEO4J_DATABASE: str = "neo4j"
+    # Optional read-replica URI.  When set, read-only Neo4j sessions are routed
+    # to this endpoint (e.g. a causal-cluster follower or a bolt+routing address).
+    # Defaults to the primary URI so single-instance deployments require no change.
+    NEO4J_READ_URI: Optional[str] = None
 
     # PostgreSQL Compliance Database
     POSTGRES_HOST: str = "localhost"
