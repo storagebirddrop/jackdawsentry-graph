@@ -11,10 +11,10 @@
  * - Maximum depth
  */
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 
 export interface FilterState {
-  minFiatValue: number;
+  minFiatValue: number | null;
   assetFilter: string;
   chainFilter: string[];
   maxDepth: number;
@@ -42,6 +42,11 @@ interface Props {
 export default function FilterPanel({ filters, onChange, visible, onClose }: Props) {
   const [local, setLocal] = useState<FilterState>(filters);
 
+  // Sync local state when external filters change or panel becomes visible.
+  useEffect(() => {
+    setLocal(filters);
+  }, [filters, visible]);
+
   if (!visible) return null;
 
   function apply() {
@@ -52,6 +57,7 @@ export default function FilterPanel({ filters, onChange, visible, onClose }: Pro
   function reset() {
     setLocal(DEFAULT_FILTERS);
     onChange(DEFAULT_FILTERS);
+    onClose();
   }
 
   function toggleChain(chain: string) {
@@ -92,8 +98,13 @@ export default function FilterPanel({ filters, onChange, visible, onClose }: Pro
         <input
           type="number"
           min={0}
-          value={local.minFiatValue}
-          onChange={(e) => setLocal({ ...local, minFiatValue: Number(e.target.value) })}
+          value={local.minFiatValue ?? ''}
+          onChange={(e) => {
+            const raw = e.target.value;
+            const parsed = raw === '' ? null : Number(raw);
+            // Prevent NaN from being set (e.g., for "-" or "1." inputs)
+            setLocal({ ...local, minFiatValue: Number.isNaN(parsed) ? null : parsed });
+          }}
           style={inputStyle}
         />
       </label>
@@ -131,6 +142,7 @@ export default function FilterPanel({ filters, onChange, visible, onClose }: Pro
             <button
               key={c}
               onClick={() => toggleChain(c)}
+              aria-pressed={local.chainFilter.includes(c)}
               style={{
                 padding: '2px 8px',
                 borderRadius: 4,

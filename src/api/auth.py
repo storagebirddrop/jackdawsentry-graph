@@ -11,6 +11,7 @@ from datetime import timezone
 from typing import Dict
 from typing import List
 from typing import Optional
+from typing import Union
 from uuid import UUID
 
 import bcrypt
@@ -118,10 +119,15 @@ def verify_token(token: str) -> TokenData:
     )
 
     if settings.TESTING and token == "test_token":
+        # Test bypass: grant analyst-level read/write permissions only.
+        # Admin permissions are deliberately excluded so tests exercise RBAC paths.
+        _test_permissions = [
+            v for k, v in PERMISSIONS.items() if not k.startswith("admin")
+        ]
         return TokenData(
             user_id="00000000-0000-0000-0000-000000000001",
             username="test_user",
-            permissions=list(PERMISSIONS.values()),
+            permissions=_test_permissions,
             exp=datetime.now(timezone.utc) + timedelta(minutes=5),
         )
 
@@ -175,7 +181,7 @@ async def get_current_user(
             id=UUID(token_data.user_id),
             username=token_data.username or "test_user",
             email="test_user@jackdawsentry.com",
-            role="admin",
+            role="analyst",
             permissions=token_data.permissions,
             is_active=True,
             created_at=datetime.now(timezone.utc),
@@ -244,8 +250,13 @@ async def get_current_active_user(
     return current_user
 
 
-def check_permissions(required_permissions: List[str]):
-    """Decorator to check if user has required permissions"""
+def check_permissions(required_permissions: Union[str, List[str]]):
+    """Decorator to check if user has required permissions.
+
+    Args:
+        required_permissions: A single permission string or a list of permission
+            strings that the authenticated user must possess.
+    """
 
     async def permission_checker(
         current_user: User = Depends(get_current_active_user),
