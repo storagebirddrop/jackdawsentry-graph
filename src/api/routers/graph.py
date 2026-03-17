@@ -26,6 +26,7 @@ from src.analysis.mixer_detection import MixerDetector
 from src.api.auth import PERMISSIONS
 from src.api.auth import User
 from src.api.auth import check_permissions
+from src.api.middleware import get_graph_latency_stats
 from src.api.config import get_supported_blockchains
 from src.api.database import get_neo4j_session
 from src.collectors.rpc.factory import get_rpc_client
@@ -1775,3 +1776,30 @@ def _classify_edge(source: str, target: str) -> str:
     if src in dex_addrs or tgt in dex_addrs:
         return "dex"
     return "transfer"
+
+
+# =============================================================================
+# Latency metrics endpoint (T0.1)
+# =============================================================================
+
+
+@router.get("/latency")
+async def graph_latency_metrics(
+    current_user: User = Depends(check_permissions([PERMISSIONS["read_analysis"]])),
+):
+    """Return p50/p95/p99 latency statistics for all /graph/* endpoints.
+
+    Statistics are derived from a rolling 1-hour window of samples stored in
+    Redis by ``GraphLatencyMiddleware``.  Each endpoint label maps to a dict
+    containing ``p50_ms``, ``p95_ms``, ``p99_ms``, ``mean_ms``, and
+    ``sample_count``.
+
+    Returns an empty ``endpoints`` dict if no samples have been recorded yet
+    (e.g., immediately after service startup or when Redis is unavailable).
+    """
+    stats = await get_graph_latency_stats()
+    return {
+        "success": True,
+        "endpoints": stats,
+        "window_seconds": 3600,
+    }

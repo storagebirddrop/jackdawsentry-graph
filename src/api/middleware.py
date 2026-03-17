@@ -510,6 +510,140 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         response.headers["X-RateLimit-Reset-Day"] = str(reset_day)
 
 
+# ---------------------------------------------------------------------------
+# Graph Latency Middleware
+# ---------------------------------------------------------------------------
+
+# Redis key prefix for per-endpoint latency samples (sorted sets, score = ts).
+_LATENCY_KEY_PREFIX = "metrics:graph_latency:"
+# Retain samples for 1 hour (rolling window for percentile calculation).
+_LATENCY_WINDOW_SECONDS = 3600
+# Maximum samples kept per endpoint to bound memory.
+_LATENCY_MAX_SAMPLES = 10_000
+
+
+class GraphLatencyMiddleware(BaseHTTPMiddleware):
+    """Record p50/p95/p99 latency for all /api/v1/graph/* endpoints.
+
+    Each request that matches the prefix is timed and the duration (in
+    milliseconds) is written to a per-endpoint Redis sorted set, using the
+    current Unix timestamp as the score.  Expired entries are pruned on
+    every write so the set remains a rolling 1-hour window.
+
+    The ``X-Response-Time-Ms`` header is added to every matched response so
+    clients can observe individual latencies.
+
+    Metrics are readable via ``GET /api/v1/graph/latency`` (defined in the
+    graph router).
+    """
+
+    _GRAPH_PREFIX = "/api/v1/graph"
+
+    async def dispatch(
+        self, request: Request, call_next: RequestResponseEndpoint
+    ) -> Response:
+        """Time graph API requests and store samples in Redis."""
+        if not request.url.path.startswith(self._GRAPH_PREFIX):
+            return await call_next(request)
+
+        t_start = time.perf_counter()
+        response = await call_next(request)
+        elapsed_ms = (time.perf_counter() - t_start) * 1000.0
+
+        response.headers["X-Response-Time-Ms"] = f"{elapsed_ms:.1f}"
+
+        # Derive a short endpoint label: strip prefix, collapse path params.
+        label = request.url.path[len(self._GRAPH_PREFIX):]
+        if not label:
+            label = "/"
+
+        asyncio.create_task(
+            self._record(label, elapsed_ms)
+        )
+        return response
+
+    async def _record(self, endpoint: str, elapsed_ms: float) -> None:
+        """Append one latency sample to the Redis sorted set for *endpoint*."""
+        redis_key = f"{_LATENCY_KEY_PREFIX}{endpoint}"
+        now = time.time()
+        cutoff = now - _LATENCY_WINDOW_SECONDS
+
+        try:
+            async with get_redis_connection() as redis:
+                # score = current timestamp; member = "<ts>:<ms>" (unique enough)
+                member = f"{now:.3f}:{elapsed_ms:.2f}"
+                await redis.zadd(redis_key, {member: now})
+                # Prune samples older than the rolling window.
+                await redis.zremrangebyscore(redis_key, "-inf", cutoff)
+                # Cap total samples to avoid unbounded growth.
+                count = await redis.zcard(redis_key)
+                if count > _LATENCY_MAX_SAMPLES:
+                    excess = count - _LATENCY_MAX_SAMPLES
+                    await redis.zpopmin(redis_key, excess)
+                await redis.expire(redis_key, _LATENCY_WINDOW_SECONDS + 60)
+        except Exception as exc:
+            logger.debug("GraphLatencyMiddleware._record failed: %s", exc)
+
+
+async def get_graph_latency_stats() -> Dict[str, Any]:
+    """Compute p50/p95/p99 for all graph endpoints from Redis sorted sets.
+
+    Returns a dict keyed by endpoint label, each value containing p50, p95,
+    p99 (milliseconds), sample_count, and window_seconds.
+
+    Called from ``GET /api/v1/graph/latency``.
+    """
+    import statistics
+
+    results: Dict[str, Any] = {}
+    try:
+        async with get_redis_connection() as redis:
+            keys = await redis.keys(f"{_LATENCY_KEY_PREFIX}*")
+            prefix_len = len(_LATENCY_KEY_PREFIX)
+            now = time.time()
+            cutoff = now - _LATENCY_WINDOW_SECONDS
+
+            for raw_key in keys:
+                key = raw_key.decode() if isinstance(raw_key, bytes) else raw_key
+                endpoint = key[prefix_len:]
+
+                # Fetch all members in the rolling window.
+                members = await redis.zrangebyscore(key, cutoff, "+inf")
+                samples = []
+                for m in members:
+                    m_str = m.decode() if isinstance(m, bytes) else m
+                    # member format: "<ts>:<ms>"
+                    try:
+                        ms = float(m_str.split(":", 1)[1])
+                        samples.append(ms)
+                    except (IndexError, ValueError):
+                        pass
+
+                if not samples:
+                    continue
+
+                samples_sorted = sorted(samples)
+                n = len(samples_sorted)
+
+                def _percentile(sorted_data: list, pct: float) -> float:
+                    idx = int(len(sorted_data) * pct / 100)
+                    idx = min(idx, len(sorted_data) - 1)
+                    return round(sorted_data[idx], 2)
+
+                results[endpoint] = {
+                    "p50_ms": _percentile(samples_sorted, 50),
+                    "p95_ms": _percentile(samples_sorted, 95),
+                    "p99_ms": _percentile(samples_sorted, 99),
+                    "mean_ms": round(statistics.mean(samples), 2),
+                    "sample_count": n,
+                    "window_seconds": _LATENCY_WINDOW_SECONDS,
+                }
+    except Exception as exc:
+        logger.warning("get_graph_latency_stats failed: %s", exc)
+
+    return results
+
+
 # Middleware factory functions
 def create_security_middleware(**kwargs):
     """Create security middleware with configuration"""
