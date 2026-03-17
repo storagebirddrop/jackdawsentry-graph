@@ -1624,12 +1624,12 @@ async def expand_utxo(
     try:
         oracle = get_price_oracle()
         # Use transaction timestamp for historical pricing, fallback to current time
-        tx_timestamp = tx.timestamp if hasattr(tx, 'timestamp') and tx.timestamp else datetime.now(timezone.utc)
+        tx_timestamp = tx.timestamp if hasattr(tx, 'timestamp') else datetime.now(timezone.utc)
         await oracle.enrich_edge_fiat_values(
             new_edges, "bitcoin", tx_timestamp
         )
     except Exception as exc:
-        logger.warning(f"[graph] Bitcoin price oracle enrichment failed: {exc}, edges={len(new_edges)}")
+        logger.warning(f"[graph] Bitcoin price oracle enrichment failed: {exc}, tx_timestamp={tx_timestamp}, edges={len(new_edges)}")
         # Continue without fiat enrichment
 
     return ExpansionResponse(
