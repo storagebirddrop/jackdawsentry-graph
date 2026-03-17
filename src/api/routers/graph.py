@@ -30,6 +30,7 @@ from src.api.config import get_supported_blockchains
 from src.api.database import get_neo4j_session
 from src.collectors.rpc.factory import get_rpc_client
 from src.services.entity_attribution import lookup_addresses_bulk as _entity_lookup_bulk
+from src.services.price_oracle import get_price_oracle
 from src.services.sanctions import screen_address as _sanctions_screen
 
 logger = logging.getLogger(__name__)
@@ -385,6 +386,11 @@ async def expand_address(
     # Tag sanctioned addresses and entity attributions
     await _enrich_sanctions(nodes_map, request.blockchain)
     await _enrich_entities(nodes_map, request.blockchain)
+
+    oracle = get_price_oracle()
+    await oracle.enrich_edge_fiat_values(
+        edges_list, request.blockchain, datetime.now(timezone.utc)
+    )
 
     elapsed_ms = int((time.monotonic() - start) * 1000)
     return GraphResponse(
@@ -1080,6 +1086,14 @@ async def expand_solana_tx(
             elif pname == "system_program":
                 sol_transfer_count += 1
 
+    oracle = get_price_oracle()
+    tx_ts = (
+        datetime.fromtimestamp(block_time, tz=timezone.utc)
+        if block_time
+        else datetime.now(timezone.utc)
+    )
+    await oracle.enrich_edge_fiat_values(new_edges, "solana", tx_ts)
+
     return ExpansionResponse(
         operation_id=str(uuid4()),
         operation_type="expand_solana_tx",
@@ -1593,6 +1607,11 @@ async def expand_utxo(
 
     coinjoin_tx_count = sum(
         1 for n in new_nodes if n.get("node_type") == "transaction" and n.get("is_coinjoin")
+    )
+
+    oracle = get_price_oracle()
+    await oracle.enrich_edge_fiat_values(
+        new_edges, "bitcoin", datetime.now(timezone.utc)
     )
 
     return ExpansionResponse(
