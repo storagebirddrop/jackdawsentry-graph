@@ -936,6 +936,174 @@ async def cluster_addresses(
 # =============================================================================
 
 
+class ExpandSolanaTxRequest(BaseModel):
+    """Request to expand a Solana transaction as an instruction sub-graph.
+
+    Returns one ``InstructionNode`` per instruction (outer and inner combined),
+    carrying ``program_name``, ``instruction_type``, decoded arguments, and
+    standard lineage metadata.
+    """
+
+    tx_signature: str
+    include_inner_instructions: bool = True
+    branch_id: Optional[str] = None
+    insertion_depth: int = 1
+    parent_node_id: Optional[str] = None
+
+
+@router.post("/expand-solana-tx", response_model=ExpansionResponse)
+async def expand_solana_tx(
+    request: ExpandSolanaTxRequest,
+    current_user: User = Depends(check_permissions([PERMISSIONS["read_blockchain"]])),
+):
+    """Expand a Solana transaction to its instruction-level sub-graph.
+
+    Fetches the transaction from the Solana RPC client and runs every
+    instruction through :class:`~src.collectors.solana_instruction_parser.SolanaInstructionParser`.
+    Supported programs: SPL Token, Jupiter v6, Raydium AMM v4, Wormhole Token
+    Bridge, System Program.  Unknown programs are returned with
+    ``instruction_type: "unknown"`` and ``decode_status: "raw"`` — they are
+    never dropped.
+
+    All returned nodes carry ``branch_id``, ``depth``, ``parent_id``, and
+    ``path_id`` for correct frontend graph insertion.
+    """
+    from src.collectors.solana_instruction_parser import SolanaInstructionParser
+    from src.collectors.rpc.solana_rpc import SolanaRpcClient
+
+    branch_id = request.branch_id or str(uuid4())
+    tx_sig = request.tx_signature
+    parent_node_id = request.parent_node_id or f"solana:tx:{tx_sig}"
+    depth = request.insertion_depth
+    path_id = str(uuid4())
+
+    # Fetch raw transaction data via the Solana RPC client
+    client: Optional[SolanaRpcClient] = get_rpc_client("solana")  # type: ignore[assignment]
+    if client is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Solana RPC client is not configured",
+        )
+
+    raw_tx = await client.get_raw_transaction(tx_sig)
+    if raw_tx is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Transaction {tx_sig} not found on Solana",
+        )
+
+    tx_message = raw_tx.get("transaction", {}).get("message", {})
+    meta = raw_tx.get("meta", {})
+    account_keys = tx_message.get("accountKeys", [])
+    instructions = tx_message.get("instructions", [])
+    inner_instructions = (
+        meta.get("innerInstructions", [])
+        if request.include_inner_instructions
+        else []
+    )
+
+    parser = SolanaInstructionParser()
+    parsed = parser.parse_transaction_instructions(
+        instructions=instructions,
+        account_keys=account_keys,
+        inner_instructions=inner_instructions,
+    )
+
+    # Build transaction node (parent of all instruction nodes)
+    slot = raw_tx.get("slot")
+    block_time = raw_tx.get("blockTime")
+    tx_node = {
+        "node_id": parent_node_id,
+        "node_type": "transaction",
+        "tx_hash": tx_sig,
+        "blockchain": "solana",
+        "block_number": slot,
+        "timestamp": (
+            datetime.fromtimestamp(block_time, tz=timezone.utc).isoformat()
+            if block_time
+            else None
+        ),
+        "fee_lamports": meta.get("fee"),
+        "status": "confirmed" if meta.get("err") is None else "failed",
+        "instruction_count": len(parsed),
+        "depth": depth,
+        "parent_id": request.parent_node_id or parent_node_id,
+        "branch_id": branch_id,
+        "path_id": path_id,
+    }
+
+    new_nodes = [tx_node]
+    new_edges = []
+
+    program_counts: Dict[str, int] = {}
+    swap_count = 0
+    bridge_count = 0
+    token_transfer_count = 0
+    sol_transfer_count = 0
+
+    for ix_idx, ix in enumerate(parsed):
+        ix_node = parser.to_node_dict(
+            ix,
+            branch_id=branch_id,
+            depth=depth + 1,
+            parent_node_id=parent_node_id,
+            path_id=path_id,
+            ix_index=ix_idx,
+        )
+        new_nodes.append(ix_node)
+
+        # Edge: tx → instruction
+        new_edges.append(
+            {
+                "edge_id": f"ix_edge:{tx_sig}:{ix_idx}",
+                "edge_type": "contains_instruction",
+                "source_node_id": parent_node_id,
+                "target_node_id": ix_node["node_id"],
+                "depth": depth + 1,
+                "branch_id": branch_id,
+            }
+        )
+
+        # Aggregate metadata stats
+        pname = ix.program_name
+        program_counts[pname] = program_counts.get(pname, 0) + 1
+        itype = ix.instruction_type
+        if itype in ("route", "sharedAccountsRoute", "swapBaseIn", "swapBaseOut"):
+            swap_count += 1
+        elif pname == "wormhole_token_bridge" and itype in (
+            "transferTokens", "transferTokensWithPayload"
+        ):
+            bridge_count += 1
+        elif itype in ("transfer", "transferChecked"):
+            if pname in ("spl_token", "spl_token_2022"):
+                token_transfer_count += 1
+            elif pname == "system_program":
+                sol_transfer_count += 1
+
+    return ExpansionResponse(
+        operation_id=str(uuid4()),
+        operation_type="expand_solana_tx",
+        parent_node_id=parent_node_id,
+        branch_id=branch_id,
+        insertion_depth=depth,
+        new_nodes=new_nodes,
+        new_edges=new_edges,
+        expansion_metadata={
+            "tx_signature": tx_sig,
+            "instruction_count": len(parsed),
+            "program_counts": program_counts,
+            "swap_count": swap_count,
+            "bridge_count": bridge_count,
+            "token_transfer_count": token_transfer_count,
+            "sol_transfer_count": sol_transfer_count,
+        },
+        asset_context={
+            "blockchain": "solana",
+        },
+        timestamp=datetime.now(timezone.utc),
+    )
+
+
 class ExpandBridgeRequest(BaseModel):
     """Request to follow a bridge hop from source chain to destination chain."""
 

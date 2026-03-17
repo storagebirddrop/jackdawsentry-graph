@@ -34,6 +34,26 @@ class SolanaRpcClient(BaseRPCClient):
     # Transaction
     # ------------------------------------------------------------------
 
+    async def get_raw_transaction(self, tx_signature: str) -> Optional[Dict[str, Any]]:
+        """Fetch a transaction and return the raw RPC result dict.
+
+        Unlike :meth:`get_transaction`, this method returns the full
+        ``getTransaction`` response including ``message.instructions``,
+        ``meta.innerInstructions``, and all account keys — all fields required
+        by the instruction parser.
+
+        Args:
+            tx_signature: The base58 transaction signature.
+
+        Returns:
+            The raw result dict from ``getTransaction``, or ``None`` if the
+            transaction is not found.
+        """
+        return await self._json_rpc(
+            "getTransaction",
+            [tx_signature, {"encoding": "json", "maxSupportedTransactionVersion": 0}],
+        )
+
     async def get_transaction(self, tx_hash: str) -> Optional[Transaction]:
         """Fetch a transaction by signature."""
         result = await self._json_rpc(
