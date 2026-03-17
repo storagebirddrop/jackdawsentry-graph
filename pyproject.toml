@@ -7,13 +7,13 @@ name = "jackdawsentry"
 version = "1.0.0"
 description = "Enterprise Blockchain Intelligence Platform"
 authors = [{name = "Jackdaw Team", email = "team@jackdawsentry.com"}]
-license = {text = "MIT"}
+license = {text = "Proprietary"}
 readme = "README.md"
 requires-python = ">=3.8"
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Financial and Insurance Industry",
-    "License :: OSI Approved :: MIT License",
+    "License :: Proprietary",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.8",
     "Programming Language :: Python :: 3.9",
