@@ -1444,9 +1444,9 @@ async def expand_utxo(
         if client:
             try:
                 txs = await client.get_address_transactions(request.address, limit=25)
-                for tx in txs:
+                for _rpc_tx in txs:
                     # Build synthetic records from UTXOOutput objects
-                    for out in tx.outputs:
+                    for out in _rpc_tx.outputs:
                         if out.is_op_return or not out.address:
                             continue
                         if (
@@ -1455,7 +1455,7 @@ async def expand_utxo(
                         ):
                             continue
                         is_out_direction = (
-                            any(inp.address == request.address for inp in tx.inputs)
+                            any(inp.address == request.address for inp in _rpc_tx.inputs)
                         )
                         is_in_direction = out.address == request.address
                         relevant = (
@@ -1467,13 +1467,15 @@ async def expand_utxo(
                             continue
                         records.append(
                             {
-                                "tx_hash": tx.hash,
-                                "block_number": tx.block_number,
+                                "tx_hash": _rpc_tx.hash,
+                                "block_number": _rpc_tx.block_number,
                                 "tx_ts": (
-                                    tx.timestamp.isoformat() if tx.timestamp else None
+                                    _rpc_tx.timestamp.isoformat()
+                                    if _rpc_tx.timestamp
+                                    else None
                                 ),
-                                "is_coinjoin": tx.is_coinjoin,
-                                "fee": tx.fee,
+                                "is_coinjoin": _rpc_tx.is_coinjoin,
+                                "fee": _rpc_tx.fee,
                                 "output_address": out.address,
                                 "output_index": out.output_index,
                                 "value_satoshis": out.value_satoshis,
@@ -1621,11 +1623,18 @@ async def expand_utxo(
         1 for n in new_nodes if n.get("node_type") == "transaction" and n.get("is_coinjoin")
     )
 
-    # Enrich with fiat values using transaction timestamps
+    # Enrich with fiat values — use the earliest record timestamp if available.
+    _first_ts_str = next(
+        (r.get("tx_ts") for r in records if r.get("tx_ts")), None
+    )
+    try:
+        tx_timestamp = (
+            datetime.fromisoformat(_first_ts_str) if _first_ts_str else datetime.now(timezone.utc)
+        )
+    except (ValueError, TypeError):
+        tx_timestamp = datetime.now(timezone.utc)
     try:
         oracle = get_price_oracle()
-        # Use transaction timestamp for historical pricing, fallback to current time
-        tx_timestamp = tx.timestamp if hasattr(tx, 'timestamp') else datetime.now(timezone.utc)
         await oracle.enrich_edge_fiat_values(
             new_edges, "bitcoin", tx_timestamp
         )
