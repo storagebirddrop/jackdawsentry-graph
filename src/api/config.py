@@ -236,6 +236,14 @@ class Settings(BaseSettings):
     # Chainabuse — community abuse reports (free API key at chainabuse.com)
     CHAINABUSE_API_KEY: Optional[str] = None
 
+    # Price oracle — CoinGecko (free / Pro) and CoinMarketCap fallback
+    # CoinGecko free tier: no key required but rate-limited to ~30 req/min.
+    # CoinGecko Pro key increases the limit to 500 req/min.
+    COINGECKO_API_KEY: Optional[str] = None
+    COINGECKO_API_URL: str = "https://api.coingecko.com/api/v3"
+    # Price cache TTL in seconds — historical prices never change, so 7 days is safe.
+    PRICE_CACHE_TTL_SECONDS: int = 604800  # 7 days
+
     # Cache Configuration
     CACHE_TTL_SECONDS: int = 300
     CACHE_MAX_SIZE: int = 1000
