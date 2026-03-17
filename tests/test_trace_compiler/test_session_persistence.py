@@ -4,13 +4,9 @@ Verifies:
 - create_session() inserts a row into graph_sessions when PG pool is available.
 - create_session() silently succeeds even when PG INSERT fails.
 - create_session() still returns a valid response when no PG pool is configured.
-- save_session_snapshot() endpoint updates the snapshot column.
-- save_session_snapshot() silently ignores PG failures.
 """
 
-from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
-import uuid
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 

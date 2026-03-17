@@ -68,7 +68,7 @@ export default function UTXONode({ data }: NodeProps) {
 
       {/* Address */}
       <div style={{ color: '#a8a29e', marginTop: 4, fontSize: 10 }}>
-        {shortAddr(utxo.address)}
+        {shortAddr(utxo.address || '')}
       </div>
 
       <Handle type="source" position={Position.Right} />

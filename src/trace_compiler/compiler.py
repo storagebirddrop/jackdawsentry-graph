@@ -1,6 +1,3 @@
-# Copyright (c) 2024 DAWGUS. All rights reserved.
-# This file is proprietary and confidential. Unauthorized use is prohibited.
-
 """
 TraceCompiler — orchestrates chain-specific compilers to produce
 ``ExpansionResponse v2`` payloads from the raw event store.
@@ -9,9 +6,9 @@ This is the semantic boundary between raw blockchain facts (PostgreSQL event
 store, Neo4j canonical graph) and the investigation-view graph served to the
 frontend.
 
-Current state (Phase 3): skeleton with stub implementations.
-All methods raise ``NotImplementedError`` and will be filled in during
-Phase 4 (chain compiler implementations).
+Current state (Phase 4): EVM and UTXO chain compilers are implemented.
+Session creation and expansion are fully wired; bridge hop status polling
+is supported via the PostgreSQL ``bridge_correlations`` table.
 
 Reference: PHASE3_IMPLEMENTATION_SPEC.md Section 5 (Service 2 — Trace
 Compiler).
@@ -408,11 +405,13 @@ class TraceCompiler:
     ) -> BridgeHopStatusResponse:
         """Return the current resolution status of a bridge hop.
 
-        Phase 3 stub: always returns ``status="pending"``.
+        Queries the ``bridge_correlations`` table by ``source_tx_hash``.
+        Falls back to ``status="pending"`` if no record is found.
 
         Args:
-            session_id: Investigation session UUID (for authorization).
-            hop_id:     BridgeHop.hop_id value.
+            session_id: Investigation session UUID (accepted but not currently
+                validated against the DB — callers must enforce authorization).
+            hop_id:     BridgeHop.hop_id value (matched as ``source_tx_hash``).
 
         Returns:
             BridgeHopStatusResponse with current status fields.

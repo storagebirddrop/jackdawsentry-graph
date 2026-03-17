@@ -20,6 +20,17 @@ export default function BridgeHopNode({ data }: NodeProps) {
   const d = data as unknown as BridgeNodeData;
   const hop = d.node_data as BridgeHopData;
 
+  // Defensive guards for required properties
+  if (!hop?.hop_id) {
+    return (
+      <div style={{ border: '2px solid #ef4444', borderRadius: 8, background: '#1e1b4b', color: '#f1f5f9', padding: '6px 10px', minWidth: 180, fontSize: 11 }}>
+        <Handle type="target" position={Position.Left} />
+        <div style={{ color: '#f87171' }}>Invalid Bridge Hop Data</div>
+        <Handle type="source" position={Position.Right} />
+      </div>
+    );
+  }
+
   return (
     <div
       style={{
@@ -37,23 +48,23 @@ export default function BridgeHopNode({ data }: NodeProps) {
       {/* Protocol + status */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <span style={{ color: '#a78bfa', fontWeight: 700, fontSize: 12 }}>
-          {hop.protocol_id.toUpperCase()}
+          {(hop.protocol_id || 'UNKNOWN').toUpperCase()}
         </span>
         <span
           style={{
             width: 8,
             height: 8,
             borderRadius: '50%',
-            background: statusColor(hop.status),
+            background: statusColor(hop.status || 'pending'),
             display: 'inline-block',
           }}
-          title={`Status: ${hop.status}`}
+          title={`Status: ${hop.status || 'pending'}`}
         />
       </div>
 
       {/* Chain route */}
       <div style={{ color: '#94a3b8', marginTop: 3 }}>
-        {hop.source_chain} → {hop.destination_chain ?? '?'}
+        {hop.source_chain ?? '?'} → {hop.destination_chain ?? '?'}
       </div>
 
       {/* Assets */}
@@ -65,7 +76,7 @@ export default function BridgeHopNode({ data }: NodeProps) {
 
       {/* Confidence */}
       <div style={{ color: '#64748b', fontSize: 9, marginTop: 3 }}>
-        confidence {(hop.correlation_confidence * 100).toFixed(0)}%
+        confidence {Number.isFinite(hop.correlation_confidence) ? (hop.correlation_confidence * 100).toFixed(0) + '%' : '—'}
       </div>
 
       <Handle type="source" position={Position.Right} />

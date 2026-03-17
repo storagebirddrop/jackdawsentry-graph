@@ -12,14 +12,22 @@ interface ClusterNodeData extends InvestigationNode {
   onExpand?: () => void;
 }
 
-export default function ClusterSummaryNode({ data }: NodeProps) {
-  const d = data as unknown as ClusterNodeData;
-  const cluster = d.node_data as ClusterSummaryData;
+export default function ClusterSummaryNode({ data }: NodeProps<ClusterNodeData>) {
+  if (!data || !data.node_data) {
+    return (
+      <div style={{ border: '2px dashed #475569', borderRadius: 8, background: '#1e293b', color: '#64748b', padding: '6px 10px', minWidth: 140, fontSize: 11, textAlign: 'center' }}>
+        <Handle type="target" position={Position.Left} />
+        <div>No cluster data</div>
+        <Handle type="source" position={Position.Right} />
+      </div>
+    );
+  }
+  const cluster = data.node_data as ClusterSummaryData;
 
   return (
     <div
       style={{
-        border: `2px dashed ${d.branch_color}`,
+        border: `2px dashed ${data.branch_color}`,
         borderRadius: 8,
         background: '#1e293b',
         color: '#f1f5f9',
@@ -41,13 +49,13 @@ export default function ClusterSummaryNode({ data }: NodeProps) {
           ` · risk ${(cluster.max_risk_score * 100).toFixed(0)}%`}
       </div>
 
-      {d.onExpand && (
+      {data.onExpand && (
         <button
-          onClick={d.onExpand}
+          onClick={data.onExpand}
           style={{
             marginTop: 6,
             padding: '2px 8px',
-            background: d.branch_color,
+            background: data.branch_color,
             border: 'none',
             borderRadius: 4,
             color: '#fff',

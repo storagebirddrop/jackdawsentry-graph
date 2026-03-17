@@ -270,7 +270,7 @@ class InvestigationEdge(BaseModel):
     timestamp: Optional[str] = None
 
     # Display
-    is_highlight: bool = False
+    is_highlighted: bool = False
     is_suspected_change: bool = False  # Bitcoin change output
     taint_percentage: Optional[float] = None  # 0.0–1.0 if taint model applied
     direction: str = "forward"  # "forward" | "backward" | "lateral"

@@ -105,6 +105,8 @@ class EVMChainCompiler(BaseChainCompiler):
         Returns:
             Tuple of (nodes, edges) ready for inclusion in ExpansionResponseV2.
         """
+        if chain not in EVM_CHAINS:
+            raise ValueError(f"EVMChainCompiler does not support chain '{chain}'")
         addr = seed_address.lower()
         rows = await self._fetch_outbound_event_store(addr, chain, options)
         if not rows:
@@ -143,6 +145,8 @@ class EVMChainCompiler(BaseChainCompiler):
         Returns:
             Tuple of (nodes, edges) ready for inclusion in ExpansionResponseV2.
         """
+        if chain not in EVM_CHAINS:
+            raise ValueError(f"EVMChainCompiler does not support chain '{chain}'")
         addr = seed_address.lower()
         rows = await self._fetch_inbound_event_store(addr, chain, options)
         if not rows:
@@ -309,6 +313,7 @@ class EVMChainCompiler(BaseChainCompiler):
             return []
         try:
             limit = min(options.max_results, _SQL_FETCH_LIMIT)
+            asset_filter = options.asset_filter or []
             sql = """
                 SELECT
                     tx_hash,
@@ -320,12 +325,12 @@ class EVMChainCompiler(BaseChainCompiler):
                 FROM raw_token_transfers
                 WHERE blockchain = $1
                   AND to_address = $2
-                  AND (options.asset_filter IS NULL OR asset_symbol = ANY($3))
+                  AND ($3::text[] IS NULL OR asset_symbol = ANY($3))
                 ORDER BY timestamp DESC
-                LIMIT $3
+                LIMIT $4
             """
             async with self._pg.acquire() as conn:
-                rows = await conn.fetch(sql, chain, address, *options.asset_filter)
+                rows = await conn.fetch(sql, chain, address, asset_filter or None, limit)
             return [dict(r) for r in rows]
         except Exception as exc:
             logger.debug("_fetch_inbound_token_transfers failed: %s", exc)

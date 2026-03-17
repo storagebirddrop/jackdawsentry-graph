@@ -19,6 +19,13 @@ function riskColor(score?: number): string {
   return '#10b981';
 }
 
+function riskLabel(score?: number): string {
+  if (score === undefined) return 'unknown';
+  if (score >= 0.7) return 'high';
+  if (score >= 0.4) return 'med';
+  return 'low';
+}
+
 function shortAddr(addr: string): string {
   if (addr.length <= 12) return addr;
   return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
@@ -28,10 +35,23 @@ export default function AddressNode({ data }: NodeProps) {
   const d = data as unknown as AddressNodeComponentData;
   const addr = (d.address_data ?? d.node_data) as AddressNodeData;
 
+  // Defensive guards for required properties
+  if (!addr?.address) {
+    return (
+      <div style={{ border: '2px solid #ef4444', borderRadius: 8, background: '#1e293b', color: '#f1f5f9', padding: '6px 10px', minWidth: 160, fontFamily: 'monospace', fontSize: 11, position: 'relative' }}>
+        <Handle type="source" position={Position.Right} />
+        <Handle type="target" position={Position.Left} />
+        <div style={{ color: '#f87171' }}>Invalid Address Data</div>
+      </div>
+    );
+  }
+
+  const safeBranchColor = d?.branch_color ?? '#475569';
+
   return (
     <div
       style={{
-        border: `2px solid ${d.branch_color}`,
+        border: `2px solid ${safeBranchColor}`,
         borderRadius: 8,
         background: '#1e293b',
         color: '#f1f5f9',
@@ -44,19 +64,31 @@ export default function AddressNode({ data }: NodeProps) {
     >
       <Handle type="target" position={Position.Left} />
 
-      {/* Risk dot */}
+      {/* Risk dot + label */}
       <div
         style={{
           position: 'absolute',
           top: 6,
           right: 8,
-          width: 8,
-          height: 8,
-          borderRadius: '50%',
-          background: riskColor(addr.risk_score),
+          display: 'flex',
+          alignItems: 'center',
+          gap: 3,
         }}
+        aria-label={`Risk: ${addr.risk_score?.toFixed(2) ?? 'unknown'} (${riskLabel(addr.risk_score)})`}
         title={`Risk: ${addr.risk_score?.toFixed(2) ?? 'unknown'}`}
-      />
+      >
+        <span style={{ fontSize: 8, color: riskColor(addr.risk_score), fontFamily: 'sans-serif' }}>
+          {riskLabel(addr.risk_score)}
+        </span>
+        <div
+          style={{
+            width: 8,
+            height: 8,
+            borderRadius: '50%',
+            background: riskColor(addr.risk_score),
+          }}
+        />
+      </div>
 
       {/* Address */}
       <div style={{ fontWeight: 600, color: '#94a3b8' }}>

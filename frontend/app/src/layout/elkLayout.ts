@@ -52,7 +52,13 @@ export async function computeElkLayout(
     })),
   };
 
-  const result = await elk.layout(graph);
+  let result;
+  try {
+    result = await elk.layout(graph);
+  } catch (err) {
+    console.error('ELK layout failed:', err);
+    return new Map();
+  }
 
   const positions = new Map<string, { x: number; y: number }>();
   for (const child of result.children ?? []) {

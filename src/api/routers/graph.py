@@ -1,6 +1,3 @@
-# Copyright (c) 2024 DAWGUS. All rights reserved.
-# This file is proprietary and confidential. Unauthorized use is prohibited.
-
 """
 Jackdaw Sentry - Transaction Graph Router (M9.2)
 Returns {nodes, edges} JSON for the frontend Cytoscape.js graph renderer.
@@ -1933,6 +1930,12 @@ async def save_session_snapshot(
     in ``graph_sessions``.  The session row must already exist (created by
     ``POST /sessions``); if it does not, the snapshot is silently ignored.
     """
+    import uuid as _uuid
+    try:
+        _uuid.UUID(session_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid session_id: must be a UUID")
+
     saved_at = datetime.now(timezone.utc)
     snapshot_id = str(uuid4())
 

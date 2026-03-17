@@ -103,7 +103,9 @@ export default function FilterPanel({ filters, onChange, visible, onClose }: Pro
             const raw = e.target.value;
             const parsed = raw === '' ? null : Number(raw);
             // Prevent NaN from being set (e.g., for "-" or "1." inputs)
-            setLocal({ ...local, minFiatValue: Number.isNaN(parsed) ? null : parsed });
+            // Clamp negative values to 0
+            const clampedValue = Number.isNaN(parsed) ? null : (parsed !== null && parsed < 0 ? 0 : parsed);
+            setLocal({ ...local, minFiatValue: clampedValue });
           }}
           style={inputStyle}
         />

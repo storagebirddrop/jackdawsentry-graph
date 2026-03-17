@@ -39,6 +39,8 @@ export default function SessionStarter({ onSessionCreated }: Props) {
     }
   }
 
+  const isDisabled = loading || !address.trim();
+
   return (
     <div
       style={{
@@ -68,16 +70,41 @@ export default function SessionStarter({ onSessionCreated }: Props) {
       >
         <input
           type="text"
+          aria-label="Seed address"
           placeholder="Seed address (0x... or bitcoin...)"
           value={address}
           onChange={(e) => setAddress(e.target.value)}
           style={inputStyle}
+          onFocus={(e) => {
+            if (e.target instanceof HTMLElement) {
+              e.target.style.boxShadow = '0 0 0 2px #60a5fa';
+              e.target.style.borderColor = '#60a5fa';
+            }
+          }}
+          onBlur={(e) => {
+            if (e.target instanceof HTMLElement) {
+              e.target.style.boxShadow = 'none';
+              e.target.style.borderColor = '#334155';
+            }
+          }}
         />
 
         <select
           value={chain}
           onChange={(e) => setChain(e.target.value)}
           style={inputStyle}
+          onFocus={(e) => {
+            if (e.target instanceof HTMLElement) {
+              e.target.style.boxShadow = '0 0 0 2px #60a5fa';
+              e.target.style.borderColor = '#60a5fa';
+            }
+          }}
+          onBlur={(e) => {
+            if (e.target instanceof HTMLElement) {
+              e.target.style.boxShadow = 'none';
+              e.target.style.borderColor = '#334155';
+            }
+          }}
         >
           {CHAINS.map((c) => (
             <option key={c} value={c}>{c}</option>
@@ -86,15 +113,21 @@ export default function SessionStarter({ onSessionCreated }: Props) {
 
         <button
           type="submit"
-          disabled={loading || !address.trim()}
+          disabled={isDisabled}
           style={{
-            padding: '10px 0',
-            background: loading ? '#1e40af' : '#2563eb',
-            border: 'none',
-            borderRadius: 6,
-            color: '#fff',
-            fontSize: 14,
-            cursor: loading ? 'not-allowed' : 'pointer',
+            ...buttonStyle,
+            background: isDisabled ? '#1e40af' : '#2563eb',
+            cursor: isDisabled ? 'not-allowed' : 'pointer',
+          }}
+          onFocus={(e) => {
+            if (e.target instanceof HTMLElement) {
+              e.target.style.boxShadow = '0 0 0 2px #60a5fa';
+            }
+          }}
+          onBlur={(e) => {
+            if (e.target instanceof HTMLElement) {
+              e.target.style.boxShadow = 'none';
+            }
           }}
         >
           {loading ? 'Starting…' : 'Start Investigation'}
@@ -117,5 +150,17 @@ const inputStyle: React.CSSProperties = {
   borderRadius: 6,
   color: '#f1f5f9',
   fontSize: 13,
+  outline: 'none',
+};
+
+// Add focus-visible styles via style override
+const buttonStyle: React.CSSProperties = {
+  padding: '10px 0',
+  background: '#2563eb',
+  border: 'none',
+  borderRadius: 6,
+  color: '#fff',
+  fontSize: 14,
+  cursor: 'pointer',
   outline: 'none',
 };

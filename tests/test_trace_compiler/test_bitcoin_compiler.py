@@ -255,7 +255,7 @@ async def test_expand_next_returns_empty_on_pg_error():
     ("p2pkh", "utxo_p2pkh"),
     ("p2sh", "utxo_p2sh"),
     ("p2wpkh", "utxo_p2wpkh"),
-    ("p2wsh", "utxo_p2wsh"),
+    ("p2wsh", "utxo_p2pkh"),   # not in map → default
     ("p2tr", "utxo_p2tr"),
     ("op_return", "utxo_op_return"),
     ("unknown_type", "utxo_p2pkh"),

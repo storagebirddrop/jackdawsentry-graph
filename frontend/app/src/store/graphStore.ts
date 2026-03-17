@@ -111,8 +111,8 @@ export interface GraphState {
 
   /** Serialise current graph state to a JSON string (for session snapshot). */
   exportSnapshot: () => string;
-  /** Restore graph state from a JSON string previously produced by exportSnapshot. */
-  importSnapshot: (json: string) => void;
+  /** Restore graph state from a JSON string previously produced by exportSnapshot. Returns true on success. */
+  importSnapshot: (json: string) => boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -137,34 +137,47 @@ export const useGraphStore = create<GraphState>((set, get) => ({
       edgeMap: new Map(),
       rfNodes: [toRfNode(rootNode)],
       rfEdges: [],
+      expandingNodeIds: new Set(),
     });
   },
 
   applyExpansionDelta(response) {
     const { nodeMap, edgeMap } = get();
 
-    // Merge new nodes (existing nodes are NOT replaced — preserves position)
+    // Create new Maps to ensure immutability
+    const newNodeMap = new Map(nodeMap);
+    const newEdgeMap = new Map(edgeMap);
     let changed = false;
+
+    // Merge new nodes (existing nodes are NOT replaced — preserves position)
     for (const node of response.nodes) {
-      if (!nodeMap.has(node.node_id)) {
-        nodeMap.set(node.node_id, node);
+      if (!newNodeMap.has(node.node_id)) {
+        newNodeMap.set(node.node_id, node);
         changed = true;
       }
     }
     for (const edge of response.edges) {
-      if (!edgeMap.has(edge.edge_id)) {
-        edgeMap.set(edge.edge_id, edge);
+      if (!newEdgeMap.has(edge.edge_id)) {
+        newEdgeMap.set(edge.edge_id, edge);
         changed = true;
       }
     }
 
     if (!changed) return;
 
+    // Preserve positions of existing nodes so they don't jump on delta updates.
+    const existingPositions = new Map<string, { x: number; y: number }>();
+    for (const n of get().rfNodes) existingPositions.set(n.id, n.position);
+
     set({
-      nodeMap: new Map(nodeMap),
-      edgeMap: new Map(edgeMap),
-      rfNodes: Array.from(nodeMap.values()).map(toRfNode),
-      rfEdges: Array.from(edgeMap.values()).map(toRfEdge),
+      nodeMap: newNodeMap,
+      edgeMap: newEdgeMap,
+      rfNodes: Array.from(newNodeMap.values()).map((inv) => {
+        const rf = toRfNode(inv);
+        const pos = existingPositions.get(rf.id);
+        return pos ? { ...rf, position: pos } : rf;
+      }),
+      rfEdges: Array.from(newEdgeMap.values()).map(toRfEdge),
     });
   },
 
@@ -231,8 +244,10 @@ export const useGraphStore = create<GraphState>((set, get) => ({
       });
       const rfEdges = data.edges.map(toRfEdge);
       set({ sessionId: data.sessionId, nodeMap, edgeMap, rfNodes, rfEdges });
+      return true;
     } catch (err) {
       console.error('importSnapshot failed:', err);
+      return false;
     }
   },
 }));

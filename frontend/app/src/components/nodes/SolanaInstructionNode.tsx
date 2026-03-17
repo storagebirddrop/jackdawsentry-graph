@@ -34,10 +34,10 @@ function displayProgram(data: SolanaInstructionData): string {
   return `${data.program_id.slice(0, 6)}…${data.program_id.slice(-4)}`;
 }
 
-export default function SolanaInstructionNode({ data }: NodeProps) {
-  const d = data as unknown as SolanaNodeData;
-  const ix = d.node_data as SolanaInstructionData;
-  const decodeColor = DECODE_COLORS[ix.decode_status] ?? DECODE_COLORS.unknown;
+export default function SolanaInstructionNode({ data }: NodeProps<SolanaNodeData>) {
+  const ix = data.node_data as SolanaInstructionData;
+  const decodeStatus = ix.decode_status ?? 'unknown';
+  const decodeColor = DECODE_COLORS[decodeStatus] ?? DECODE_COLORS.unknown;
 
   return (
     <div
@@ -68,9 +68,9 @@ export default function SolanaInstructionNode({ data }: NodeProps) {
             fontFamily: 'sans-serif',
             fontWeight: 700,
           }}
-          title={`Decode: ${ix.decode_status}`}
+          title={`Decode: ${decodeStatus}`}
         >
-          {ix.decode_status.toUpperCase()}
+          {decodeStatus.toUpperCase()}
         </span>
       </div>
 

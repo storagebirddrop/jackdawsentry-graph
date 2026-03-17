@@ -1,6 +1,6 @@
 /**
  * EntityNode — displays an attributed entity (exchange, mixer, VASP, etc.)
- * with name, category, address count, and risk score.
+ * with name, category, address count, and jurisdiction.
  */
 
 import { Handle, Position, type NodeProps } from '@xyflow/react';
@@ -23,6 +23,16 @@ const CATEGORY_COLORS: Record<string, string> = {
 export default function EntityNode({ data }: NodeProps) {
   const d = data as unknown as EntityNodeComponentData;
   const entity = d.node_data as EntityNodeData;
+
+  // Defensive guards for required properties
+  if (!entity?.entity_id) {
+    return (
+      <div style={{ border: '2px solid #ef4444', borderRadius: 8, background: '#0f172a', color: '#f1f5f9', padding: '6px 10px', minWidth: 160, fontSize: 11 }}>
+        <div style={{ color: '#f87171' }}>Invalid Entity Data</div>
+      </div>
+    );
+  }
+
   const catColor = CATEGORY_COLORS[entity.category] ?? CATEGORY_COLORS.unknown;
 
   return (
@@ -61,7 +71,7 @@ export default function EntityNode({ data }: NodeProps) {
       </div>
 
       <div style={{ color: '#94a3b8', marginTop: 3, fontSize: 10 }}>
-        {entity.address_count} addresses
+        {entity.address_count} {entity.address_count === 1 ? 'address' : 'addresses'}
         {entity.jurisdiction && ` · ${entity.jurisdiction}`}
       </div>
 

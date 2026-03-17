@@ -8,19 +8,18 @@
 import { useEffect, useRef } from 'react';
 import { getBridgeHopStatus } from '../api/client';
 import type { BridgeHopData, BridgeHopStatusResponse } from '../types/graph';
-import { useGraphStore } from '../store/graphStore';
 
 interface Props {
   sessionId: string;
   nodeId: string;
   hopData: BridgeHopData;
   onClose: () => void;
+  onRefreshHop?: () => void;
 }
 
 const POLL_INTERVAL_MS = 30_000;
 
-export default function BridgeHopDrawer({ sessionId, nodeId, hopData, onClose }: Props) {
-  const { applyExpansionDelta } = useGraphStore();
+export default function BridgeHopDrawer({ sessionId, nodeId, hopData, onClose, onRefreshHop }: Props) {
   const hopId = hopData.hop_id;
 
   // Poll while pending
@@ -35,15 +34,19 @@ export default function BridgeHopDrawer({ sessionId, nodeId, hopData, onClose }:
           // Status changed — trigger a re-expand so the graph updates
           console.log(`Bridge hop ${hopId} resolved: ${status.status}`);
           if (intervalRef.current) clearInterval(intervalRef.current);
+          // Notify parent so it can refresh the graph for the updated hop.
+          onRefreshHop?.();
         }
       } catch {
         // Swallow — backend may not have it yet
       }
     }
 
+    // Poll immediately on mount
+    poll();
     intervalRef.current = setInterval(poll, POLL_INTERVAL_MS);
     return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
-  }, [hopId, hopData.status, sessionId, applyExpansionDelta]);
+  }, [hopId, hopData.status, sessionId, onRefreshHop]);
 
   const statusColor =
     hopData.status === 'completed' ? '#10b981'
@@ -75,6 +78,7 @@ export default function BridgeHopDrawer({ sessionId, nodeId, hopData, onClose }:
         </span>
         <button
           onClick={onClose}
+          aria-label="Close"
           style={{ background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', fontSize: 16 }}
         >
           ✕
@@ -96,7 +100,10 @@ export default function BridgeHopDrawer({ sessionId, nodeId, hopData, onClose }:
       <Row label="Source asset">{hopData.source_asset ?? '—'}</Row>
       <Row label="Destination asset">{hopData.destination_asset ?? '—'}</Row>
       <Row label="Confidence">
-        {(hopData.correlation_confidence * 100).toFixed(0)}%
+        {Number.isFinite(hopData.correlation_confidence) 
+          ? (hopData.correlation_confidence * 100).toFixed(0) + '%'
+          : '—'
+        }
       </Row>
       {hopData.time_delta_seconds !== undefined && (
         <Row label="Time delta">
@@ -120,7 +127,7 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
         display: 'flex',
         justifyContent: 'space-between',
         padding: '6px 0',
-        borderBottom: '1px solid #1e293b',
+        borderBottom: '1px solid #334155',
         gap: 8,
       }}
     >

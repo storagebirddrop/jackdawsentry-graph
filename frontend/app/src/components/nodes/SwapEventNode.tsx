@@ -12,9 +12,8 @@ interface SwapNodeData extends InvestigationNode {
   branch_color: string;
 }
 
-export default function SwapEventNode({ data }: NodeProps) {
-  const d = data as unknown as SwapNodeData;
-  const swap = d.node_data as SwapEventData;
+export default function SwapEventNode({ data }: NodeProps<SwapNodeData>) {
+  const swap = data.node_data as SwapEventData;
 
   return (
     <div
@@ -32,14 +31,14 @@ export default function SwapEventNode({ data }: NodeProps) {
 
       {/* Protocol */}
       <div style={{ color: '#22d3ee', fontWeight: 700, fontSize: 12 }}>
-        {swap.protocol_id.toUpperCase()}
+        {(swap.protocol_id ?? 'UNKNOWN').toUpperCase()}
       </div>
 
       {/* Asset pair */}
       <div style={{ marginTop: 4, display: 'flex', alignItems: 'center', gap: 6 }}>
-        <span style={{ color: '#f8fafc', fontWeight: 600 }}>{swap.input_asset}</span>
+        <span style={{ color: '#f8fafc', fontWeight: 600 }}>{swap.input_asset ?? '—'}</span>
         <span style={{ color: '#64748b' }}>→</span>
-        <span style={{ color: '#f8fafc', fontWeight: 600 }}>{swap.output_asset}</span>
+        <span style={{ color: '#f8fafc', fontWeight: 600 }}>{swap.output_asset ?? '—'}</span>
       </div>
 
       {/* Exchange rate */}

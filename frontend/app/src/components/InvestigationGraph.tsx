@@ -27,7 +27,7 @@ import '@xyflow/react/dist/style.css';
 import { useGraphStore } from '../store/graphStore';
 import { expandNode } from '../api/client';
 import { computeElkLayout } from '../layout/elkLayout';
-import type { ExpandRequest, BridgeHopData, InvestigationNode } from '../types/graph';
+import type { ExpandRequest, BridgeHopData } from '../types/graph';
 
 import AddressNode from './nodes/AddressNode';
 import EntityNode from './nodes/EntityNode';
@@ -87,10 +87,11 @@ function applyFilters(
     );
   }
 
-  if (filters.minFiatValue > 0) {
+  const minFiat = filters.minFiatValue;
+  if (minFiat !== null && minFiat > 0) {
     visibleEdges = visibleEdges.filter((e) => {
       const val = (e.data as Record<string, unknown>)?.fiat_value_usd as number | undefined;
-      return val === undefined || val >= filters.minFiatValue;
+      return val === undefined || val >= minFiat;
     });
   }
 
@@ -137,13 +138,23 @@ export default function InvestigationGraph({ sessionId }: Props) {
 
   // Re-run ELK layout whenever node count changes
   const prevNodeCount = useRef(0);
+  const layoutRef = useRef<number | null>(null);
   useEffect(() => {
     if (rfNodes.length === prevNodeCount.current) return;
     prevNodeCount.current = rfNodes.length;
 
-    computeElkLayout(rfNodes, rfEdges).then((positions) => {
-      setRfPositions(positions);
-    });
+    const currentLayout = Date.now();
+    layoutRef.current = currentLayout;
+    
+    computeElkLayout(rfNodes, rfEdges)
+      .then((positions) => {
+        if (layoutRef.current === currentLayout) {
+          setRfPositions(positions);
+        }
+      })
+      .catch((error) => {
+        console.error('ELK layout computation failed:', error);
+      });
   }, [rfNodes.length, rfEdges.length, rfNodes, rfEdges, setRfPositions]);
 
   // Expand a node in a given direction
@@ -170,8 +181,10 @@ export default function InvestigationGraph({ sessionId }: Props) {
   // Open bridge drawer on BridgeHopNode click
   const handleNodeClick: NodeMouseHandler = useCallback((_evt, node) => {
     if (node.type === 'bridge_hop') {
-      const invNode = node.data as unknown as InvestigationNode;
-      setSelectedBridgeNode({ nodeId: node.id, hopData: invNode.node_data as BridgeHopData });
+      const nodeData = node.data as Record<string, unknown> | undefined;
+      if (nodeData && nodeData.node_data != null) {
+        setSelectedBridgeNode({ nodeId: node.id, hopData: nodeData.node_data as BridgeHopData });
+      }
     }
   }, []);
 
@@ -204,15 +217,18 @@ export default function InvestigationGraph({ sessionId }: Props) {
           onClick={() => setFilterVisible((v) => !v)}
           style={toolbarBtnStyle}
         >
-          Filters {filters.chainFilter.length + (filters.minFiatValue > 0 ? 1 : 0) > 0 ? '●' : ''}
+          Filters {filters.chainFilter.length + (filters.minFiatValue !== null && filters.minFiatValue > 0 ? 1 : 0) > 0 ? '●' : ''}
         </button>
         <button
           onClick={() => {
             const json = exportSnapshot();
             const a = document.createElement('a');
-            a.href = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
+            const blobUrl = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
+            a.href = blobUrl;
             a.download = `session-${sessionId.slice(0, 8)}.json`;
             a.click();
+            // Clean up blob URL to prevent memory leaks
+            setTimeout(() => URL.revokeObjectURL(blobUrl), 100);
           }}
           style={toolbarBtnStyle}
           title="Save session snapshot"
@@ -228,7 +244,16 @@ export default function InvestigationGraph({ sessionId }: Props) {
             onChange={(e) => {
               const file = e.target.files?.[0];
               if (!file) return;
-              file.text().then(importSnapshot);
+              file.text()
+                .then((text) => {
+                  importSnapshot(text);
+                  e.target.value = '';
+                })
+                .catch((error) => {
+                  console.error('Failed to import session snapshot:', error);
+                  alert('Failed to import session snapshot. Please check the file format.');
+                  e.target.value = '';
+                });
             }}
           />
         </label>

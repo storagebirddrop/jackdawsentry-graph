@@ -5,6 +5,7 @@ Tron blockchain data collection
 
 import asyncio
 import base64
+import hashlib
 import json
 import logging
 from datetime import datetime
@@ -212,9 +213,14 @@ class TronCollector(BaseCollector):
                         amount_hex = parameter[72:136]
                         amount_raw = int(amount_hex, 16)
                         
-                        # For TRC20 tokens, check if we know the decimals to normalize value
-                        # USDT/USDC on Tron use 6 decimals
-                        decimals = 6  # Default for most Tron stablecoins
+                        # Determine decimals based on known stablecoin contracts.
+                        # Known Tron stablecoins (USDT, USDC) use 6 decimals.
+                        # Unknown TRC20 tokens default to 18 (ERC20 convention).
+                        _known_stablecoin_addrs = set(self.stablecoin_contracts.values())
+                        if contract_address in _known_stablecoin_addrs:
+                            decimals = 6
+                        else:
+                            decimals = 18
                         value = amount_raw / (10 ** decimals)  # Normalize to token units
 
             # Get block info
@@ -316,10 +322,17 @@ class TronCollector(BaseCollector):
             return address
 
     def hex_to_base58(self, hex_address: str) -> str:
-        """Convert hex address to Base58"""
+        """Convert a Tron hex address (with 0x41 prefix) to Base58Check encoding.
+
+        Tron Base58Check: raw_bytes → double-SHA256 → 4-byte checksum appended
+        → base58 encoded.  The version byte (0x41) must already be the first
+        byte of *hex_address* (i.e. the full 21-byte address in hex).
+        """
         try:
             if BASE58_AVAILABLE:
-                return base58.b58encode(bytes.fromhex(hex_address)).decode()
+                raw = bytes.fromhex(hex_address)
+                checksum = hashlib.sha256(hashlib.sha256(raw).digest()).digest()[:4]
+                return base58.b58encode(raw + checksum).decode()
             else:
                 return hex_address
         except Exception:

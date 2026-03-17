@@ -204,10 +204,10 @@ DO $$
 BEGIN
     IF EXISTS (
         SELECT 1 FROM information_schema.columns
-        WHERE table_name = 'bridge_correlations' AND column_name = 'protocol'
+        WHERE table_schema = current_schema() AND table_name = 'bridge_correlations' AND column_name = 'protocol'
     ) AND NOT EXISTS (
         SELECT 1 FROM information_schema.columns
-        WHERE table_name = 'bridge_correlations' AND column_name = 'protocol_id'
+        WHERE table_schema = current_schema() AND table_name = 'bridge_correlations' AND column_name = 'protocol_id'
     ) THEN
         ALTER TABLE bridge_correlations RENAME COLUMN protocol TO protocol_id;
     END IF;
@@ -235,8 +235,6 @@ CREATE INDEX IF NOT EXISTS raw_tx_address_time
     ON raw_transactions (blockchain, from_address, timestamp);
 CREATE INDEX IF NOT EXISTS raw_tx_address_time_to
     ON raw_transactions (blockchain, to_address, timestamp);
-CREATE INDEX IF NOT EXISTS raw_tx_hash
-    ON raw_transactions (blockchain, tx_hash);
 
 -- raw_token_transfers
 CREATE INDEX IF NOT EXISTS raw_transfer_from

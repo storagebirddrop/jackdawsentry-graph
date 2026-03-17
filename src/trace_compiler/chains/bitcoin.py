@@ -188,9 +188,9 @@ class UTXOChainCompiler(BaseChainCompiler):
                 rows = await conn.fetch(sql, chain, address, limit)
             return [dict(r) for r in rows]
         except Exception as exc:
-            logger.debug(
+            logger.warning(
                 "UTXOChainCompiler._fetch_outbound_event_store failed %s/%s: %s",
-                chain, address, exc,
+                chain, address, exc, exc_info=True,
             )
             return []
 
@@ -229,9 +229,9 @@ class UTXOChainCompiler(BaseChainCompiler):
                 rows = await conn.fetch(sql, chain, address, limit)
             return [dict(r) for r in rows]
         except Exception as exc:
-            logger.debug(
+            logger.warning(
                 "UTXOChainCompiler._fetch_inbound_event_store failed %s/%s: %s",
-                chain, address, exc,
+                chain, address, exc, exc_info=True,
             )
             return []
 
@@ -258,7 +258,7 @@ class UTXOChainCompiler(BaseChainCompiler):
                        r.output_index     AS output_index,
                        r.script_type      AS script_type,
                        r.is_probable_change AS is_probable_change,
-                       FALSE              AS is_spent,
+                       NULL              AS is_spent,  -- Neo4j fallback: spent state not tracked
                        t.timestamp        AS timestamp,
                        t.is_coinjoin      AS is_coinjoin
                 LIMIT $limit
@@ -290,7 +290,7 @@ class UTXOChainCompiler(BaseChainCompiler):
                        r.output_index     AS output_index,
                        r.script_type      AS script_type,
                        r.is_probable_change AS is_probable_change,
-                       FALSE              AS is_spent,
+                       NULL              AS is_spent,  -- Neo4j fallback: spent state not tracked
                        t.timestamp        AS timestamp,
                        t.is_coinjoin      AS is_coinjoin
                 LIMIT $limit
@@ -433,6 +433,9 @@ class UTXOChainCompiler(BaseChainCompiler):
             elif isinstance(raw_ts, str):
                 _ts_str = raw_ts
 
+            # Get chain-specific symbol and canonical ID
+            chain_symbol, chain_canonical_id = _get_chain_symbol_and_canonical_id(chain)
+            
             edge = InvestigationEdge(
                 edge_id=mk_edge_id(src_node_id, tgt_node_id, branch_id, tx_hash),
                 source_node_id=src_node_id,
@@ -441,8 +444,8 @@ class UTXOChainCompiler(BaseChainCompiler):
                 path_id=_path,
                 edge_type="transfer",
                 value_native=value_btc,
-                asset_symbol="BTC",
-                canonical_asset_id="btc",
+                asset_symbol=chain_symbol,
+                canonical_asset_id=chain_canonical_id,
                 tx_hash=tx_hash or None,
                 tx_chain=chain,
                 timestamp=_ts_str,
@@ -462,8 +465,18 @@ def _script_type_to_address_type(script_type: str) -> str:
         "p2pkh": "utxo_p2pkh",
         "p2sh": "utxo_p2sh",
         "p2wpkh": "utxo_p2wpkh",
-        "p2wsh": "utxo_p2wsh",
         "p2tr": "utxo_p2tr",
         "op_return": "utxo_op_return",
     }
     return _MAP.get(script_type.lower(), "utxo_p2pkh")
+
+
+def _get_chain_symbol_and_canonical_id(chain: str) -> tuple[str, str]:
+    """Get symbol and canonical asset ID for a Bitcoin-derived chain."""
+    _CHAIN_MAP = {
+        "bitcoin": ("BTC", "btc"),
+        "bitcoin_cash": ("BCH", "bch"), 
+        "litecoin": ("LTC", "ltc"),
+        "dogecoin": ("DOGE", "doge"),
+    }
+    return _CHAIN_MAP.get(chain.lower(), ("BTC", "btc"))
