@@ -174,25 +174,21 @@ class TraceCompiler:
                 if cached:
                     data = json.loads(cached)
                     return ExpansionResponseV2(
-                        operation_id=new_operation_id(),
-                        operation_type=request.operation_type,
-                        session_id=session_id,
-                        seed_node_id=request.seed_node_id,
-                        seed_lineage_id=request.seed_lineage_id,
-                        branch_id="cached",
-                        expansion_depth=request.options.depth,
+                        operation_id=data["operation_id"],
+                        operation_type=data["operation_type"],
+                        session_id=data["session_id"],
+                        seed_node_id=data["seed_node_id"],
+                        seed_lineage_id=data["seed_lineage_id"],
+                        branch_id=data["branch_id"],
+                        expansion_depth=data["expansion_depth"],
                         added_nodes=[InvestigationNode(**n) for n in data["nodes"]],
                         added_edges=[InvestigationEdge(**e) for e in data["edges"]],
-                        has_more=False,
-                        pagination=PaginationMeta(
-                            page_size=request.options.page_size,
-                            max_results=request.options.max_results,
-                            has_more=False,
-                        ),
-                        layout_hints=LayoutHints(suggested_layout="layered"),
-                        chain_context=ChainContext(primary_chain="cached", chains_present=[]),
-                        asset_context=AssetContext(assets_present=[]),
-                        timestamp=datetime.now(timezone.utc),
+                        has_more=data["has_more"],
+                        pagination=PaginationMeta(**data["pagination"]),
+                        layout_hints=LayoutHints(**data["layout_hints"]),
+                        chain_context=ChainContext(**data["chain_context"]),
+                        asset_context=AssetContext(**data["asset_context"]),
+                        timestamp=datetime.fromisoformat(data["timestamp"]),
                     )
             except Exception as cache_exc:
                 logger.debug("Redis cache read failed: %s", cache_exc)
@@ -233,6 +229,26 @@ class TraceCompiler:
                         options=request.options,
                     )
                 elif op == "expand_neighbors":
+                    # Split max_results between forward and backward expansion
+                    max_total = request.options.max_results
+                    max_fwd = (max_total + 1) // 2 if max_total is not None else None
+                    max_bwd = max_total // 2 if max_total is not None else None
+                    
+                    # Create separate options for each direction
+                    from src.trace_compiler.models import ExpandOptions
+                    fwd_options = ExpandOptions(
+                        max_results=max_fwd,
+                        page_size=request.options.page_size,
+                        depth=request.options.depth,
+                        asset_filter=request.options.asset_filter,
+                    )
+                    bwd_options = ExpandOptions(
+                        max_results=max_bwd,
+                        page_size=request.options.page_size,
+                        depth=request.options.depth,
+                        asset_filter=request.options.asset_filter,
+                    )
+                    
                     fwd_n, fwd_e = await compiler.expand_next(
                         session_id=session_id,
                         branch_id=_branch,
@@ -240,7 +256,7 @@ class TraceCompiler:
                         depth=0,
                         seed_address=identifier,
                         chain=chain,
-                        options=request.options,
+                        options=fwd_options,
                     )
                     bwd_n, bwd_e = await compiler.expand_prev(
                         session_id=session_id,
@@ -249,7 +265,7 @@ class TraceCompiler:
                         depth=0,
                         seed_address=identifier,
                         chain=chain,
-                        options=request.options,
+                        options=bwd_options,
                     )
                     # Deduplicate nodes by node_id.
                     seen = {n.node_id for n in fwd_n}
@@ -275,7 +291,7 @@ class TraceCompiler:
                     request.operation_type,
                     exc,
                 )
-                raise  # Re-raise to allow caller to handle
+                # Swallow — return empty expansion rather than propagating.
         else:
             logger.debug(
                 "TraceCompiler.expand: no compiler for chain=%s node_type=%s",
@@ -283,32 +299,8 @@ class TraceCompiler:
                 node_type,
             )
 
-        # Cache successful non-empty results in Redis (15-minute TTL).
-        if added_nodes and self._redis is not None:
-            try:
-                cache_key = _expansion_cache_key(
-                    session_id, request.seed_node_id, request.operation_type,
-                    request.options.max_results,
-                )
-                payload = json.dumps({
-                    "nodes": [n.model_dump(mode="json") for n in added_nodes],
-                    "edges": [e.model_dump(mode="json") for e in added_edges],
-                })
-                await self._redis.setex(cache_key, 900, payload)  # 15 min TTL
-            except Exception as cache_exc:
-                logger.debug("Redis cache write failed: %s", cache_exc)
-
-        has_more = (
-            request.options.max_results is not None
-            and request.options.max_results > 0
-            and len(added_nodes) >= request.options.max_results
-        )
-        unique_chains = list({n.chain for n in added_nodes} | {chain})
-        unique_assets = list(
-            {e.asset_symbol for e in added_edges if e.asset_symbol}
-        )
-
-        return ExpansionResponseV2(
+        # Build the response
+        response = ExpansionResponseV2(
             operation_id=new_operation_id(),
             operation_type=request.operation_type,
             session_id=session_id,
@@ -318,11 +310,19 @@ class TraceCompiler:
             expansion_depth=request.options.depth,
             added_nodes=added_nodes,
             added_edges=added_edges,
-            has_more=has_more,
+            has_more=(
+                request.options.max_results is not None
+                and request.options.max_results > 0
+                and len(added_nodes) >= request.options.max_results
+            ),
             pagination=PaginationMeta(
                 page_size=request.options.page_size,
                 max_results=request.options.max_results,
-                has_more=has_more,
+                has_more=(
+                    request.options.max_results is not None
+                    and request.options.max_results > 0
+                    and len(added_nodes) >= request.options.max_results
+                ),
             ),
             layout_hints=LayoutHints(
                 suggested_layout="layered",
@@ -331,13 +331,45 @@ class TraceCompiler:
             ),
             chain_context=ChainContext(
                 primary_chain=chain,
-                chains_present=unique_chains,
+                chains_present=list({n.chain for n in added_nodes} | {chain}),
             ),
             asset_context=AssetContext(
-                assets_present=unique_assets,
+                assets_present=list(
+                    {e.asset_symbol for e in added_edges if e.asset_symbol}
+                ),
             ),
             timestamp=datetime.now(timezone.utc),
         )
+
+        # Cache successful non-empty results in Redis (15-minute TTL).
+        if added_nodes and self._redis is not None:
+            try:
+                cache_key = _expansion_cache_key(
+                    session_id, request.seed_node_id, request.operation_type,
+                    request.options.max_results,
+                )
+                payload = json.dumps({
+                    "operation_id": response.operation_id,
+                    "operation_type": response.operation_type,
+                    "session_id": response.session_id,
+                    "seed_node_id": response.seed_node_id,
+                    "seed_lineage_id": response.seed_lineage_id,
+                    "branch_id": response.branch_id,
+                    "expansion_depth": response.expansion_depth,
+                    "nodes": [n.model_dump(mode="json") for n in response.added_nodes],
+                    "edges": [e.model_dump(mode="json") for e in response.added_edges],
+                    "has_more": response.has_more,
+                    "pagination": response.pagination.model_dump(mode="json"),
+                    "layout_hints": response.layout_hints.model_dump(mode="json"),
+                    "chain_context": response.chain_context.model_dump(mode="json"),
+                    "asset_context": response.asset_context.model_dump(mode="json"),
+                    "timestamp": response.timestamp.isoformat(),
+                })
+                await self._redis.setex(cache_key, 900, payload)  # 15 min TTL
+            except Exception as cache_exc:
+                logger.debug("Redis cache write failed: %s", cache_exc)
+
+        return response
 
     async def get_bridge_hop_status(
         self, session_id: str, hop_id: str
@@ -355,7 +387,6 @@ class TraceCompiler:
         """
         if self._pg is not None:
             try:
-                from src.api.database import get_postgres_connection
                 query = """
                 SELECT status, destination_tx_hash, destination_chain,
                        destination_address, updated_at
@@ -363,7 +394,7 @@ class TraceCompiler:
                 WHERE source_tx_hash = $1
                 LIMIT 1
                 """
-                async with get_postgres_connection() as conn:
+                async with self._pg.acquire() as conn:
                     row = await conn.fetchrow(query, hop_id)
                 if row:
                     return BridgeHopStatusResponse(

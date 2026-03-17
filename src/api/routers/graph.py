@@ -4,6 +4,7 @@ Returns {nodes, edges} JSON for the frontend Cytoscape.js graph renderer.
 Supports address expansion, transaction tracing, search, and clustering.
 """
 
+import asyncio
 import logging
 import time
 from datetime import datetime
@@ -781,12 +782,16 @@ async def address_summary(
     if cached:
         try:
             payload = json.loads(cached)
+            if not isinstance(payload, dict):
+                raise ValueError("Cache payload is not a dict")
+            payload.setdefault("metadata", {})
             elapsed_ms = int((time.monotonic() - start) * 1000)
             payload["metadata"]["processing_time_ms"] = elapsed_ms
             payload["metadata"]["cache_hit"] = True
             return payload
-        except Exception:
-            pass  # corrupt cache entry — fall through to live query
+        except Exception as exc:
+            logger.warning(f"Cache read failed for {cache_key}: {exc}")
+            # corrupt cache entry — fall through to live query
 
     data: Dict[str, Any] = {"address": addr, "blockchain": bc}
 
@@ -1833,9 +1838,10 @@ def _classify_edge(source: str, target: str) -> str:
 
 # TraceCompiler singleton — initialised lazily so tests can override it.
 _trace_compiler = None
+_trace_compiler_lock = asyncio.Lock()
 
 
-def _get_trace_compiler():
+async def _get_trace_compiler():
     """Return the singleton TraceCompiler, constructing it on first call.
 
     The compiler is injected with the Neo4j *read* driver (T7.1) so that
@@ -1844,18 +1850,20 @@ def _get_trace_compiler():
     """
     global _trace_compiler
     if _trace_compiler is None:
-        from src.trace_compiler.compiler import TraceCompiler
-        from src.api.database import get_neo4j_read_driver, get_postgres_pool, get_redis_client
-        try:
-            neo4j = get_neo4j_read_driver()
-            pg = get_postgres_pool()
-            redis = get_redis_client()
-        except RuntimeError:
-            # Databases not yet initialised (e.g. test environment).
-            neo4j = None
-            pg = None
-            redis = None
-        _trace_compiler = TraceCompiler(neo4j_driver=neo4j, postgres_pool=pg, redis_client=redis)
+        async with _trace_compiler_lock:
+            if _trace_compiler is None:
+                from src.trace_compiler.compiler import TraceCompiler
+                from src.api.database import get_neo4j_read_driver, get_postgres_pool, get_redis_client
+                try:
+                    neo4j = get_neo4j_read_driver()
+                    pg = get_postgres_pool()
+                    redis = get_redis_client()
+                except RuntimeError:
+                    # Databases not yet initialised (e.g. test environment).
+                    neo4j = None
+                    pg = None
+                    redis = None
+                _trace_compiler = TraceCompiler(neo4j_driver=neo4j, postgres_pool=pg, redis_client=redis)
     return _trace_compiler
 
 
@@ -1883,7 +1891,7 @@ async def create_investigation_session(
     Phase 3 status: stub — returns a minimal valid response.  Full canonical
     graph lookup and Neo4j session persistence is implemented in Phase 4.
     """
-    compiler = _get_trace_compiler()
+    compiler = await _get_trace_compiler()
     return await compiler.create_session(request)
 
 
@@ -1912,18 +1920,16 @@ async def get_investigation_session(
 @router.post("/sessions/{session_id}/snapshot", response_model=SessionSnapshotResponse)
 async def save_session_snapshot(
     session_id: str,
-    request: SessionSnapshotRequest,
-    current_user: User = Depends(check_permissions([PERMISSIONS["read_blockchain"]])),
+    session_snapshot: SessionSnapshotRequest,
+    current_user: User = Depends(check_permissions([PERMISSIONS["write_blockchain"]])),
 ):
-    """Save the current node layout and visibility state for a session.
+    """Persist a frontend session snapshot (node positions, filters, UI state).
 
     Phase 3 status: stub — acknowledges the save without persisting.
     """
-    import uuid
-    from datetime import datetime, timezone
     # TODO Phase 4: persist node_states to Neo4j InvestigationAnnotation.
     return SessionSnapshotResponse(
-        snapshot_id=str(uuid.uuid4()),
+        snapshot_id=str(uuid4()),
         saved_at=datetime.now(timezone.utc),
     )
 
@@ -1944,7 +1950,7 @@ async def expand_session_node(
     Phase 3 status: stub — returns an empty expansion with correct metadata.
     Full chain-specific compilation is implemented in Phase 4.
     """
-    compiler = _get_trace_compiler()
+    compiler = await _get_trace_compiler()
     return await compiler.expand(session_id, request)
 
 
@@ -1966,7 +1972,7 @@ async def get_bridge_hop_status(
 
     Phase 3 status: stub — always returns status="pending".
     """
-    compiler = _get_trace_compiler()
+    compiler = await _get_trace_compiler()
     return await compiler.get_bridge_hop_status(session_id, hop_id)
 
 

@@ -64,10 +64,49 @@ def _redis_miss():
 
 
 def _redis_hit(nodes, edges):
-    """Redis client whose GET returns a serialised expansion result."""
+    """Redis client whose GET returns a serialised expansion result (full format).
+
+    Builds the payload using the same format that TraceCompiler.expand() writes
+    to Redis, so that the cache deserialization path is exercised correctly.
+    """
+    from src.trace_compiler.models import (
+        ExpansionResponseV2, ChainContext, AssetContext, LayoutHints, PaginationMeta
+    )
+    from datetime import datetime, timezone
+
+    response = ExpansionResponseV2(
+        operation_id="test-op-id",
+        operation_type="expand_next",
+        session_id="test-session",
+        seed_node_id=_seed_node_id(),
+        seed_lineage_id="lineage-x",
+        branch_id="test-branch",
+        expansion_depth=0,
+        added_nodes=nodes,
+        added_edges=edges,
+        has_more=False,
+        pagination=PaginationMeta(),
+        layout_hints=LayoutHints(),
+        chain_context=ChainContext(primary_chain="ethereum", chains_present=["ethereum"]),
+        asset_context=AssetContext(),
+        timestamp=datetime(2026, 3, 17, tzinfo=timezone.utc),
+    )
     payload = json.dumps({
-        "nodes": [n.model_dump(mode="json") for n in nodes],
-        "edges": [e.model_dump(mode="json") for e in edges],
+        "operation_id": response.operation_id,
+        "operation_type": response.operation_type,
+        "session_id": response.session_id,
+        "seed_node_id": response.seed_node_id,
+        "seed_lineage_id": response.seed_lineage_id,
+        "branch_id": response.branch_id,
+        "expansion_depth": response.expansion_depth,
+        "nodes": [n.model_dump(mode="json") for n in response.added_nodes],
+        "edges": [e.model_dump(mode="json") for e in response.added_edges],
+        "has_more": response.has_more,
+        "pagination": response.pagination.model_dump(mode="json"),
+        "layout_hints": response.layout_hints.model_dump(mode="json"),
+        "chain_context": response.chain_context.model_dump(mode="json"),
+        "asset_context": response.asset_context.model_dump(mode="json"),
+        "timestamp": response.timestamp.isoformat(),
     })
     r = MagicMock()
     r.get = AsyncMock(return_value=payload)

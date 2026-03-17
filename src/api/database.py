@@ -162,6 +162,9 @@ async def init_neo4j():
             _neo4j_read_driver = read_driver
             logger.info("✅ Neo4j read-replica driver initialised (%s)", read_uri)
         except Exception as exc:
+            # Close the created read_driver before falling back
+            if 'read_driver' in locals():
+                await read_driver.close()
             logger.warning(
                 "Neo4j read-replica unavailable (%s); falling back to primary: %s",
                 read_uri,
