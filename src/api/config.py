@@ -201,6 +201,16 @@ class Settings(BaseSettings):
     METRICS_PORT: int = 9090
 
     # =============================================================================
+    # Raw Event Store (ADR-002)
+    # =============================================================================
+
+    # When True, collectors dual-write raw blockchain facts to the PostgreSQL
+    # event store tables (raw_transactions, raw_token_transfers, etc.) in
+    # addition to the Neo4j graph.  Set to True once migration 006 has been
+    # applied.  Defaults to False so existing deployments are unaffected.
+    DUAL_WRITE_RAW_EVENT_STORE: bool = False
+
+    # =============================================================================
     # Development Configuration
     # =============================================================================
 
@@ -293,6 +303,7 @@ class Settings(BaseSettings):
         "TESTING",
         "TRUST_PROXY_HEADERS",
         "RATE_LIMIT_ENABLED",
+        "DUAL_WRITE_RAW_EVENT_STORE",
         mode="before",
     )
     @classmethod

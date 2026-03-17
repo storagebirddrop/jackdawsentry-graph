@@ -22,6 +22,7 @@ from typing import Union
 
 from src.api.config import settings
 from src.api.database import get_neo4j_session
+from src.api.database import get_postgres_connection
 from src.api.database import get_redis_connection
 
 logger = logging.getLogger(__name__)
@@ -316,6 +317,18 @@ class BaseCollector(ABC):
 
             # Store transaction in Neo4j using the bipartite model.
             await self.store_transaction(tx)
+
+            # Dual-write raw facts to the PostgreSQL event store (ADR-002).
+            # Gated by DUAL_WRITE_RAW_EVENT_STORE so the feature is safely
+            # off until migration 006 has been applied in production.
+            if settings.DUAL_WRITE_RAW_EVENT_STORE:
+                asyncio.create_task(self._insert_raw_transaction(tx))
+                if tx.token_transfers:
+                    asyncio.create_task(self._insert_raw_token_transfers(tx))
+                if tx.inputs:
+                    asyncio.create_task(self._insert_raw_utxo_inputs(tx))
+                if tx.outputs:
+                    asyncio.create_task(self._insert_raw_utxo_outputs(tx))
 
             # Update address info for account-based chains.
             if tx.from_address:
@@ -726,6 +739,204 @@ class BaseCollector(ABC):
                         f"Failed to create STABLECOIN_TRANSFER relationship for tx {tx.hash} "
                         f"and stablecoin {transfer.asset_symbol}"
                     )
+
+    # ------------------------------------------------------------------
+    # Raw event store writers (ADR-002)
+    # All methods are fire-and-forget via asyncio.create_task.
+    # Failures are logged at DEBUG level and never propagate to the caller.
+    # ------------------------------------------------------------------
+
+    async def _insert_raw_transaction(self, tx: Transaction) -> None:
+        """Write a single raw transaction fact to the PostgreSQL event store.
+
+        Uses INSERT … ON CONFLICT DO NOTHING so re-indexing a block is safe.
+
+        Args:
+            tx: Transaction dataclass produced by the collector.
+        """
+        query = """
+            INSERT INTO raw_transactions (
+                blockchain, tx_hash, block_number, timestamp,
+                from_address, to_address,
+                value_native,
+                gas_used, gas_price, status,
+                is_bridge_ingress, is_bridge_egress, bridge_protocol
+            ) VALUES (
+                $1, $2, $3, $4,
+                $5, $6,
+                $7,
+                $8, $9, $10,
+                $11, $12, $13
+            )
+            ON CONFLICT (blockchain, tx_hash) DO NOTHING
+        """
+        try:
+            async with get_postgres_connection() as conn:
+                await conn.execute(
+                    query,
+                    tx.blockchain,
+                    tx.hash,
+                    tx.block_number,
+                    tx.timestamp,
+                    tx.from_address,
+                    tx.to_address,
+                    float(tx.value) if tx.value is not None else None,
+                    tx.gas_used,
+                    tx.gas_price,
+                    tx.status,
+                    tx.is_bridge_ingress,
+                    tx.is_bridge_egress,
+                    tx.bridge_protocol,
+                )
+        except Exception as exc:
+            logger.debug(
+                "_insert_raw_transaction failed for %s/%s: %s",
+                tx.blockchain,
+                tx.hash,
+                exc,
+            )
+
+    async def _insert_raw_token_transfers(self, tx: Transaction) -> None:
+        """Write token transfer facts to the PostgreSQL event store.
+
+        Uses INSERT … ON CONFLICT DO NOTHING for idempotency.
+
+        Args:
+            tx: Transaction whose token_transfers list will be persisted.
+        """
+        query = """
+            INSERT INTO raw_token_transfers (
+                blockchain, tx_hash, transfer_index,
+                asset_symbol, asset_contract, canonical_asset_id,
+                from_address, to_address,
+                amount_raw, amount_normalized,
+                timestamp
+            ) VALUES (
+                $1, $2, $3,
+                $4, $5, $6,
+                $7, $8,
+                $9, $10,
+                $11
+            )
+            ON CONFLICT (blockchain, tx_hash, transfer_index) DO NOTHING
+        """
+        try:
+            async with get_postgres_connection() as conn:
+                await conn.executemany(
+                    query,
+                    [
+                        (
+                            t.blockchain,
+                            t.tx_hash,
+                            t.transfer_index,
+                            t.asset_symbol,
+                            t.asset_contract,
+                            t.canonical_asset_id,
+                            t.from_address,
+                            t.to_address,
+                            str(t.amount_raw) if t.amount_raw is not None else None,
+                            t.amount_normalized,
+                            tx.timestamp,
+                        )
+                        for t in tx.token_transfers
+                    ],
+                )
+        except Exception as exc:
+            logger.debug(
+                "_insert_raw_token_transfers failed for %s/%s: %s",
+                tx.blockchain,
+                tx.hash,
+                exc,
+            )
+
+    async def _insert_raw_utxo_inputs(self, tx: Transaction) -> None:
+        """Write UTXO input facts to the PostgreSQL event store.
+
+        Args:
+            tx: Transaction with inputs list (Bitcoin-style).
+        """
+        query = """
+            INSERT INTO raw_utxo_inputs (
+                blockchain, tx_hash, input_index,
+                prev_tx_hash, prev_output_index,
+                address, value_satoshis, sequence, timestamp
+            ) VALUES (
+                $1, $2, $3,
+                $4, $5,
+                $6, $7, $8, $9
+            )
+            ON CONFLICT (blockchain, tx_hash, input_index) DO NOTHING
+        """
+        try:
+            async with get_postgres_connection() as conn:
+                await conn.executemany(
+                    query,
+                    [
+                        (
+                            tx.blockchain,
+                            tx.hash,
+                            idx,
+                            inp.prev_tx_hash,
+                            inp.prev_output_index,
+                            inp.address,
+                            inp.value_satoshis,
+                            inp.sequence,
+                            tx.timestamp,
+                        )
+                        for idx, inp in enumerate(tx.inputs)
+                    ],
+                )
+        except Exception as exc:
+            logger.debug(
+                "_insert_raw_utxo_inputs failed for %s/%s: %s",
+                tx.blockchain,
+                tx.hash,
+                exc,
+            )
+
+    async def _insert_raw_utxo_outputs(self, tx: Transaction) -> None:
+        """Write UTXO output facts to the PostgreSQL event store.
+
+        Args:
+            tx: Transaction with outputs list (Bitcoin-style).
+        """
+        query = """
+            INSERT INTO raw_utxo_outputs (
+                blockchain, tx_hash, output_index,
+                address, value_satoshis, script_type,
+                is_probable_change, timestamp
+            ) VALUES (
+                $1, $2, $3,
+                $4, $5, $6,
+                $7, $8
+            )
+            ON CONFLICT (blockchain, tx_hash, output_index) DO NOTHING
+        """
+        try:
+            async with get_postgres_connection() as conn:
+                await conn.executemany(
+                    query,
+                    [
+                        (
+                            tx.blockchain,
+                            tx.hash,
+                            out.output_index,
+                            out.address,
+                            out.value_satoshis,
+                            out.script_type,
+                            out.is_probable_change,
+                            tx.timestamp,
+                        )
+                        for out in tx.outputs
+                    ],
+                )
+        except Exception as exc:
+            logger.debug(
+                "_insert_raw_utxo_outputs failed for %s/%s: %s",
+                tx.blockchain,
+                tx.hash,
+                exc,
+            )
 
     async def load_last_processed_block(self):
         """Load last processed block from Redis"""
