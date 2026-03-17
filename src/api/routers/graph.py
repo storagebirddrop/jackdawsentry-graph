@@ -387,10 +387,16 @@ async def expand_address(
     await _enrich_sanctions(nodes_map, request.blockchain)
     await _enrich_entities(nodes_map, request.blockchain)
 
-    oracle = get_price_oracle()
-    await oracle.enrich_edge_fiat_values(
-        edges_list, request.blockchain, datetime.now(timezone.utc)
-    )
+    # Enrich with fiat values using edge timestamps
+    try:
+        oracle = get_price_oracle()
+        # Use each edge's timestamp for historical pricing
+        await oracle.enrich_edge_fiat_values(
+            edges_list, request.blockchain, None  # Use edge timestamps
+        )
+    except Exception as exc:
+        logger.warning(f"[graph] Price oracle enrichment failed: {exc}")
+        # Continue without fiat enrichment
 
     elapsed_ms = int((time.monotonic() - start) * 1000)
     return GraphResponse(
@@ -1086,13 +1092,18 @@ async def expand_solana_tx(
             elif pname == "system_program":
                 sol_transfer_count += 1
 
-    oracle = get_price_oracle()
-    tx_ts = (
-        datetime.fromtimestamp(block_time, tz=timezone.utc)
-        if block_time
-        else datetime.now(timezone.utc)
-    )
-    await oracle.enrich_edge_fiat_values(new_edges, "solana", tx_ts)
+    # Enrich with fiat values
+    try:
+        oracle = get_price_oracle()
+        tx_ts = (
+            datetime.fromtimestamp(block_time, tz=timezone.utc)
+            if block_time
+            else datetime.now(timezone.utc)
+        )
+        await oracle.enrich_edge_fiat_values(new_edges, "solana", tx_ts)
+    except Exception as exc:
+        logger.warning(f"[graph] Solana price oracle enrichment failed: {exc}, tx_ts={tx_ts}, edges={len(new_edges)}")
+        # Continue without fiat enrichment
 
     return ExpansionResponse(
         operation_id=str(uuid4()),
@@ -1609,10 +1620,17 @@ async def expand_utxo(
         1 for n in new_nodes if n.get("node_type") == "transaction" and n.get("is_coinjoin")
     )
 
-    oracle = get_price_oracle()
-    await oracle.enrich_edge_fiat_values(
-        new_edges, "bitcoin", datetime.now(timezone.utc)
-    )
+    # Enrich with fiat values using transaction timestamps
+    try:
+        oracle = get_price_oracle()
+        # Use transaction timestamp for historical pricing, fallback to current time
+        tx_timestamp = tx.timestamp if hasattr(tx, 'timestamp') and tx.timestamp else datetime.now(timezone.utc)
+        await oracle.enrich_edge_fiat_values(
+            new_edges, "bitcoin", tx_timestamp
+        )
+    except Exception as exc:
+        logger.warning(f"[graph] Bitcoin price oracle enrichment failed: {exc}, edges={len(new_edges)}")
+        # Continue without fiat enrichment
 
     return ExpansionResponse(
         operation_id=str(uuid4()),
