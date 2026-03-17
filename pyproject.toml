@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "jackdawsentry"
 version = "1.0.0"
 description = "Enterprise Blockchain Intelligence Platform"
-authors = [{name = "Jackdaw Team", email = "team@jackdawsentry.com"}]
+authors = [{name = "DAWGUS", email = "jackdawsentry.support@dawgus.com"}]
 license = {text = "Proprietary"}
 readme = "README.md"
 requires-python = ">=3.8"
