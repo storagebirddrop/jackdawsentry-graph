@@ -1788,6 +1788,134 @@ def _classify_edge(source: str, target: str) -> str:
 
 
 # =============================================================================
+# Investigation session endpoints (ExpansionResponse v2 — Phase 3)
+# =============================================================================
+
+# TraceCompiler singleton — initialised lazily so tests can override it.
+_trace_compiler = None
+
+
+def _get_trace_compiler():
+    """Return the singleton TraceCompiler, constructing it on first call."""
+    global _trace_compiler
+    if _trace_compiler is None:
+        from src.trace_compiler.compiler import TraceCompiler
+        _trace_compiler = TraceCompiler()
+    return _trace_compiler
+
+
+from src.trace_compiler.models import (  # noqa: E402
+    BridgeHopStatusResponse,
+    ExpandRequest,
+    ExpansionResponseV2,
+    SessionCreateRequest,
+    SessionCreateResponse,
+    SessionSnapshotRequest,
+    SessionSnapshotResponse,
+)
+
+
+@router.post("/sessions", response_model=SessionCreateResponse)
+async def create_investigation_session(
+    request: SessionCreateRequest,
+    current_user: User = Depends(check_permissions([PERMISSIONS["read_blockchain"]])),
+):
+    """Create a new investigation session seeded from an address.
+
+    Returns a session_id and the root ``InvestigationNode`` for the seed
+    address.  All subsequent expansion calls must reference this session_id.
+
+    Phase 3 status: stub — returns a minimal valid response.  Full canonical
+    graph lookup and Neo4j session persistence is implemented in Phase 4.
+    """
+    compiler = _get_trace_compiler()
+    return await compiler.create_session(request)
+
+
+@router.get("/sessions/{session_id}", response_model=dict)
+async def get_investigation_session(
+    session_id: str,
+    current_user: User = Depends(check_permissions([PERMISSIONS["read_blockchain"]])),
+):
+    """Restore a saved investigation session snapshot.
+
+    Returns the full node/edge set for the session at its last saved state.
+
+    Phase 3 status: stub — returns an empty snapshot.
+    """
+    # TODO Phase 4: load session from Neo4j InvestigationAnnotation + Redis cache.
+    return {
+        "session_id": session_id,
+        "nodes": [],
+        "edges": [],
+        "branch_map": {},
+        "created_at": None,
+        "updated_at": None,
+    }
+
+
+@router.post("/sessions/{session_id}/snapshot", response_model=SessionSnapshotResponse)
+async def save_session_snapshot(
+    session_id: str,
+    request: SessionSnapshotRequest,
+    current_user: User = Depends(check_permissions([PERMISSIONS["read_blockchain"]])),
+):
+    """Save the current node layout and visibility state for a session.
+
+    Phase 3 status: stub — acknowledges the save without persisting.
+    """
+    import uuid
+    from datetime import datetime, timezone
+    # TODO Phase 4: persist node_states to Neo4j InvestigationAnnotation.
+    return SessionSnapshotResponse(
+        snapshot_id=str(uuid.uuid4()),
+        saved_at=datetime.now(timezone.utc),
+    )
+
+
+@router.post("/sessions/{session_id}/expand", response_model=ExpansionResponseV2)
+async def expand_session_node(
+    session_id: str,
+    request: ExpandRequest,
+    current_user: User = Depends(check_permissions([PERMISSIONS["read_blockchain"]])),
+):
+    """Expand a node within an investigation session.
+
+    All operation types (expand_next, expand_prev, expand_neighbors,
+    expand_bridge, expand_utxo, expand_solana_tx) are routed through this
+    single endpoint.  The trace compiler dispatches to the appropriate
+    chain-specific compiler based on the seed node_id prefix.
+
+    Phase 3 status: stub — returns an empty expansion with correct metadata.
+    Full chain-specific compilation is implemented in Phase 4.
+    """
+    compiler = _get_trace_compiler()
+    return await compiler.expand(session_id, request)
+
+
+@router.get(
+    "/sessions/{session_id}/hops/{hop_id}/status",
+    response_model=BridgeHopStatusResponse,
+)
+async def get_bridge_hop_status(
+    session_id: str,
+    hop_id: str,
+    current_user: User = Depends(check_permissions([PERMISSIONS["read_blockchain"]])),
+):
+    """Poll the resolution status of a pending bridge hop.
+
+    The frontend should call this every 30 seconds for any BridgeHop node
+    with status="pending".  When status changes to "confirmed", the frontend
+    can call expand on the BridgeHop node to follow funds to the destination
+    chain.
+
+    Phase 3 status: stub — always returns status="pending".
+    """
+    compiler = _get_trace_compiler()
+    return await compiler.get_bridge_hop_status(session_id, hop_id)
+
+
+# =============================================================================
 # Latency metrics endpoint (T0.1)
 # =============================================================================
 
