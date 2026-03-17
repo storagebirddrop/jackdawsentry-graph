@@ -379,7 +379,7 @@ async def expand_address(
                                 "edge_type": _classify_edge(from_a, to_a),
                             }
                         )
-            except Exception as exc:
+            except (OSError, ValueError, TimeoutError) as exc:
                 logger.warning(f"Graph expand RPC fallback failed: {exc}")
 
     # Tag sanctioned addresses and entity attributions
@@ -461,7 +461,7 @@ async def trace_transaction(
                             "edge_type": _classify_edge(from_addr, to_addr),
                         }
                     )
-            except Exception as exc:
+            except (OSError, ValueError, TimeoutError) as exc:
                 logger.warning(f"Graph trace RPC fallback failed: {exc}")
 
         if not nodes_map:
@@ -802,7 +802,7 @@ async def address_summary(
                             "data_source": "live_rpc",
                         }
                     )
-            except Exception as exc:
+            except (OSError, ValueError, TimeoutError) as exc:
                 logger.warning(f"Address summary RPC fallback failed: {exc}")
 
         if "data_source" not in data:
@@ -1456,7 +1456,7 @@ async def expand_utxo(
                                 "direction": "out" if is_out_direction else "in",
                             }
                         )
-            except Exception as exc:
+            except (OSError, ValueError, TimeoutError) as exc:
                 logger.warning(f"UTXO expand RPC fallback failed: {exc}")
 
     # ------------------------------------------------------------------
