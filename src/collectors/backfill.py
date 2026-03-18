@@ -113,6 +113,12 @@ class EventStoreBackfillWorker:
             if not state or state["status"] == "completed":
                 continue
 
+            logger.info(
+                "Backfill cycle starting for %s at block %s (target=%s)",
+                blockchain,
+                state["next_block"],
+                state["target_block"],
+            )
             await self._backfill_chain(blockchain, collector, state)
             processed += 1
 
@@ -207,11 +213,12 @@ class EventStoreBackfillWorker:
         batch_end = max(target_block, next_block - self.batch_size + 1)
         attempted_blocks = 0
         attempted_transactions = 0
+        current_next_block = next_block
 
         try:
             for block_number in range(next_block, batch_end - 1, -1):
                 tx_hashes = await collector.get_block_transactions(block_number)
-                attempted_blocks += 1
+                block_attempted_transactions = 0
 
                 for tx_hash in tx_hashes:
                     tx = await collector.get_transaction(tx_hash)
@@ -227,19 +234,41 @@ class EventStoreBackfillWorker:
                         await collector._insert_raw_utxo_outputs(tx)
                     if tx.blockchain == "solana":
                         await collector._insert_raw_solana_instructions(tx)
-                    attempted_transactions += 1
+                    block_attempted_transactions += 1
 
-            new_next_block = batch_end - 1
-            completed = new_next_block < target_block
-            await self._update_state(
-                blockchain,
-                status="completed" if completed else "running",
-                next_block=new_next_block,
-                attempted_blocks=attempted_blocks,
-                attempted_transactions=attempted_transactions,
-                last_error=None,
-                completed=completed,
-            )
+                attempted_blocks += 1
+                attempted_transactions += block_attempted_transactions
+                current_next_block = block_number - 1
+
+                await self._update_state(
+                    blockchain,
+                    status="running",
+                    next_block=current_next_block,
+                    attempted_blocks=1,
+                    attempted_transactions=block_attempted_transactions,
+                    last_error=None,
+                    completed=False,
+                )
+
+                logger.info(
+                    "Backfilled block %s for %s (%s txs attempted); next block=%s",
+                    block_number,
+                    blockchain,
+                    block_attempted_transactions,
+                    current_next_block,
+                )
+
+            completed = current_next_block < target_block
+            if completed:
+                await self._update_state(
+                    blockchain,
+                    status="completed",
+                    next_block=current_next_block,
+                    attempted_blocks=0,
+                    attempted_transactions=0,
+                    last_error=None,
+                    completed=True,
+                )
 
             if attempted_blocks:
                 logger.info(
@@ -247,15 +276,15 @@ class EventStoreBackfillWorker:
                     attempted_blocks,
                     attempted_transactions,
                     blockchain,
-                    new_next_block,
+                    current_next_block,
                 )
         except Exception as exc:
             await self._update_state(
                 blockchain,
                 status="error",
-                next_block=next_block,
-                attempted_blocks=attempted_blocks,
-                attempted_transactions=attempted_transactions,
+                next_block=current_next_block,
+                attempted_blocks=0,
+                attempted_transactions=0,
                 last_error=str(exc),
                 completed=False,
             )
@@ -309,4 +338,3 @@ class EventStoreBackfillWorker:
                 last_error,
                 completed,
             )
-
