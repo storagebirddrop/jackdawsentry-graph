@@ -5,14 +5,12 @@
  * decode status badge (full / partial / unknown).
  */
 
-import { Handle, Position, type Node, type NodeProps } from '@xyflow/react';
+import { Handle, Position, type NodeProps } from '@xyflow/react';
 import type { InvestigationNode, SolanaInstructionData } from '../../types/graph';
 
 interface SolanaNodeData extends InvestigationNode {
   branch_color: string;
 }
-
-type SolanaInstructionNodeType = Node<SolanaNodeData>;
 
 const DECODE_COLORS: Record<string, string> = {
   full: '#10b981',
@@ -36,7 +34,8 @@ function displayProgram(data: SolanaInstructionData): string {
   return `${data.program_id.slice(0, 6)}…${data.program_id.slice(-4)}`;
 }
 
-export default function SolanaInstructionNode({ data }: NodeProps<SolanaInstructionNodeType>) {
+export default function SolanaInstructionNode({ data: rawData }: NodeProps) {
+  const data = rawData as unknown as SolanaNodeData;
   const ix = data.node_data as SolanaInstructionData;
   const decodeStatus = ix.decode_status ?? 'unknown';
   const decodeColor = DECODE_COLORS[decodeStatus] ?? DECODE_COLORS.unknown;

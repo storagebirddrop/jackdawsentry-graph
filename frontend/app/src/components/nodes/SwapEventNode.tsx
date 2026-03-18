@@ -5,16 +5,15 @@
  * Asset transformation is a first-class graph event — not just an edge property.
  */
 
-import { Handle, Position, type Node, type NodeProps } from '@xyflow/react';
+import { Handle, Position, type NodeProps } from '@xyflow/react';
 import type { InvestigationNode, SwapEventData } from '../../types/graph';
 
 interface SwapNodeData extends InvestigationNode {
   branch_color: string;
 }
 
-type SwapEventNodeType = Node<SwapNodeData>;
-
-export default function SwapEventNode({ data }: NodeProps<SwapEventNodeType>) {
+export default function SwapEventNode({ data: rawData }: NodeProps) {
+  const data = rawData as unknown as SwapNodeData;
   const swap = data.node_data as SwapEventData;
 
   return (

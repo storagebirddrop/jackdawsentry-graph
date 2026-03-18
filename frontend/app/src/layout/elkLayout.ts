@@ -1,18 +1,27 @@
 /**
  * ELK Layered layout for the investigation graph.
  *
- * Runs ELK in the main thread (a Web Worker version can be introduced later
- * if layout time exceeds ~100ms on large graphs).
+ * Layout runs in a Web Worker so it never blocks the main thread.
+ * `elkjs/lib/main.js` accepts a `workerFactory` callback; Vite's `?worker`
+ * suffix pre-bundles `elk-worker.min.js` as a Worker asset and gives us a
+ * constructor for it.  The `web-worker` Node.js package referenced inside
+ * `main.js` is aliased to an empty stub in `vite.config.ts` so Rolldown does
+ * not fail to resolve it in the browser build.
  *
  * ELK options are tuned for a left-to-right directed fund-flow investigation
  * graph: layered algorithm, wide spacing to accommodate node cards.
  */
 
-// Use the browser-safe ELK bundle (no web-worker dependency)
-import ELK from 'elkjs/lib/elk.bundled.js';
+import ELK from 'elkjs/lib/main.js';
+import ElkWorker from 'elkjs/lib/elk-worker.min.js?worker';
 import type { Node, Edge } from '@xyflow/react';
 
-const elk = new ELK();
+// ELK layout runs in a Web Worker — never blocks the main thread.
+// workerFactory is called by elkjs/lib/main.js; we use Vite's pre-bundled
+// worker class so the worker URL is content-hashed at build time.
+const elk = new ELK({
+  workerFactory: () => new ElkWorker(),
+});
 
 const ELK_OPTIONS: Record<string, string> = {
   'elk.algorithm': 'layered',

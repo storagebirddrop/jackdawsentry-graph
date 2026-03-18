@@ -4,7 +4,7 @@
  * expansion call.
  */
 
-import { Handle, Position, type Node, type NodeProps } from '@xyflow/react';
+import { Handle, Position, type NodeProps } from '@xyflow/react';
 import type { InvestigationNode, ClusterSummaryData } from '../../types/graph';
 
 interface ClusterNodeData extends InvestigationNode {
@@ -12,9 +12,8 @@ interface ClusterNodeData extends InvestigationNode {
   onExpand?: () => void;
 }
 
-type ClusterSummaryNodeType = Node<ClusterNodeData>;
-
-export default function ClusterSummaryNode({ data }: NodeProps<ClusterSummaryNodeType>) {
+export default function ClusterSummaryNode({ data: rawData }: NodeProps) {
+  const data = rawData as unknown as ClusterNodeData;
   if (!data || !data.node_data) {
     return (
       <div style={{ border: '2px dashed #475569', borderRadius: 8, background: '#1e293b', color: '#64748b', padding: '6px 10px', minWidth: 140, fontSize: 11, textAlign: 'center' }}>
