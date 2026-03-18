@@ -16,6 +16,22 @@ from src.api.config import settings
 
 logger = logging.getLogger(__name__)
 
+CORE_BOOTSTRAP_MIGRATIONS = {
+    "001_initial_schema.sql",
+    "002_seed_admin_user.sql",
+    "003_sanctioned_addresses.sql",
+    "004_label_conflicts.sql",
+    "005_bridge_correlations.sql",
+    "006_raw_event_store.sql",
+    "007_graph_sessions.sql",
+    "009_event_store_backfill.sql",
+}
+
+OPTIONAL_LEGACY_MIGRATIONS = {
+    "003_competitive_schema.sql",
+    "008_cluster_attribution.sql",
+}
+
 
 class MigrationManager:
     """Manages database migrations"""
@@ -123,8 +139,13 @@ class MigrationManager:
             )
         )
     
-    async def get_pending_migrations(self) -> List[str]:
-        """Get list of pending migrations"""
+    async def get_pending_migrations(self, profile: str = "all") -> List[str]:
+        """Get list of pending migrations for a profile.
+
+        Profiles:
+            - ``all``: every migration file in lexical order
+            - ``core``: only the Postgres-first bootstrap schema needed for app startup
+        """
         migration_files = []
         
         # Get all migration files
@@ -134,18 +155,25 @@ class MigrationManager:
         
         # Sort by filename to ensure proper order
         migration_files.sort()
-        
+
+        if profile == "core":
+            migration_files = [
+                name for name in migration_files if name in CORE_BOOTSTRAP_MIGRATIONS
+            ]
+        elif profile != "all":
+            raise ValueError(f"Unsupported migration profile: {profile}")
+
         return migration_files
     
-    async def run_migrations(self, conn):
-        """Run all pending migrations"""
-        logger.info("Starting database migrations...")
+    async def run_migrations(self, conn, profile: str = "all"):
+        """Run pending migrations for the requested profile."""
+        logger.info("Starting database migrations (profile=%s)...", profile)
         
         # Get applied migrations
         applied = await self.get_applied_migrations(conn)
         
         # Get pending migrations
-        pending = await self.get_pending_migrations()
+        pending = await self.get_pending_migrations(profile=profile)
         
         # Apply pending migrations
         applied_count = 0
@@ -184,11 +212,11 @@ class MigrationManager:
 
 
 # Migration runner function
-async def run_database_migrations() -> bool:
-    """Run database migrations"""
+async def run_database_migrations(profile: str = "all") -> bool:
+    """Run database migrations for the requested profile."""
     from src.api.database import get_postgres_connection
     
-    logger.info("Initializing database migrations...")
+    logger.info("Initializing database migrations (profile=%s)...", profile)
     
     try:
         async with get_postgres_connection() as conn:
@@ -196,7 +224,7 @@ async def run_database_migrations() -> bool:
             manager = MigrationManager()
             
             # Run migrations
-            success = await manager.run_migrations(conn)
+            success = await manager.run_migrations(conn, profile=profile)
             
             if success:
                 logger.info("✅ Database migrations completed successfully")

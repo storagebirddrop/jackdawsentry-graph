@@ -10,6 +10,29 @@ from src.api.migrations.migration_manager import MigrationManager
 
 
 @pytest.mark.asyncio
+async def test_core_profile_excludes_optional_legacy_migrations(tmp_path: Path):
+    for name in [
+        "001_initial_schema.sql",
+        "003_competitive_schema.sql",
+        "003_sanctioned_addresses.sql",
+        "008_cluster_attribution.sql",
+        "009_event_store_backfill.sql",
+    ]:
+        (tmp_path / name).write_text("-- sql", encoding="utf-8")
+
+    manager = MigrationManager()
+    manager.migrations_dir = tmp_path
+
+    pending = await manager.get_pending_migrations(profile="core")
+
+    assert "001_initial_schema.sql" in pending
+    assert "003_sanctioned_addresses.sql" in pending
+    assert "009_event_store_backfill.sql" in pending
+    assert "003_competitive_schema.sql" not in pending
+    assert "008_cluster_attribution.sql" not in pending
+
+
+@pytest.mark.asyncio
 async def test_apply_migration_marks_001_applied_when_base_schema_exists(tmp_path: Path):
     migration = tmp_path / "001_initial_schema.sql"
     migration.write_text("THIS IS NOT VALID SQL;", encoding="utf-8")
