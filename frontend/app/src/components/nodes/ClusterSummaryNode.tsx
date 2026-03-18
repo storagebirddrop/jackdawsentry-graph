@@ -12,9 +12,11 @@ interface ClusterNodeData extends InvestigationNode {
   onExpand?: () => void;
 }
 
-export default function ClusterSummaryNode({ data: rawData }: NodeProps) {
-  const data = rawData as unknown as ClusterNodeData;
-  if (!data || !data.node_data) {
+export default function ClusterSummaryNode({ data }: NodeProps) {
+  // NodeProps<T> in @xyflow/react v12 types data as Record<string,unknown>;
+  // cast via unknown to reach our richer interface.
+  const clusterData = data as unknown as ClusterNodeData;
+  if (!clusterData || !clusterData.node_data) {
     return (
       <div style={{ border: '2px dashed #475569', borderRadius: 8, background: '#1e293b', color: '#64748b', padding: '6px 10px', minWidth: 140, fontSize: 11, textAlign: 'center' }}>
         <Handle type="target" position={Position.Left} />
@@ -23,12 +25,12 @@ export default function ClusterSummaryNode({ data: rawData }: NodeProps) {
       </div>
     );
   }
-  const cluster = data.node_data as ClusterSummaryData;
+  const cluster = clusterData.node_data as ClusterSummaryData;
 
   return (
     <div
       style={{
-        border: `2px dashed ${data.branch_color}`,
+        border: `2px dashed ${clusterData.branch_color}`,
         borderRadius: 8,
         background: '#1e293b',
         color: '#f1f5f9',
@@ -50,13 +52,13 @@ export default function ClusterSummaryNode({ data: rawData }: NodeProps) {
           ` · risk ${(cluster.max_risk_score * 100).toFixed(0)}%`}
       </div>
 
-      {data.onExpand && (
+      {clusterData.onExpand && (
         <button
-          onClick={data.onExpand}
+          onClick={clusterData.onExpand}
           style={{
             marginTop: 6,
             padding: '2px 8px',
-            background: data.branch_color,
+            background: clusterData.branch_color,
             border: 'none',
             borderRadius: 4,
             color: '#fff',

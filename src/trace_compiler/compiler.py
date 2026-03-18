@@ -370,6 +370,15 @@ class TraceCompiler:
             timestamp=datetime.now(timezone.utc),
         )
 
+        # Write CanonicalAsset nodes to Neo4j for each unique asset seen in this
+        # expansion (ADR-002 / invariant 5).  Fire-and-forget — failures are
+        # swallowed so they never block the response.
+        if added_edges and self._neo4j is not None:
+            import asyncio as _asyncio
+            _asyncio.create_task(
+                self._upsert_canonical_assets(added_edges)
+            )
+
         # Cache successful non-empty results in Redis (15-minute TTL).
         if added_nodes and self._redis is not None:
             try:
@@ -399,6 +408,51 @@ class TraceCompiler:
                 logger.debug("Redis cache write failed: %s", cache_exc)
 
         return response
+
+    async def _upsert_canonical_assets(
+        self, edges: List[InvestigationEdge]
+    ) -> None:
+        """MERGE CanonicalAsset nodes into Neo4j for each unique asset in edges.
+
+        Called fire-and-forget after every non-empty expansion so the
+        investigation graph accumulates a CanonicalAsset node for every asset
+        that flows through it.  Failures are swallowed — this write is
+        best-effort and must never block the expansion response.
+
+        Neo4j constraint: ``canonical_asset_symbol_unique`` on ``symbol``.
+        Each CanonicalAsset carries ``coingecko_id`` (the canonical_asset_id
+        from the event store) and the primary chain where it was first seen.
+        """
+        # Collect unique (canonical_asset_id, symbol, chain) tuples.
+        seen: Dict[str, tuple] = {}
+        for edge in edges:
+            cid = edge.canonical_asset_id
+            sym = edge.asset_symbol
+            if cid and sym and sym not in seen:
+                seen[sym] = (cid, sym, edge.asset_chain or edge.tx_chain or "unknown")
+
+        if not seen:
+            return
+
+        cypher = """
+        UNWIND $assets AS asset
+        MERGE (c:CanonicalAsset {symbol: asset.symbol})
+        ON CREATE SET
+            c.coingecko_id  = asset.coingecko_id,
+            c.primary_chain = asset.primary_chain,
+            c.created_at    = datetime()
+        ON MATCH SET
+            c.coingecko_id  = coalesce(c.coingecko_id, asset.coingecko_id)
+        """
+        params = [
+            {"symbol": sym, "coingecko_id": cid, "primary_chain": chain}
+            for sym, (cid, _, chain) in seen.items()
+        ]
+        try:
+            async with self._neo4j.session() as session:
+                await session.run(cypher, assets=params)
+        except Exception as exc:
+            logger.debug("_upsert_canonical_assets failed: %s", exc)
 
     async def get_bridge_hop_status(
         self, session_id: str, hop_id: str

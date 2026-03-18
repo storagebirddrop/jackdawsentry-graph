@@ -12,9 +12,11 @@ interface SwapNodeData extends InvestigationNode {
   branch_color: string;
 }
 
-export default function SwapEventNode({ data: rawData }: NodeProps) {
-  const data = rawData as unknown as SwapNodeData;
-  const swap = data.node_data as SwapEventData;
+export default function SwapEventNode({ data }: NodeProps) {
+  // NodeProps<T> in @xyflow/react v12 types data as Record<string,unknown>;
+  // cast via unknown to reach our richer interface.
+  const swapData = data as unknown as SwapNodeData;
+  const swap = swapData.node_data as SwapEventData;
 
   return (
     <div
