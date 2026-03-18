@@ -66,6 +66,7 @@ class EventStoreBackfillWorker:
         self.interval_seconds = settings.BACKFILL_INTERVAL_SECONDS
         self.batch_size = settings.BACKFILL_BLOCK_BATCH_SIZE
         self.max_chains_per_cycle = settings.BACKFILL_CHAINS_PER_CYCLE
+        self.block_timeout_seconds = settings.BACKFILL_BLOCK_TIMEOUT_SECONDS
         self.is_running = False
 
     async def start(self):
@@ -217,24 +218,33 @@ class EventStoreBackfillWorker:
 
         try:
             for block_number in range(next_block, batch_end - 1, -1):
-                tx_hashes = await collector.get_block_transactions(block_number)
-                block_attempted_transactions = 0
-
-                for tx_hash in tx_hashes:
-                    tx = await collector.get_transaction(tx_hash)
-                    if not tx:
-                        continue
-
-                    await collector._insert_raw_transaction(tx)
-                    if tx.token_transfers:
-                        await collector._insert_raw_token_transfers(tx)
-                    if tx.inputs:
-                        await collector._insert_raw_utxo_inputs(tx)
-                    if tx.outputs:
-                        await collector._insert_raw_utxo_outputs(tx)
-                    if tx.blockchain == "solana":
-                        await collector._insert_raw_solana_instructions(tx)
-                    block_attempted_transactions += 1
+                try:
+                    block_attempted_transactions = await asyncio.wait_for(
+                        self._backfill_single_block(collector, block_number),
+                        timeout=self.block_timeout_seconds,
+                    )
+                except asyncio.TimeoutError:
+                    await self._update_state(
+                        blockchain,
+                        status="running",
+                        next_block=block_number - 1,
+                        attempted_blocks=0,
+                        attempted_transactions=0,
+                        last_error=(
+                            f"Timed out backfilling block {block_number} "
+                            f"after {self.block_timeout_seconds}s"
+                        ),
+                        completed=False,
+                    )
+                    logger.warning(
+                        "Timed out backfilling block %s for %s after %ss; "
+                        "skipping to next block",
+                        block_number,
+                        blockchain,
+                        self.block_timeout_seconds,
+                    )
+                    current_next_block = block_number - 1
+                    continue
 
                 attempted_blocks += 1
                 attempted_transactions += block_attempted_transactions
@@ -289,6 +299,29 @@ class EventStoreBackfillWorker:
                 completed=False,
             )
             logger.error("Backfill failed for %s: %s", blockchain, exc)
+
+    async def _backfill_single_block(self, collector: Any, block_number: int) -> int:
+        """Backfill a single block and return attempted transaction count."""
+        tx_hashes = await collector.get_block_transactions(block_number)
+        block_attempted_transactions = 0
+
+        for tx_hash in tx_hashes:
+            tx = await collector.get_transaction(tx_hash)
+            if not tx:
+                continue
+
+            await collector._insert_raw_transaction(tx)
+            if tx.token_transfers:
+                await collector._insert_raw_token_transfers(tx)
+            if tx.inputs:
+                await collector._insert_raw_utxo_inputs(tx)
+            if tx.outputs:
+                await collector._insert_raw_utxo_outputs(tx)
+            if tx.blockchain == "solana":
+                await collector._insert_raw_solana_instructions(tx)
+            block_attempted_transactions += 1
+
+        return block_attempted_transactions
 
     async def _mark_completed(self, blockchain: str):
         """Mark a chain as fully backfilled for the configured window."""

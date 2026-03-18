@@ -222,6 +222,7 @@ class Settings(BaseSettings):
     BACKFILL_INTERVAL_SECONDS: int = 30
     BACKFILL_BLOCK_BATCH_SIZE: int = 2
     BACKFILL_CHAINS_PER_CYCLE: int = 4
+    BACKFILL_BLOCK_TIMEOUT_SECONDS: int = 45
 
     # =============================================================================
     # Development Configuration
