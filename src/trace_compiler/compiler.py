@@ -6,7 +6,7 @@ This is the semantic boundary between raw blockchain facts (PostgreSQL event
 store, Neo4j canonical graph) and the investigation-view graph served to the
 frontend.
 
-Current state (Phase 4): EVM and UTXO chain compilers are implemented.
+Current state (Phase 4): EVM, UTXO, and Solana chain compilers are implemented.
 Session creation and expansion are fully wired; bridge hop status polling
 is supported via the PostgreSQL ``bridge_correlations`` table.
 
@@ -26,6 +26,7 @@ from typing import Optional
 
 from src.trace_compiler.chains.bitcoin import UTXOChainCompiler
 from src.trace_compiler.chains.evm import EVMChainCompiler
+from src.trace_compiler.chains.solana import SolanaChainCompiler
 from src.trace_compiler.lineage import new_operation_id
 from src.trace_compiler.models import AssetContext
 from src.trace_compiler.models import BridgeHopStatusResponse
@@ -45,17 +46,24 @@ _EXPANSION_CACHE_TTL = 900  # 15 minutes
 
 
 def _expansion_cache_key(
-    session_id: str,
     seed_node_id: str,
     operation_type: str,
     max_results: Optional[int],
 ) -> str:
     """Deterministic Redis cache key for an expansion result.
 
-    Keyed on session + node + operation + result-size so different page sizes
-    don't collide.  SHA-256 keeps the key short and safe for Redis.
+    Intentionally excludes ``session_id`` and ``branch_id`` so that the same
+    expansion (same seed, direction, result-size) is shared across all
+    investigation sessions.  Lineage IDs on individual nodes reference the
+    session that originally computed the result; callers that need current-
+    session lineage must re-stamp at serve time (deferred).
+
+    SHA-256 keeps the key short and collision-safe for Redis.
+
+    Per PHASE3 spec Section 11: "The cache key does NOT include session_id or
+    branch_id."
     """
-    raw = f"expand:{session_id}:{seed_node_id}:{operation_type}:{max_results}"
+    raw = f"expand:{seed_node_id}:{operation_type}:{max_results}"
     return "tc:" + hashlib.sha256(raw.encode()).hexdigest()
 
 
@@ -83,11 +91,15 @@ class TraceCompiler:
         # Chain compiler registry: keyed by chain name.
         _evm = EVMChainCompiler(postgres_pool, neo4j_driver, redis_client)
         _btc = UTXOChainCompiler(postgres_pool, neo4j_driver, redis_client)
+        _sol = SolanaChainCompiler(postgres_pool, neo4j_driver, redis_client)
         self._chain_compilers: Dict[str, Any] = {
             chain: _evm for chain in _evm.supported_chains
         }
         self._chain_compilers.update(
             {chain: _btc for chain in _btc.supported_chains}
+        )
+        self._chain_compilers.update(
+            {chain: _sol for chain in _sol.supported_chains}
         )
 
     async def create_session(
@@ -192,23 +204,30 @@ class TraceCompiler:
         """
         from src.trace_compiler.lineage import branch_id as mk_branch
 
+        # Compute branch_id first — needed both in the cache-hit path and in
+        # the normal compilation path below.
+        _branch = mk_branch(session_id, request.seed_node_id, 0)
+
         # Check Redis cache for a previous identical expansion (15-min TTL).
         if self._redis is not None:
             try:
                 cache_key = _expansion_cache_key(
-                    session_id, request.seed_node_id, request.operation_type,
+                    request.seed_node_id, request.operation_type,
                     request.options.max_results,
                 )
                 cached = await self._redis.get(cache_key)
                 if cached:
                     data = json.loads(cached)
+                    # Override session-scoped fields so the caller receives
+                    # IDs that match their current session, not the session
+                    # that originally populated the cache.
                     return ExpansionResponseV2(
-                        operation_id=data["operation_id"],
+                        operation_id=new_operation_id(),
                         operation_type=data["operation_type"],
-                        session_id=data["session_id"],
+                        session_id=session_id,
                         seed_node_id=data["seed_node_id"],
                         seed_lineage_id=data["seed_lineage_id"],
-                        branch_id=data["branch_id"],
+                        branch_id=_branch,
                         expansion_depth=data["expansion_depth"],
                         added_nodes=[InvestigationNode(**n) for n in data["nodes"]],
                         added_edges=[InvestigationEdge(**e) for e in data["edges"]],
@@ -217,7 +236,7 @@ class TraceCompiler:
                         layout_hints=LayoutHints(**data["layout_hints"]),
                         chain_context=ChainContext(**data["chain_context"]),
                         asset_context=AssetContext(**data["asset_context"]),
-                        timestamp=datetime.fromisoformat(data["timestamp"]),
+                        timestamp=datetime.now(timezone.utc),
                     )
             except Exception as cache_exc:
                 logger.debug("Redis cache read failed: %s", cache_exc)
@@ -227,8 +246,6 @@ class TraceCompiler:
         chain = parts[0] if parts else "unknown"
         node_type = parts[1] if len(parts) > 1 else "address"
         identifier = parts[2] if len(parts) > 2 else request.seed_node_id
-
-        _branch = mk_branch(session_id, request.seed_node_id, 0)
 
         added_nodes: List[InvestigationNode] = []
         added_edges: List[InvestigationEdge] = []
@@ -383,7 +400,7 @@ class TraceCompiler:
         if added_nodes and self._redis is not None:
             try:
                 cache_key = _expansion_cache_key(
-                    session_id, request.seed_node_id, request.operation_type,
+                    request.seed_node_id, request.operation_type,
                     request.options.max_results,
                 )
                 payload = json.dumps({
@@ -450,7 +467,8 @@ class TraceCompiler:
         ]
         try:
             async with self._neo4j.session() as session:
-                await session.run(cypher, assets=params)
+                result = await session.run(cypher, assets=params)
+                await result.consume()  # Consume result to complete transaction
         except Exception as exc:
             logger.debug("_upsert_canonical_assets failed: %s", exc)
 

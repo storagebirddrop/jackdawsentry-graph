@@ -5,7 +5,8 @@ Verifies that:
 - Cached results are returned on the second call without hitting the chain compiler.
 - A Redis miss falls through to the chain compiler.
 - Redis failures are swallowed (not propagated to the caller).
-- Cache key includes session_id, seed_node_id, operation, max_results.
+- Cache key excludes session_id (PHASE3 spec / P1.2): same expansion is shared
+  across all investigation sessions; session_id is overridden at serve time.
 """
 
 import json
@@ -128,31 +129,38 @@ def _redis_error():
 
 
 def test_cache_key_deterministic():
-    k1 = _expansion_cache_key("s", "n", "expand_next", 10)
-    k2 = _expansion_cache_key("s", "n", "expand_next", 10)
+    k1 = _expansion_cache_key("n", "expand_next", 10)
+    k2 = _expansion_cache_key("n", "expand_next", 10)
     assert k1 == k2
 
 
-def test_cache_key_differs_by_session():
-    k1 = _expansion_cache_key("session-A", "n", "expand_next", 10)
-    k2 = _expansion_cache_key("session-B", "n", "expand_next", 10)
+def test_cache_key_excludes_session_id():
+    """Same seed + operation from different sessions must produce the same key."""
+    k1 = _expansion_cache_key("n", "expand_next", 10)
+    k2 = _expansion_cache_key("n", "expand_next", 10)
+    assert k1 == k2, "Cache key must be session-independent (PHASE3 spec P1.2)"
+
+
+def test_cache_key_differs_by_seed():
+    k1 = _expansion_cache_key("ethereum:address:0xaaa", "expand_next", 10)
+    k2 = _expansion_cache_key("ethereum:address:0xbbb", "expand_next", 10)
     assert k1 != k2
 
 
 def test_cache_key_differs_by_operation():
-    k1 = _expansion_cache_key("s", "n", "expand_next", 10)
-    k2 = _expansion_cache_key("s", "n", "expand_prev", 10)
+    k1 = _expansion_cache_key("n", "expand_next", 10)
+    k2 = _expansion_cache_key("n", "expand_prev", 10)
     assert k1 != k2
 
 
 def test_cache_key_differs_by_max_results():
-    k1 = _expansion_cache_key("s", "n", "expand_next", 10)
-    k2 = _expansion_cache_key("s", "n", "expand_next", 20)
+    k1 = _expansion_cache_key("n", "expand_next", 10)
+    k2 = _expansion_cache_key("n", "expand_next", 20)
     assert k1 != k2
 
 
 def test_cache_key_prefixed():
-    k = _expansion_cache_key("s", "n", "expand_next", 10)
+    k = _expansion_cache_key("n", "expand_next", 10)
     assert k.startswith("tc:")
 
 
@@ -227,6 +235,21 @@ async def test_expand_cache_hit_returns_correct_node():
     result = await compiler.expand("session-2", _request())
 
     assert result.added_nodes[0].node_id == node.node_id
+
+
+@pytest.mark.asyncio
+async def test_expand_cache_hit_overrides_session_id():
+    """Cache hit must return the *current* session_id, not the cached one."""
+    node = _make_node()
+    redis = _redis_hit([node], [])  # cached under session "test-session"
+    compiler = TraceCompiler(redis_client=redis)
+    compiler._chain_compilers["ethereum"] = MagicMock()
+
+    result = await compiler.expand("session-NEW", _request())
+
+    assert result.session_id == "session-NEW", (
+        "Cache hit must override session_id with current session (P1.2)"
+    )
 
 
 # ---------------------------------------------------------------------------

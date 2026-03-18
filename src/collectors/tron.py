@@ -70,9 +70,11 @@ class TronCollector(BaseCollector):
                 timeout=aiohttp.ClientTimeout(total=30)
             )
 
-            # Test connection
-            info = await self.rpc_call("wallet/getnodeinfo")
-            if info:
+            # PublicNode serves useful data on getnowblock but may return an
+            # empty object for getnodeinfo, so use latest block as the
+            # connectivity check.
+            latest_block = await self.rpc_call("wallet/getnowblock")
+            if latest_block and latest_block.get("block_header"):
                 logger.info(f"Connected to Tron {self.network}")
                 return True
 
@@ -87,24 +89,30 @@ class TronCollector(BaseCollector):
             await self.session.close()
 
     async def rpc_call(self, method: str, params: Dict = None) -> Optional[Dict]:
-        """Make Tron RPC call"""
+        """Make a Tron REST API call.
+
+        Tron nodes expose REST-style wallet endpoints rather than JSON-RPC 2.0.
+        """
         if not self.session:
             return None
 
         try:
-            payload = {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": method,
-                "parameters": params or {},
-            }
+            method_path = method.lstrip("/")
+            url = f"{self.rpc_url.rstrip('/')}/{method_path}"
+            payload = params or {}
+            use_get = method_path in {"wallet/getnodeinfo", "wallet/getnowblock"} and not payload
 
-            async with self.session.post(
-                self.rpc_url, json=payload, headers={"Content-Type": "application/json"}
-            ) as response:
+            if use_get:
+                request = self.session.get(url)
+            else:
+                request = self.session.post(
+                    url, json=payload, headers={"Content-Type": "application/json"}
+                )
+
+            async with request as response:
                 if response.status == 200:
                     result = await response.json()
-                    return result.get("result")
+                    return result
                 else:
                     logger.error(f"Tron RPC error: {response.status}")
 

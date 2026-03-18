@@ -69,6 +69,9 @@ class Settings(BaseSettings):
     LND_RPC_URL: str = "localhost:10009"
     LND_MACAROON_PATH: Optional[str] = None
     LND_TLS_CERT_PATH: Optional[str] = None
+    LIGHTNING_API_URL: str = "https://mempool.space"
+    LIGHTNING_PUBLIC_TOP_NODES: int = 5
+    LIGHTNING_PUBLIC_CHANNELS_PER_NODE: int = 25
 
     # Ethereum/EVM Chains
     ETHEREUM_RPC_URL: str = "wss://ethereum-rpc.publicnode.com"
@@ -116,11 +119,13 @@ class Settings(BaseSettings):
     # Injective
     INJECTIVE_RPC_URL: str = "wss://injective-rpc.publicnode.com:443/websocket"
     INJECTIVE_RPC_FALLBACK: str = "https://injective-rpc.publicnode.com:443"
+    INJECTIVE_REST_URL: str = "https://injective-rest.publicnode.com"
     INJECTIVE_NETWORK: str = "mainnet"
 
     # Cosmos
     COSMOS_RPC_URL: str = "wss://cosmos-rpc.publicnode.com:443/websocket"
     COSMOS_RPC_FALLBACK: str = "https://cosmos-rpc.publicnode.com:443"
+    COSMOS_REST_URL: str = "https://cosmos-rest.publicnode.com"
     COSMOS_NETWORK: str = "mainnet"
 
     # Tron
@@ -213,6 +218,10 @@ class Settings(BaseSettings):
     # addition to the Neo4j graph.  Set to True once migration 006 has been
     # applied.  Defaults to False so existing deployments are unaffected.
     DUAL_WRITE_RAW_EVENT_STORE: bool = False
+    AUTO_BACKFILL_RAW_EVENT_STORE: bool = True
+    BACKFILL_INTERVAL_SECONDS: int = 30
+    BACKFILL_BLOCK_BATCH_SIZE: int = 2
+    BACKFILL_CHAINS_PER_CYCLE: int = 4
 
     # =============================================================================
     # Development Configuration
@@ -567,12 +576,14 @@ def get_blockchain_config(blockchain: str) -> dict:
         "injective": {
             "rpc_url": settings.INJECTIVE_RPC_URL,
             "fallback_url": settings.INJECTIVE_RPC_FALLBACK,
+            "rest_url": settings.INJECTIVE_REST_URL,
             "network": settings.INJECTIVE_NETWORK,
             "family": "cosmos",
         },
         "cosmos": {
             "rpc_url": settings.COSMOS_RPC_URL,
             "fallback_url": settings.COSMOS_RPC_FALLBACK,
+            "rest_url": settings.COSMOS_REST_URL,
             "network": settings.COSMOS_NETWORK,
             "family": "cosmos",
         },

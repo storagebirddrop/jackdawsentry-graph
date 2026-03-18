@@ -189,6 +189,8 @@ export interface ExpansionResponseV2 {
   operation_type: 'expand_next' | 'expand_prev' | 'expand_neighbors' | 'create_session';
   nodes: InvestigationNode[];
   edges: InvestigationEdge[];
+  added_nodes?: InvestigationNode[];
+  added_edges?: InvestigationEdge[];
   layout_hints: LayoutHints;
   chain_context: ChainContext;
   pagination?: PaginationMeta;

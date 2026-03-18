@@ -43,6 +43,10 @@ class BaseChainCompiler(ABC):
         self._pg = postgres_pool
         self._neo4j = neo4j_driver
         self._redis = redis_client
+        from src.trace_compiler.bridges.hop_compiler import BridgeHopCompiler
+        from src.trace_compiler.services.service_classifier import ServiceClassifier
+        self._bridge = BridgeHopCompiler(postgres_pool=postgres_pool)
+        self._service = ServiceClassifier(postgres_pool=postgres_pool, neo4j_driver=neo4j_driver)
 
     @property
     @abstractmethod

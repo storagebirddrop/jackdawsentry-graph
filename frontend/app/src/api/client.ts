@@ -31,6 +31,16 @@ async function handleResponse<T>(res: Response): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+function normalizeExpansionResponse(
+  payload: ExpansionResponseV2,
+): ExpansionResponseV2 {
+  return {
+    ...payload,
+    nodes: payload.nodes ?? payload.added_nodes ?? [],
+    edges: payload.edges ?? payload.added_edges ?? [],
+  };
+}
+
 /** Create a new investigation session seeded from a single address. */
 export async function createSession(
   req: SessionCreateRequest,
@@ -53,7 +63,7 @@ export async function expandNode(
     headers: authHeaders(),
     body: JSON.stringify(req),
   });
-  return handleResponse<ExpansionResponseV2>(res);
+  return normalizeExpansionResponse(await handleResponse<ExpansionResponseV2>(res));
 }
 
 /** Poll bridge hop resolution status. */

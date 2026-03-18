@@ -38,22 +38,39 @@ const NODE_HEIGHT = 64;
 
 /**
  * Compute ELK Layered positions for the given React Flow nodes and edges.
- * Returns a position map `{ nodeId → { x, y } }`.
+ *
+ * @param nodes           All nodes in the current graph (new + existing).
+ * @param edges           All edges in the current graph.
+ * @param fixedPositions  Positions of nodes that must not move.  When provided,
+ *                        interactive layout is enabled so that ELK keeps these
+ *                        nodes in their current layer positions and only freely
+ *                        places nodes absent from this map.
+ * @returns Position map `{ nodeId → { x, y } }` for all nodes.
  */
 export async function computeElkLayout(
   nodes: Node[],
   edges: Edge[],
+  fixedPositions?: Map<string, { x: number; y: number }>,
 ): Promise<Map<string, { x: number; y: number }>> {
   if (nodes.length === 0) return new Map();
 
+  const hasFixed = fixedPositions && fixedPositions.size > 0;
+
+  // When some nodes are already placed, enable ELK's interactive mode so it
+  // honours their layer assignments and only moves the newly added nodes.
+  const layoutOptions: Record<string, string> = hasFixed
+    ? { ...ELK_OPTIONS, 'elk.interactiveLayout': 'true' }
+    : ELK_OPTIONS;
+
   const graph = {
     id: 'root',
-    layoutOptions: ELK_OPTIONS,
-    children: nodes.map((n) => ({
-      id: n.id,
-      width: NODE_WIDTH,
-      height: NODE_HEIGHT,
-    })),
+    layoutOptions,
+    children: nodes.map((n) => {
+      const fixed = fixedPositions?.get(n.id);
+      return fixed
+        ? { id: n.id, width: NODE_WIDTH, height: NODE_HEIGHT, x: fixed.x, y: fixed.y }
+        : { id: n.id, width: NODE_WIDTH, height: NODE_HEIGHT };
+    }),
     edges: edges.map((e) => ({
       id: e.id,
       sources: [e.source],

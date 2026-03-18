@@ -269,21 +269,35 @@ class BaseCollector(ABC):
             batch_size = self.config.get("batch_size", 10)
             start_block = self.last_block_processed + 1
             end_block = min(latest_block, start_block + batch_size - 1)
+            processed_blocks = 0
 
             for block_num in range(start_block, end_block + 1):
                 await self.process_block(block_num)
-                self.last_block_processed = block_num
+
+                if self.last_block_processed > block_num:
+                    logger.info(
+                        "Advanced %s checkpoint to %s while processing block %s",
+                        self.blockchain,
+                        self.last_block_processed,
+                        block_num,
+                    )
+                    break
+
+                self.last_block_processed = max(self.last_block_processed, block_num)
+                processed_blocks += 1
 
             # Save progress
             await self.save_last_processed_block()
 
             # Update metrics
-            self.metrics["blocks_processed"] += end_block - start_block + 1
+            self.metrics["blocks_processed"] += processed_blocks
             self.metrics["last_collection"] = datetime.now(timezone.utc)
 
-            logger.info(
-                f"Processed blocks {start_block}-{end_block} for {self.blockchain}"
-            )
+            if processed_blocks:
+                processed_end = start_block + processed_blocks - 1
+                logger.info(
+                    f"Processed blocks {start_block}-{processed_end} for {self.blockchain}"
+                )
 
         except Exception as e:
             logger.error(f"Error collecting blocks for {self.blockchain}: {e}")
@@ -329,6 +343,11 @@ class BaseCollector(ABC):
                     asyncio.create_task(self._insert_raw_utxo_inputs(tx))
                 if tx.outputs:
                     asyncio.create_task(self._insert_raw_utxo_outputs(tx))
+                # Solana instruction-level data lives in a dedicated table so
+                # that the SolanaChainCompiler can resolve ATA ownership and
+                # instruction semantics without scanning raw_transactions.
+                if tx.blockchain == "solana":
+                    asyncio.create_task(self._insert_raw_solana_instructions(tx))
 
             # Update address info for account-based chains.
             if tx.from_address:
@@ -789,8 +808,9 @@ class BaseCollector(ABC):
                     tx.bridge_protocol,
                 )
         except Exception as exc:
-            logger.debug(
-                "_insert_raw_transaction failed for %s/%s: %s",
+            logger.warning(
+                "dual-write _insert_raw_transaction failed for %s/%s: %s — "
+                "event store parity loss; investigate before T1.15 cutover",
                 tx.blockchain,
                 tx.hash,
                 exc,
@@ -842,8 +862,9 @@ class BaseCollector(ABC):
                     ],
                 )
         except Exception as exc:
-            logger.debug(
-                "_insert_raw_token_transfers failed for %s/%s: %s",
+            logger.warning(
+                "dual-write _insert_raw_token_transfers failed for %s/%s: %s — "
+                "event store parity loss; investigate before T1.15 cutover",
                 tx.blockchain,
                 tx.hash,
                 exc,
@@ -887,8 +908,9 @@ class BaseCollector(ABC):
                     ],
                 )
         except Exception as exc:
-            logger.debug(
-                "_insert_raw_utxo_inputs failed for %s/%s: %s",
+            logger.warning(
+                "dual-write _insert_raw_utxo_inputs failed for %s/%s: %s — "
+                "event store parity loss; investigate before T1.15 cutover",
                 tx.blockchain,
                 tx.hash,
                 exc,
@@ -931,9 +953,77 @@ class BaseCollector(ABC):
                     ],
                 )
         except Exception as exc:
-            logger.debug(
-                "_insert_raw_utxo_outputs failed for %s/%s: %s",
+            logger.warning(
+                "dual-write _insert_raw_utxo_outputs failed for %s/%s: %s — "
+                "event store parity loss; investigate before T1.15 cutover",
                 tx.blockchain,
+                tx.hash,
+                exc,
+            )
+
+    async def _insert_raw_solana_instructions(self, tx: Transaction) -> None:
+        """Write Solana instruction facts to the PostgreSQL event store.
+
+        Solana transactions are instruction bundles — a single ``tx_hash`` may
+        contain SPL token transfers, native SOL moves, and program invocations.
+        This method writes one row per instruction derived from the transaction's
+        ``token_transfers`` list (which the Solana collector populates from
+        ``parseTokenBalances`` / ``message.instructions``).
+
+        The ``raw_solana_instructions`` table is the primary data source for
+        ``SolanaChainCompiler`` ATA resolution and SPL transfer expansion.
+
+        Args:
+            tx: Transaction with ``blockchain == "solana"`` and a populated
+                ``token_transfers`` list produced by the Solana collector.
+        """
+        if not tx.token_transfers:
+            return
+
+        query = """
+            INSERT INTO raw_solana_instructions (
+                blockchain, tx_hash, instruction_index,
+                program_id,
+                from_address, to_address,
+                asset_symbol, asset_contract, canonical_asset_id,
+                amount_raw, amount_normalized,
+                timestamp
+            ) VALUES (
+                $1, $2, $3,
+                $4,
+                $5, $6,
+                $7, $8, $9,
+                $10, $11,
+                $12
+            )
+            ON CONFLICT (blockchain, tx_hash, instruction_index) DO NOTHING
+        """
+        try:
+            async with get_postgres_connection() as conn:
+                await conn.executemany(
+                    query,
+                    [
+                        (
+                            tx.blockchain,
+                            tx.hash,
+                            t.transfer_index,
+                            t.program_id if hasattr(t, "program_id") else t.asset_contract,  # Use program_id if available, otherwise mint
+                            t.from_address,
+                            t.to_address,
+                            t.asset_symbol,
+                            t.asset_contract,
+                            t.canonical_asset_id,
+                            str(t.amount_raw) if t.amount_raw is not None else None,
+                            t.amount_normalized,
+                            tx.timestamp,
+                        )
+                        for t in tx.token_transfers
+                    ],
+                )
+        except Exception as exc:
+            logger.warning(
+                "dual-write _insert_raw_solana_instructions failed for solana/%s: %s — "
+                "event store parity loss; investigate before T1.15 cutover",
                 tx.hash,
                 exc,
             )

@@ -6,6 +6,7 @@ Solana blockchain data collection
 import asyncio
 import json
 import logging
+import re
 from datetime import datetime
 from datetime import timezone
 from typing import Any
@@ -18,12 +19,13 @@ from typing import Union
 try:
     import base58
     from solana.rpc.async_api import AsyncClient
-    from solana.rpc.types import RPCResponse
     from solders.pubkey import Pubkey
+    from solders.signature import Signature
 
     SOLANA_AVAILABLE = True
 except ImportError:
     SOLANA_AVAILABLE = False
+    Signature = None
 
     # Fallback for base58
     try:
@@ -39,6 +41,7 @@ from .base import Block
 from .base import Transaction
 
 logger = logging.getLogger(__name__)
+_FIRST_AVAILABLE_BLOCK_RE = re.compile(r"First available block:\s*(\d+)")
 
 
 class SolanaCollector(BaseCollector):
@@ -61,6 +64,46 @@ class SolanaCollector(BaseCollector):
 
         self.client = None
 
+    def _normalize_rpc_payload(self, value: Any) -> Any:
+        """Convert solders / solana-py response objects into plain Python values."""
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return value
+        if isinstance(value, dict):
+            return {
+                key: self._normalize_rpc_payload(item) for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [self._normalize_rpc_payload(item) for item in value]
+        if isinstance(value, tuple):
+            return [self._normalize_rpc_payload(item) for item in value]
+
+        to_json = getattr(value, "to_json", None)
+        if callable(to_json):
+            try:
+                return self._normalize_rpc_payload(json.loads(to_json()))
+            except Exception:
+                pass
+
+        if hasattr(value, "__dict__"):
+            return {
+                key: self._normalize_rpc_payload(item)
+                for key, item in vars(value).items()
+                if not key.startswith("_")
+            }
+
+        return value
+
+    def _normalize_signature(self, tx_signature: str) -> Any:
+        """Convert a base58 string signature into the runtime type expected by solana-py."""
+        if Signature is None:
+            return tx_signature
+
+        try:
+            return Signature.from_string(tx_signature)
+        except Exception:
+            logger.debug("Falling back to raw Solana signature string", exc_info=True)
+            return tx_signature
+
     async def connect(self) -> bool:
         """Connect to Solana RPC"""
         if not SOLANA_AVAILABLE:
@@ -70,13 +113,13 @@ class SolanaCollector(BaseCollector):
         try:
             self.client = AsyncClient(self.rpc_url)
 
-            # Test connection
-            health = await self.client.get_health()
-            if health.value == "ok":
+            # Test connection using a method available in solana-py 0.30.x.
+            slot = await self.client.get_slot()
+            if slot and slot.value is not None:
                 logger.info(f"Connected to Solana {self.network}")
                 return True
             else:
-                logger.error(f"Solana health check failed: {health.value}")
+                logger.error("Solana slot probe returned no value")
 
         except Exception as e:
             logger.error(f"Failed to connect to Solana: {e}")
@@ -101,6 +144,85 @@ class SolanaCollector(BaseCollector):
             logger.error(f"Error getting latest Solana slot: {e}")
             return 0
 
+    async def get_first_available_block_number(self) -> int:
+        """Get the earliest slot still retained by the RPC node."""
+        try:
+            if not self.client or not hasattr(self.client, "get_first_available_block"):
+                return 0
+
+            first_available = await self.client.get_first_available_block()
+            return first_available.value if first_available and first_available.value else 0
+        except Exception as e:
+            logger.warning(f"Error getting first available Solana block: {e}")
+            return 0
+
+    async def load_last_processed_block(self):
+        """Load and clamp the Solana checkpoint to the node retention window."""
+        from src.api.database import get_redis_connection
+
+        cache_key = f"last_block:{self.blockchain}"
+        latest_block = await self.get_latest_block_number()
+        first_available_block = await self.get_first_available_block_number()
+
+        async with get_redis_connection() as redis:
+            last_block = await redis.get(cache_key)
+            if last_block:
+                checkpoint = int(last_block)
+            else:
+                checkpoint = max(latest_block - 100, 0)
+
+            if first_available_block and checkpoint < first_available_block:
+                logger.info(
+                    "Clamping Solana checkpoint from %s to first available block %s",
+                    checkpoint,
+                    first_available_block,
+                )
+                checkpoint = first_available_block
+
+            self.last_block_processed = checkpoint
+
+    async def collect_new_blocks(self):
+        """Collect live Solana slots from a safe near-tip window.
+
+        Public Solana RPC nodes often expose a narrow, fast-moving retention
+        window. If the collector falls behind, fast-forward into the most recent
+        batch-sized window instead of attempting historical catch-up that will
+        immediately be pruned.
+        """
+        latest_block = await self.get_latest_block_number()
+        if latest_block <= self.last_block_processed:
+            return
+
+        batch_size = self.config.get("batch_size", 10)
+        first_available_block = await self.get_first_available_block_number()
+        safe_checkpoint = max(latest_block - batch_size, 0)
+        if first_available_block:
+            safe_checkpoint = max(safe_checkpoint, first_available_block - 1)
+
+        if self.last_block_processed < safe_checkpoint:
+            logger.info(
+                "Fast-forwarding Solana checkpoint from %s to %s before collection",
+                self.last_block_processed,
+                safe_checkpoint,
+            )
+            self.last_block_processed = safe_checkpoint
+
+        await super().collect_new_blocks()
+
+    def _extract_first_available_block(self, error: Exception) -> int:
+        """Extract the node retention floor from a cleaned-up slot error."""
+        match = _FIRST_AVAILABLE_BLOCK_RE.search(str(error))
+        return int(match.group(1)) if match else 0
+
+    def _advance_checkpoint_to_first_available_block(self, error: Exception) -> None:
+        """Move the in-memory checkpoint to the node retention floor when needed."""
+        first_available_block = self._extract_first_available_block(error)
+        if first_available_block:
+            self.last_block_processed = max(
+                self.last_block_processed,
+                first_available_block - 1,
+            )
+
     async def get_block(self, slot_number: int) -> Optional[Block]:
         """Get block by slot number"""
         try:
@@ -114,7 +236,7 @@ class SolanaCollector(BaseCollector):
             if not block_data.value:
                 return None
 
-            block = block_data.value
+            block = self._normalize_rpc_payload(block_data.value)
             return Block(
                 hash=str(slot_number),  # Solana uses slot numbers
                 blockchain=self.blockchain,
@@ -132,6 +254,7 @@ class SolanaCollector(BaseCollector):
             )
 
         except Exception as e:
+            self._advance_checkpoint_to_first_available_block(e)
             logger.error(f"Error getting Solana block {slot_number}: {e}")
 
         return None
@@ -143,13 +266,15 @@ class SolanaCollector(BaseCollector):
                 return None
 
             tx_data = await self.client.get_transaction(
-                tx_signature, encoding="json", max_supported_transaction_version=0
+                self._normalize_signature(tx_signature),
+                encoding="json",
+                max_supported_transaction_version=0,
             )
 
             if not tx_data.value:
                 return None
 
-            transaction = tx_data.value
+            transaction = self._normalize_rpc_payload(tx_data.value)
             meta = transaction.get("meta", {})
             tx_message = transaction.get("transaction", {}).get("message", {})
 
@@ -269,13 +394,15 @@ class SolanaCollector(BaseCollector):
             if not block_data.value:
                 return []
 
-            transactions = block_data.value.get("transactions", [])
+            block = self._normalize_rpc_payload(block_data.value)
+            transactions = block.get("transactions", [])
             return [
                 tx.get("transaction", {}).get("signatures", [""])[0]
                 for tx in transactions
             ]
 
         except Exception as e:
+            self._advance_checkpoint_to_first_available_block(e)
             logger.error(
                 f"Error getting Solana block transactions for {slot_number}: {e}"
             )
@@ -348,6 +475,7 @@ class SolanaCollector(BaseCollector):
 
             accounts = []
             for account_info in token_accounts.value:
+                account_info = self._normalize_rpc_payload(account_info)
                 parsed = (
                     account_info.get("account", {}).get("data", {}).get("parsed", {})
                 )

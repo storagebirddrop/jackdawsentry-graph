@@ -80,6 +80,26 @@ export function toRfEdge(inv: InvestigationEdge): Edge {
 }
 
 // ---------------------------------------------------------------------------
+// Branch metadata
+// ---------------------------------------------------------------------------
+
+/** Metadata tracked for each active branch in the investigation graph. */
+export interface BranchMeta {
+  /** Stable identifier assigned by the backend (same across sessions). */
+  branchId: string;
+  /** CSS color string derived from branchId hash — used for the legend. */
+  color: string;
+  /** node_id of the node that was expanded to create this branch. */
+  seedNodeId: string;
+  /** Minimum depth of any node in this branch. */
+  minDepth: number;
+  /** Maximum depth of any node in this branch. */
+  maxDepth: number;
+  /** Count of nodes currently in this branch. */
+  nodeCount: number;
+}
+
+// ---------------------------------------------------------------------------
 // State shape
 // ---------------------------------------------------------------------------
 
@@ -98,6 +118,16 @@ export interface GraphState {
 
   /** Nodes that are currently being expanded (to show loading state) */
   expandingNodeIds: Set<string>;
+
+  /**
+   * Branch metadata map — keyed by branch_id.
+   *
+   * Required for collapse operations (identify which branch to collapse),
+   * the branch legend in the UI (color + label), and session snapshots
+   * (which branches are active).  Populated on every `applyExpansionDelta`
+   * call.
+   */
+  branchMap: Map<string, BranchMeta>;
 
   /** Max node count before auto-collapse prompt */
   maxNodes: number;
@@ -126,11 +156,20 @@ export const useGraphStore = create<GraphState>((set, get) => ({
   rfNodes: [],
   rfEdges: [],
   expandingNodeIds: new Set(),
+  branchMap: new Map(),
   maxNodes: 500,
 
   initSession(sessionId, rootNode) {
     const nodeMap = new Map<string, InvestigationNode>();
     nodeMap.set(rootNode.node_id, rootNode);
+    const seedBranch: BranchMeta = {
+      branchId: rootNode.branch_id,
+      color: branchColor(rootNode.branch_id),
+      seedNodeId: rootNode.node_id,
+      minDepth: rootNode.depth,
+      maxDepth: rootNode.depth,
+      nodeCount: 1,
+    };
     set({
       sessionId,
       nodeMap,
@@ -138,11 +177,14 @@ export const useGraphStore = create<GraphState>((set, get) => ({
       rfNodes: [toRfNode(rootNode)],
       rfEdges: [],
       expandingNodeIds: new Set(),
+      branchMap: new Map([[rootNode.branch_id, seedBranch]]),
     });
   },
 
   applyExpansionDelta(response) {
-    const { nodeMap, edgeMap } = get();
+    const { nodeMap, edgeMap, branchMap } = get();
+    const deltaNodes = response.nodes ?? response.added_nodes ?? [];
+    const deltaEdges = response.edges ?? response.added_edges ?? [];
 
     // Create new Maps to ensure immutability
     const newNodeMap = new Map(nodeMap);
@@ -150,13 +192,13 @@ export const useGraphStore = create<GraphState>((set, get) => ({
     let changed = false;
 
     // Merge new nodes (existing nodes are NOT replaced — preserves position)
-    for (const node of response.nodes) {
+    for (const node of deltaNodes) {
       if (!newNodeMap.has(node.node_id)) {
         newNodeMap.set(node.node_id, node);
         changed = true;
       }
     }
-    for (const edge of response.edges) {
+    for (const edge of deltaEdges) {
       if (!newEdgeMap.has(edge.edge_id)) {
         newEdgeMap.set(edge.edge_id, edge);
         changed = true;
@@ -165,6 +207,46 @@ export const useGraphStore = create<GraphState>((set, get) => ({
 
     if (!changed) return;
 
+    // Update branchMap: accumulate per-branch node statistics so that
+    // collapse operations and the branch legend have accurate metadata.
+    const newBranchMap = new Map(branchMap);
+    // Count nodes per branch across the full (merged) node map.
+    const branchNodeCounts = new Map<string, number>();
+    const branchDepths = new Map<string, { min: number; max: number }>();
+    for (const node of newNodeMap.values()) {
+      branchNodeCounts.set(node.branch_id, (branchNodeCounts.get(node.branch_id) ?? 0) + 1);
+      const existing = branchDepths.get(node.branch_id);
+      branchDepths.set(node.branch_id, {
+        min: existing ? Math.min(existing.min, node.depth) : node.depth,
+        max: existing ? Math.max(existing.max, node.depth) : node.depth,
+      });
+    }
+    // Register any branch_id seen for the first time in this delta.
+    for (const node of deltaNodes) {
+      if (!newBranchMap.has(node.branch_id)) {
+        newBranchMap.set(node.branch_id, {
+          branchId: node.branch_id,
+          color: branchColor(node.branch_id),
+          // The seed of a new branch is the node that was expanded — it will
+          // have the lowest depth in this response (or is_seed may be set).
+          seedNodeId: deltaNodes.find((n) => n.branch_id === node.branch_id && n.is_seed)?.node_id ?? node.node_id,
+          minDepth: node.depth,
+          maxDepth: node.depth,
+          nodeCount: 0, // updated below
+        });
+      }
+    }
+    // Refresh counts and depth ranges for all active branches.
+    for (const [bid, meta] of newBranchMap) {
+      const depths = branchDepths.get(bid);
+      newBranchMap.set(bid, {
+        ...meta,
+        nodeCount: branchNodeCounts.get(bid) ?? 0,
+        minDepth: depths?.min ?? meta.minDepth,
+        maxDepth: depths?.max ?? meta.maxDepth,
+      });
+    }
+
     // Preserve positions of existing nodes so they don't jump on delta updates.
     const existingPositions = new Map<string, { x: number; y: number }>();
     for (const n of get().rfNodes) existingPositions.set(n.id, n.position);
@@ -172,6 +254,7 @@ export const useGraphStore = create<GraphState>((set, get) => ({
     set({
       nodeMap: newNodeMap,
       edgeMap: newEdgeMap,
+      branchMap: newBranchMap,
       rfNodes: Array.from(newNodeMap.values()).map((inv) => {
         const rf = toRfNode(inv);
         const pos = existingPositions.get(rf.id);
@@ -207,12 +290,13 @@ export const useGraphStore = create<GraphState>((set, get) => ({
       rfNodes: [],
       rfEdges: [],
       expandingNodeIds: new Set(),
+      branchMap: new Map(),
     });
   },
 
   exportSnapshot() {
-    const { sessionId, nodeMap, edgeMap, rfNodes } = get();
-    // Capture current positions from rfNodes so they survive round-trip
+    const { sessionId, nodeMap, edgeMap, rfNodes, branchMap } = get();
+    // Capture current positions from rfNodes so they survive round-trip.
     const positions: Record<string, { x: number; y: number }> = {};
     for (const n of rfNodes) positions[n.id] = n.position;
     return JSON.stringify({
@@ -220,6 +304,7 @@ export const useGraphStore = create<GraphState>((set, get) => ({
       nodes: Array.from(nodeMap.values()),
       edges: Array.from(edgeMap.values()),
       positions,
+      branches: Array.from(branchMap.values()),
     });
   },
 
@@ -230,6 +315,7 @@ export const useGraphStore = create<GraphState>((set, get) => ({
         nodes: InvestigationNode[];
         edges: InvestigationEdge[];
         positions: Record<string, { x: number; y: number }>;
+        branches?: BranchMeta[];
       };
       const nodeMap = new Map<string, InvestigationNode>(
         data.nodes.map((n) => [n.node_id, n]),
@@ -243,7 +329,38 @@ export const useGraphStore = create<GraphState>((set, get) => ({
         return pos ? { ...rf, position: pos } : rf;
       });
       const rfEdges = data.edges.map(toRfEdge);
-      set({ sessionId: data.sessionId, nodeMap, edgeMap, rfNodes, rfEdges });
+      // Restore branchMap from snapshot if present; otherwise re-derive it.
+      const branchMap = data.branches 
+        ? new Map<string, BranchMeta>(data.branches.map((b) => [b.branchId, b]))
+        : (() => {
+            // Derive branchMap from nodeMap when legacy snapshots lack branches
+            const derivedBranchMap = new Map<string, BranchMeta>();
+            const branchNodeGroups = new Map<string, InvestigationNode[]>();
+            
+            // Group nodes by branch_id
+            for (const node of nodeMap.values()) {
+              if (!branchNodeGroups.has(node.branch_id)) {
+                branchNodeGroups.set(node.branch_id, []);
+              }
+              branchNodeGroups.get(node.branch_id)!.push(node);
+            }
+            
+            // Create BranchMeta entries for each branch
+            for (const [branchId, nodes] of branchNodeGroups) {
+              const depths = nodes.map(n => n.depth);
+              derivedBranchMap.set(branchId, {
+                branchId,
+                color: branchColor(branchId),
+                seedNodeId: nodes[0]?.node_id || '', // Use first node as seed
+                minDepth: Math.min(...depths),
+                maxDepth: Math.max(...depths),
+                nodeCount: nodes.length,
+              });
+            }
+            
+            return derivedBranchMap;
+          })();
+      set({ sessionId: data.sessionId, nodeMap, edgeMap, rfNodes, rfEdges, branchMap });
       return true;
     } catch (err) {
       console.error('importSnapshot failed:', err);

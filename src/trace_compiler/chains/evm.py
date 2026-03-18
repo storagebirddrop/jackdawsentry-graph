@@ -113,7 +113,7 @@ class EVMChainCompiler(BaseChainCompiler):
             rows = await self._fetch_outbound_neo4j(addr, chain, options)
 
         prices = await self._prefetch_prices(rows)
-        return self._build_graph(
+        return await self._build_graph(
             rows=rows,
             session_id=session_id,
             branch_id=branch_id,
@@ -153,7 +153,7 @@ class EVMChainCompiler(BaseChainCompiler):
             rows = await self._fetch_inbound_neo4j(addr, chain, options)
 
         prices = await self._prefetch_prices(rows)
-        return self._build_graph(
+        return await self._build_graph(
             rows=rows,
             session_id=session_id,
             branch_id=branch_id,
@@ -194,7 +194,7 @@ class EVMChainCompiler(BaseChainCompiler):
                 WHERE blockchain = $1
                   AND from_address = $2
                   AND to_address IS NOT NULL
-                ORDER BY timestamp DESC
+                ORDER BY timestamp DESC, tx_hash ASC
                 LIMIT $3
             """
             async with self._pg.acquire() as conn:
@@ -242,7 +242,7 @@ class EVMChainCompiler(BaseChainCompiler):
                 WHERE blockchain = $1
                   AND to_address = $2
                   AND from_address IS NOT NULL
-                ORDER BY timestamp DESC
+                ORDER BY timestamp DESC, tx_hash ASC
                 LIMIT $3
             """
             async with self._pg.acquire() as conn:
@@ -295,7 +295,7 @@ class EVMChainCompiler(BaseChainCompiler):
                 WHERE blockchain = $1
                   AND from_address = $2
                   {asset_clause}
-                ORDER BY timestamp DESC
+                ORDER BY timestamp DESC, tx_hash ASC
                 LIMIT $3
             """
             async with self._pg.acquire() as conn:
@@ -326,7 +326,7 @@ class EVMChainCompiler(BaseChainCompiler):
                 WHERE blockchain = $1
                   AND to_address = $2
                   AND ($3::text[] IS NULL OR asset_symbol = ANY($3))
-                ORDER BY timestamp DESC
+                ORDER BY timestamp DESC, tx_hash ASC
                 LIMIT $4
             """
             async with self._pg.acquire() as conn:
@@ -425,7 +425,7 @@ class EVMChainCompiler(BaseChainCompiler):
             return {}
         return await price_oracle.get_prices_bulk(asset_ids)
 
-    def _build_graph(
+    async def _build_graph(
         self,
         rows: List[Dict[str, Any]],
         session_id: str,
@@ -439,6 +439,11 @@ class EVMChainCompiler(BaseChainCompiler):
         prices: Optional[Dict[str, Optional[float]]] = None,
     ) -> Tuple[List[InvestigationNode], List[InvestigationEdge]]:
         """Convert raw transfer rows into InvestigationNodes and InvestigationEdges.
+
+        For each row, checks whether the counterparty address is a known bridge
+        contract.  If so, delegates to ``BridgeHopCompiler.process_row()`` to
+        produce a semantically-correct ``bridge_hop`` node instead of a raw
+        address node.  Non-bridge transfers are handled as before.
 
         Deduplicates by counterparty address — one node per unique address
         regardless of how many transfers link to it.  Edges are created per
@@ -487,11 +492,82 @@ class EVMChainCompiler(BaseChainCompiler):
                 if value_native is not None and price_usd is not None
                 else None
             )
+            # Intentional: edges with value_fiat=None (price unavailable) always
+            # pass through the min_value_fiat filter.  Silently dropping them
+            # would hide transfers from investigators simply because we lack a
+            # price for that asset.  Investigators must scroll past them; they
+            # are not filtered by threshold.
             if options.min_value_fiat is not None and value_fiat is not None:
                 if value_fiat < options.min_value_fiat:
-                    continue  # Skip transfers below the fiat threshold.
+                    continue  # Skip transfers confirmed below the fiat threshold.
 
-            # --- Node ---
+            _ts_str: Optional[str] = None
+            raw_ts = row.get("timestamp")
+            if isinstance(raw_ts, datetime):
+                _ts_str = raw_ts.isoformat()
+            elif isinstance(raw_ts, str):
+                _ts_str = raw_ts
+
+            # --- Bridge hop detection (forward only) ---
+            # Bridge contracts take priority over service classification because
+            # they produce richer nodes (correlation status, destination chain).
+            if direction == "forward" and self._bridge.is_bridge_contract(
+                chain, counterparty
+            ):
+                bridge_result = await self._bridge.process_row(
+                    tx_hash=tx_hash,
+                    to_address=counterparty,
+                    source_chain=chain,
+                    seed_node_id=seed_node_id,
+                    session_id=session_id,
+                    branch_id=branch_id,
+                    path_id=_path,
+                    depth=depth,
+                    timestamp=_ts_str,
+                    value_native=value_native,
+                    value_fiat=value_fiat,
+                    asset_symbol=asset_symbol or _native_symbol(chain),
+                    canonical_asset_id=canonical_asset_id,
+                )
+                if bridge_result is not None:
+                    bridge_nodes, bridge_edges = bridge_result
+                    for bn in bridge_nodes:
+                        if bn.node_id not in seen_nodes:
+                            seen_nodes[bn.node_id] = bn
+                    edges.extend(bridge_edges)
+                    continue  # Do not also create a plain address node.
+
+            # --- Service classification (both directions) ---
+            # Non-bridge protocol contracts (DEX, aggregator, mixer, lending)
+            # are reclassified here so investigators see a named service node
+            # rather than an anonymous contract address.
+            svc_result = await self._service.process_row(
+                tx_hash=tx_hash,
+                to_address=counterparty,
+                chain=chain,
+                seed_node_id=seed_node_id,
+                session_id=session_id,
+                branch_id=branch_id,
+                path_id=_path,
+                depth=depth,
+                timestamp=_ts_str,
+                value_native=value_native,
+                value_fiat=value_fiat,
+                asset_symbol=asset_symbol or (_native_symbol(chain) if value_native else None),
+                canonical_asset_id=canonical_asset_id,
+                direction=direction,
+            )
+            if svc_result is not None:
+                svc_nodes, svc_edges = svc_result
+                for sn in svc_nodes:
+                    # Service nodes deduplicate by protocol_id across multiple
+                    # transfers to the same contract.
+                    if sn.node_id not in seen_nodes:
+                        seen_nodes[sn.node_id] = sn
+                edges.extend(svc_edges)
+                continue  # Do not also create a plain address node.
+
+            # --- Plain address node (non-bridge, non-service path) ---
             if counterparty not in seen_nodes:
                 _cp_node_id = mk_node_id(chain, "address", counterparty)
                 _lineage = mk_lineage(session_id, branch_id, _path, depth + 1)
@@ -502,7 +578,11 @@ class EVMChainCompiler(BaseChainCompiler):
                     branch_id=branch_id,
                     path_id=_path,
                     depth=depth + 1,
-                    display_label=counterparty[:10] + "…" if len(counterparty) > 10 else counterparty,
+                    display_label=(
+                        counterparty[:10] + "…"
+                        if len(counterparty) > 10
+                        else counterparty
+                    ),
                     chain=chain,
                     expandable_directions=["prev", "next", "neighbors"],
                     address_data=AddressNodeData(
@@ -519,13 +599,6 @@ class EVMChainCompiler(BaseChainCompiler):
             else:
                 src_node_id = seen_nodes[counterparty].node_id
                 tgt_node_id = seed_node_id
-
-            _ts_str: Optional[str] = None
-            raw_ts = row.get("timestamp")
-            if isinstance(raw_ts, datetime):
-                _ts_str = raw_ts.isoformat()
-            elif isinstance(raw_ts, str):
-                _ts_str = raw_ts
 
             edge = InvestigationEdge(
                 edge_id=mk_edge_id(src_node_id, tgt_node_id, branch_id, tx_hash),

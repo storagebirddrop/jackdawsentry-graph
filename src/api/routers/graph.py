@@ -14,11 +14,13 @@ from typing import Dict
 from typing import List
 from typing import Optional
 from uuid import uuid4
+from email.utils import format_datetime
 
 from fastapi import APIRouter
 from fastapi import Depends
 from fastapi import HTTPException
 from fastapi import Query
+from fastapi import Response
 from pydantic import BaseModel
 from pydantic import field_validator
 
@@ -202,13 +204,30 @@ class ExpansionResponse(BaseModel):
 @router.post("/expand", response_model=GraphResponse)
 async def expand_address(
     request: GraphExpandRequest,
+    response: Response,
     current_user: User = Depends(check_permissions([PERMISSIONS["read_blockchain"]])),
 ):
     """Expand an address node: return its direct neighbors and connecting edges.
 
+    .. deprecated::
+        Use ``POST /sessions/{session_id}/expand`` (ExpansionResponseV2) instead.
+        This endpoint returns lineage-free flat data and will be removed after T1.15
+        event-store cutover is complete (ADR-004).
+
     Uses Neo4j variable-length path queries bounded by depth.
     Falls back to live RPC if address is not in Neo4j.
     """
+    response.headers["Deprecation"] = "true"
+    sunset_date = datetime(2026, 6, 30, tzinfo=timezone.utc)
+    response.headers["Sunset"] = format_datetime(sunset_date, usegmt=True)
+    response.headers["Link"] = (
+        '</api/v1/graph/sessions/{session_id}/expand>; rel="successor-version"'
+    )
+    logger.warning(
+        "Deprecated endpoint POST /graph/expand called by user %s — "
+        "migrate to POST /graph/sessions/{session_id}/expand (ADR-004)",
+        current_user.username,
+    )
     start = time.monotonic()
     # Bitcoin addresses are Base58 (case-sensitive) — preserve case.
     _bc = (request.blockchain or "").lower()
@@ -427,12 +446,29 @@ async def expand_address(
 @router.post("/trace", response_model=GraphResponse)
 async def trace_transaction(
     request: GraphTraceRequest,
+    response: Response,
     current_user: User = Depends(check_permissions([PERMISSIONS["read_blockchain"]])),
 ):
     """Trace a transaction: return the full flow from source through hops to destination.
 
+    .. deprecated::
+        Use ``POST /sessions/{session_id}/expand`` (ExpansionResponseV2) instead.
+        This endpoint returns lineage-free flat data and will be removed after T1.15
+        event-store cutover is complete (ADR-004).
+
     Uses Neo4j variable-length paths to follow fund flow.
     """
+    response.headers["Deprecation"] = "true"
+    sunset_date = datetime(2026, 6, 30, tzinfo=timezone.utc)
+    response.headers["Sunset"] = format_datetime(sunset_date, usegmt=True)
+    response.headers["Link"] = (
+        '</api/v1/graph/sessions/{session_id}/expand>; rel="successor-version"'
+    )
+    logger.warning(
+        "Deprecated endpoint POST /graph/trace called by user %s — "
+        "migrate to POST /graph/sessions/{session_id}/expand (ADR-004)",
+        current_user.username,
+    )
     start = time.monotonic()
     nodes_map: Dict[str, Dict[str, Any]] = {}
     edges_list: List[Dict[str, Any]] = []
@@ -599,9 +635,27 @@ async def trace_transaction(
 @router.post("/search", response_model=GraphResponse)
 async def graph_search(
     request: GraphSearchRequest,
+    response: Response,
     current_user: User = Depends(check_permissions([PERMISSIONS["read_blockchain"]])),
 ):
-    """Search for an address or transaction hash; return the initial graph node(s)."""
+    """Search for an address or transaction hash; return the initial graph node(s).
+
+    .. deprecated::
+        Use ``POST /sessions`` to create a session and seed it with an address instead.
+        This endpoint returns lineage-free flat data and will be removed after T1.15
+        event-store cutover is complete (ADR-004).
+    """
+    response.headers["Deprecation"] = "true"
+    sunset_date = datetime(2026, 6, 30, tzinfo=timezone.utc)
+    response.headers["Sunset"] = format_datetime(sunset_date, usegmt=True)
+    response.headers["Link"] = (
+        '</api/v1/graph/sessions>; rel="successor-version"'
+    )
+    logger.warning(
+        "Deprecated endpoint POST /graph/search called by user %s — "
+        "migrate to POST /graph/sessions (ADR-004)",
+        current_user.username,
+    )
     start = time.monotonic()
     # Bitcoin addresses are Base58 (case-sensitive) — don't lowercase them.
     # EVM/Solana addresses are case-insensitive; lowercase those for Neo4j consistency.
@@ -879,9 +933,27 @@ async def address_summary(
 @router.post("/cluster", response_model=GraphResponse)
 async def cluster_addresses(
     request: GraphClusterRequest,
+    response: Response,
     current_user: User = Depends(check_permissions([PERMISSIONS["read_blockchain"]])),
 ):
-    """Find common counterparties and shared transaction patterns for a set of addresses."""
+    """Find common counterparties and shared transaction patterns for a set of addresses.
+
+    .. deprecated::
+        Use the attribution API instead, which applies entity clustering via Neo4j.
+        This endpoint returns lineage-free flat data and will be removed after T1.15
+        event-store cutover is complete (ADR-004).
+    """
+    response.headers["Deprecation"] = "true"
+    sunset_date = datetime(2026, 6, 30, tzinfo=timezone.utc)
+    response.headers["Sunset"] = format_datetime(sunset_date, usegmt=True)
+    response.headers["Link"] = (
+        '</api/v1/attribution>; rel="successor-version"'
+    )
+    logger.warning(
+        "Deprecated endpoint POST /graph/cluster called by user %s — "
+        "migrate to attribution API (ADR-004)",
+        current_user.username,
+    )
     start = time.monotonic()
     nodes_map: Dict[str, Dict[str, Any]] = {}
     edges_list: List[Dict[str, Any]] = []

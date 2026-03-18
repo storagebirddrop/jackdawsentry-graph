@@ -136,26 +136,49 @@ export default function InvestigationGraph({ sessionId }: Props) {
     setEdges(fe);
   }, [rfNodes, rfEdges, filters, setNodes, setEdges]);
 
-  // Re-run ELK layout whenever node count changes
-  const prevNodeCount = useRef(0);
+  // Incremental ELK layout: only newly added nodes are placed freely.
+  // Nodes that have already been laid out are passed to ELK as fixed-position
+  // hints (enabling interactiveLayout mode) and their returned positions are
+  // discarded — preserving the investigator's mental map across expansions.
+  const layoutedNodeIds = useRef<Set<string>>(new Set());
   const layoutRef = useRef<number | null>(null);
   useEffect(() => {
-    if (rfNodes.length === prevNodeCount.current) return;
-    prevNodeCount.current = rfNodes.length;
+    const newNodes = rfNodes.filter((n) => !layoutedNodeIds.current.has(n.id));
+    if (newNodes.length === 0) return; // Nothing new to place.
 
     const currentLayout = Date.now();
     layoutRef.current = currentLayout;
-    
-    computeElkLayout(rfNodes, rfEdges)
+
+    // Build fixed-position map for already-laid-out nodes so ELK treats them
+    // as anchors when computing layer assignments for new nodes.
+    const fixedPositions = new Map<string, { x: number; y: number }>();
+    for (const n of rfNodes) {
+      if (layoutedNodeIds.current.has(n.id)) {
+        fixedPositions.set(n.id, n.position);
+      }
+    }
+
+    // Snapshot the IDs being laid out in this pass before the async gap.
+    const passingNewIds = new Set(newNodes.map((n) => n.id));
+
+    computeElkLayout(rfNodes, rfEdges, fixedPositions)
       .then((positions) => {
-        if (layoutRef.current === currentLayout) {
-          setRfPositions(positions);
+        if (layoutRef.current !== currentLayout) return;
+        // Apply ELK output only for nodes placed in this pass — existing
+        // nodes retain their current positions regardless of what ELK returns.
+        const deltaPositions = new Map<string, { x: number; y: number }>();
+        for (const [id, pos] of positions) {
+          if (passingNewIds.has(id)) deltaPositions.set(id, pos);
         }
+        // Mark all nodes submitted to ELK in this pass as laid out
+        // so a rapid second expansion doesn't re-layout same nodes.
+        for (const nodeId of passingNewIds) layoutedNodeIds.current.add(nodeId);
+        setRfPositions(deltaPositions);
       })
       .catch((error) => {
         console.error('ELK layout computation failed:', error);
       });
-  }, [rfNodes.length, rfEdges.length, rfNodes, rfEdges, setRfPositions]);
+  }, [rfNodes, rfEdges, setRfPositions]);
 
   // Expand a node in a given direction
   const handleExpand = useCallback(

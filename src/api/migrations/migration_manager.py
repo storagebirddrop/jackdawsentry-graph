@@ -84,8 +84,44 @@ class MigrationManager:
             return True
             
         except Exception as e:
+            if filename == "001_initial_schema.sql" and await self._base_schema_exists(conn):
+                logger.warning(
+                    "Skipping %s because the base schema already exists; marking as applied",
+                    filename,
+                )
+                await self.mark_migration_applied(conn, filename)
+                return True
+            if filename == "008_cluster_attribution.sql" and not await self._table_exists(
+                conn, "address_attributions"
+            ):
+                logger.warning(
+                    "Skipping %s because address_attributions does not exist in this schema; marking as applied",
+                    filename,
+                )
+                await self.mark_migration_applied(conn, filename)
+                return True
             logger.error(f"Failed to apply migration {filename}: {e}")
             return False
+
+    async def _base_schema_exists(self, conn) -> bool:
+        """Return True when the Docker/init bootstrap already created base tables."""
+        return await self._table_exists(conn, "users")
+
+    async def _table_exists(self, conn, table_name: str) -> bool:
+        """Return True when a table exists in the public schema."""
+        return bool(
+            await conn.fetchval(
+                """
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM information_schema.tables
+                    WHERE table_schema = 'public'
+                      AND table_name = $1
+                )
+                """,
+                table_name,
+            )
+        )
     
     async def get_pending_migrations(self) -> List[str]:
         """Get list of pending migrations"""
@@ -113,6 +149,7 @@ class MigrationManager:
         
         # Apply pending migrations
         applied_count = 0
+        failed = False
         for migration_file in pending:
             if migration_file not in applied:
                 success = await self.apply_migration(conn, migration_file)
@@ -121,10 +158,11 @@ class MigrationManager:
                     applied.add(migration_file)
                 else:
                     logger.error(f"Migration failed: {migration_file}")
+                    failed = True
                     break  # Stop on first failure
         
         logger.info(f"Applied {applied_count} new migrations")
-        return applied_count > 0
+        return not failed
     
     async def rollback_migration(self, conn, filename: str) -> bool:
         """Rollback a migration (basic implementation)"""
@@ -146,7 +184,7 @@ class MigrationManager:
 
 
 # Migration runner function
-async def run_database_migrations():
+async def run_database_migrations() -> bool:
     """Run database migrations"""
     from src.api.database import get_postgres_connection
     
@@ -164,6 +202,7 @@ async def run_database_migrations():
                 logger.info("✅ Database migrations completed successfully")
             else:
                 logger.error("❌ Database migrations failed")
+            return success
                 
     except Exception as e:
         logger.error(f"Migration system error: {e}")

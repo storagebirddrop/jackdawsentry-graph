@@ -565,14 +565,35 @@ class BitcoinCollector(BaseCollector):
 
     async def start(self):
         """Start Bitcoin collector with additional monitoring"""
-        await super().start()
+        logger.info(f"Starting {self.blockchain} collector...")
 
-        # Start additional monitoring tasks
-        if self.mempool_monitoring:
-            asyncio.create_task(self.monitor_mempool())
+        if not await self.connect():
+            logger.error(f"Failed to connect to {self.blockchain}")
+            return
 
-        if self.lightning_enabled:
-            asyncio.create_task(self.start_lightning_monitoring())
+        self.is_running = True
+        background_tasks = []
+
+        try:
+            await self.load_last_processed_block()
+
+            if self.mempool_monitoring:
+                background_tasks.append(asyncio.create_task(self.monitor_mempool()))
+
+            if self.lightning_enabled:
+                background_tasks.append(
+                    asyncio.create_task(self.start_lightning_monitoring())
+                )
+
+            await self.collection_loop()
+        except Exception as e:
+            logger.error(f"Error in {self.blockchain} collector: {e}")
+        finally:
+            for task in background_tasks:
+                task.cancel()
+            if background_tasks:
+                await asyncio.gather(*background_tasks, return_exceptions=True)
+            await self.stop()
 
     async def get_network_stats(self) -> Dict[str, Any]:
         """Get Bitcoin network statistics"""

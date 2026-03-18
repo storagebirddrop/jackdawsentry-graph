@@ -7,6 +7,7 @@ import asyncio
 import base64
 import json
 import logging
+import os
 from datetime import datetime
 from datetime import timezone
 from typing import Any
@@ -15,13 +16,18 @@ from typing import List
 from typing import Optional
 from typing import Tuple
 
-import grpc
+try:
+    import aiohttp
+except ImportError:  # pragma: no cover
+    aiohttp = None
 
 from src.api.config import settings
 from src.api.database import get_neo4j_session
+from src.api.database import get_postgres_connection
 from src.api.database import get_redis_connection
 
 from .base import hash_address
+from .base import Transaction
 
 logger = logging.getLogger(__name__)
 
@@ -34,10 +40,23 @@ class LightningMonitor:
         self.rpc_url = config.get("rpc_url", settings.LND_RPC_URL)
         self.macaroon_path = config.get("macaroon_path", settings.LND_MACAROON_PATH)
         self.tls_cert_path = config.get("tls_cert_path", settings.LND_TLS_CERT_PATH)
+        self.api_url = config.get("api_url", settings.LIGHTNING_API_URL).rstrip("/")
+        self.public_top_nodes = int(
+            config.get("public_top_nodes", settings.LIGHTNING_PUBLIC_TOP_NODES)
+        )
+        self.public_channels_per_node = int(
+            config.get(
+                "public_channels_per_node",
+                settings.LIGHTNING_PUBLIC_CHANNELS_PER_NODE,
+            )
+        )
 
         self.is_running = False
         self.lnd_stub = None
         self.router_stub = None
+        self.identity_pubkey: Optional[str] = None
+        self.session = None
+        self.public_mode = False
 
         # Metrics
         self.metrics = {
@@ -50,7 +69,11 @@ class LightningMonitor:
 
     async def connect(self) -> bool:
         """Connect to LND gRPC"""
+        if not self._lnd_configured():
+            return await self._connect_public_api()
+
         try:
+            import grpc
             import lnrpc
             import routerrpc
 
@@ -78,6 +101,7 @@ class LightningMonitor:
             # Test connection
             info = await self.get_info()
             if info:
+                self.identity_pubkey = info.get("identity_pubkey")
                 logger.info(
                     f"Connected to Lightning Network (alias: {info.get('alias')})"
                 )
@@ -88,12 +112,57 @@ class LightningMonitor:
 
         return False
 
+    def _lnd_configured(self) -> bool:
+        """Return True when usable LND credentials are available."""
+        if not self.macaroon_path or not self.tls_cert_path:
+            return False
+        return os.path.exists(self.macaroon_path) and os.path.exists(self.tls_cert_path)
+
+    async def _connect_public_api(self) -> bool:
+        """Connect to the public mempool Lightning API."""
+        if aiohttp is None:
+            logger.error("aiohttp is required for public Lightning API mode")
+            return False
+
+        try:
+            timeout = aiohttp.ClientTimeout(total=30)
+            self.session = aiohttp.ClientSession(timeout=timeout)
+            stats = await self._public_get("/api/v1/lightning/statistics/latest")
+            if stats:
+                self.public_mode = True
+                logger.info("Connected to Lightning public API at %s", self.api_url)
+                latest = (stats or {}).get("latest") or {}
+                self.metrics["channels_monitored"] = latest.get("channel_count", 0)
+                self.metrics["nodes_discovered"] = latest.get("node_count", 0)
+                self.metrics["network_capacity"] = latest.get("total_capacity", 0)
+                return True
+        except Exception as exc:
+            logger.error("Failed to connect to Lightning public API: %s", exc)
+
+        if self.session:
+            await self.session.close()
+            self.session = None
+        return False
+
+    async def _public_get(self, path: str, params: Optional[Dict[str, Any]] = None) -> Any:
+        """Call the public Lightning REST API and return decoded JSON."""
+        if self.session is None:
+            raise RuntimeError("Lightning public session is not initialized")
+
+        async with self.session.get(f"{self.api_url}{path}", params=params) as response:
+            response.raise_for_status()
+            return await response.json()
+
     async def disconnect(self):
         """Disconnect from LND"""
         if self.lnd_stub:
             self.lnd_stub = None
         if self.router_stub:
             self.router_stub = None
+        if self.session:
+            await self.session.close()
+            self.session = None
+        self.public_mode = False
 
     async def start(self):
         """Start Lightning Network monitoring"""
@@ -105,14 +174,20 @@ class LightningMonitor:
         self.is_running = True
 
         try:
-            # Start monitoring tasks
-            tasks = [
-                asyncio.create_task(self.monitor_channels()),
-                asyncio.create_task(self.monitor_payments()),
-                asyncio.create_task(self.monitor_network_topology()),
-                asyncio.create_task(self.track_routing_events()),
-                asyncio.create_task(self.collect_metrics()),
-            ]
+            if self.public_mode:
+                tasks = [
+                    asyncio.create_task(self.monitor_channels()),
+                    asyncio.create_task(self.collect_metrics()),
+                ]
+            else:
+                # Start monitoring tasks
+                tasks = [
+                    asyncio.create_task(self.monitor_channels()),
+                    asyncio.create_task(self.monitor_payments()),
+                    asyncio.create_task(self.monitor_network_topology()),
+                    asyncio.create_task(self.track_routing_events()),
+                    asyncio.create_task(self.collect_metrics()),
+                ]
 
             await asyncio.gather(*tasks)
 
@@ -129,6 +204,29 @@ class LightningMonitor:
 
     async def get_info(self) -> Optional[Dict]:
         """Get LND node information"""
+        if self.public_mode:
+            try:
+                stats = await self._public_get("/api/v1/lightning/statistics/latest")
+                latest = (stats or {}).get("latest") or {}
+                return {
+                    "identity_pubkey": None,
+                    "alias": "mempool.space",
+                    "num_peers": 0,
+                    "num_pending_channels": 0,
+                    "num_active_channels": latest.get("channel_count", 0),
+                    "num_inactive_channels": 0,
+                    "block_hash": None,
+                    "block_height": None,
+                    "synced_to_chain": True,
+                    "testnet": False,
+                    "chains": ["lightning"],
+                    "node_count": latest.get("node_count", 0),
+                    "total_capacity": latest.get("total_capacity", 0),
+                }
+            except Exception as e:
+                logger.error(f"Error getting Lightning public stats: {e}")
+                return None
+
         try:
             import lnrpc
 
@@ -171,6 +269,10 @@ class LightningMonitor:
 
     async def update_channels(self):
         """Update channel information"""
+        if self.public_mode:
+            await self._update_public_channels()
+            return
+
         try:
             import lnrpc
 
@@ -220,6 +322,197 @@ class LightningMonitor:
 
         except Exception as e:
             logger.error(f"Error updating channels: {e}")
+
+    async def _update_public_channels(self):
+        """Update channel information using the public Lightning API."""
+        try:
+            ranked_nodes = await self._public_get(
+                "/api/v1/lightning/nodes/rankings/connectivity"
+            )
+            ranked_nodes = (ranked_nodes or [])[: self.public_top_nodes]
+
+            channels: List[Dict[str, Any]] = []
+            total_capacity = 0
+            seen_channel_ids = set()
+
+            for node in ranked_nodes:
+                pubkey = node.get("publicKey")
+                if not pubkey:
+                    continue
+
+                await self.store_node(
+                    {
+                        "pubkey": pubkey,
+                        "alias": node.get("alias"),
+                        "addresses": [],
+                        "last_update": self._parse_dt(
+                            node.get("updatedAt"), assume_epoch_seconds=True
+                        ),
+                    }
+                )
+
+                node_channels = await self._public_get(
+                    "/api/v1/lightning/channels",
+                    params={"public_key": pubkey, "status": "open"},
+                )
+                for channel_summary in (node_channels or [])[
+                    : self.public_channels_per_node
+                ]:
+                    channel_id = str(channel_summary.get("id") or "")
+                    if not channel_id or channel_id in seen_channel_ids:
+                        continue
+                    seen_channel_ids.add(channel_id)
+
+                    detail = await self._public_get(
+                        f"/api/v1/lightning/channels/{channel_id}"
+                    )
+                    if not detail:
+                        continue
+
+                    channel_info = self._channel_detail_to_channel_info(detail)
+                    tx = self._channel_detail_to_transaction(detail)
+                    channels.append(channel_info)
+                    total_capacity += channel_info.get("capacity", 0)
+
+                    await self.store_node(self._channel_node_to_node_info(detail.get("node_left")))
+                    await self.store_node(self._channel_node_to_node_info(detail.get("node_right")))
+                    await self.store_channel(channel_info)
+                    await self._store_public_channel_transaction(channel_info, tx)
+
+            self.metrics["channels_monitored"] = len(channels)
+            self.metrics["payments_tracked"] = len(channels)
+            self.metrics["network_capacity"] = total_capacity
+            self.metrics["last_update"] = datetime.now(timezone.utc)
+
+            await self.cache_channel_data(channels)
+            logger.info("Updated %s Lightning channels via public API", len(channels))
+        except Exception as e:
+            logger.error(f"Error updating public Lightning channels: {e}")
+
+    def _channel_detail_to_channel_info(self, detail: Dict[str, Any]) -> Dict[str, Any]:
+        """Map channel detail payload to the existing channel graph shape."""
+        return {
+            "channel_id": str(detail.get("id")),
+            "remote_pubkey": ((detail.get("node_right") or {}).get("public_key")),
+            "local_pubkey": ((detail.get("node_left") or {}).get("public_key")),
+            "capacity": int(detail.get("capacity") or 0),
+            "local_balance": int((detail.get("node_left") or {}).get("funding_balance") or 0),
+            "remote_balance": int((detail.get("node_right") or {}).get("funding_balance") or 0),
+            "initiator": None,
+            "private": False,
+            "active": int(detail.get("status") or 0) == 1,
+            "last_update": self._parse_dt(detail.get("updated_at")),
+        }
+
+    def _channel_detail_to_transaction(self, detail: Dict[str, Any]) -> Transaction:
+        """Project a public channel detail payload into a canonical tx row."""
+        txid = detail.get("transaction_id")
+        tx_vout = detail.get("transaction_vout")
+        tx_hash = (
+            f"{txid}:{tx_vout}"
+            if txid is not None and tx_vout is not None
+            else f"lightning:{detail.get('id')}"
+        )
+        short_id = str(detail.get("short_id") or "")
+        block_number = None
+        if "x" in short_id:
+            try:
+                block_number = int(short_id.split("x", 1)[0])
+            except ValueError:
+                block_number = None
+
+        return Transaction(
+            hash=tx_hash,
+            blockchain="lightning",
+            timestamp=self._parse_dt(detail.get("created"))
+            or self._parse_dt(detail.get("updated_at"))
+            or datetime.now(timezone.utc),
+            from_address=((detail.get("node_left") or {}).get("public_key")),
+            to_address=((detail.get("node_right") or {}).get("public_key")),
+            value=float(detail.get("capacity") or 0) / 1e8,
+            block_number=block_number,
+            status="confirmed" if int(detail.get("status") or 0) == 1 else "closed",
+            confirmations=0,
+            memo=detail.get("short_id"),
+        )
+
+    def _channel_node_to_node_info(self, node: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """Map public channel node detail to LightningNode storage shape."""
+        node = node or {}
+        return {
+            "pubkey": node.get("public_key"),
+            "alias": node.get("alias"),
+            "addresses": [],
+            "last_update": self._parse_dt(node.get("updated_at")),
+        }
+
+    def _parse_dt(
+        self, value: Any, assume_epoch_seconds: bool = False
+    ) -> Optional[datetime]:
+        """Parse ISO timestamps or integer epochs into UTC datetimes."""
+        if value in (None, ""):
+            return None
+        if isinstance(value, (int, float)):
+            scale = 1
+            if not assume_epoch_seconds and value > 10_000_000_000:
+                scale = 1000
+            return datetime.fromtimestamp(value / scale, tz=timezone.utc)
+        if isinstance(value, str):
+            try:
+                return datetime.fromisoformat(value.replace("Z", "+00:00"))
+            except ValueError:
+                if value.isdigit():
+                    return self._parse_dt(int(value), assume_epoch_seconds=assume_epoch_seconds)
+        return None
+
+    async def _store_public_channel_transaction(
+        self, channel_info: Dict[str, Any], tx: Transaction
+    ) -> None:
+        """Persist a public Lightning channel as both graph and raw event rows."""
+        query = """
+        MERGE (t:Transaction {hash: $tx_hash, blockchain: 'lightning'})
+        SET t.value = $value,
+            t.timestamp = $timestamp,
+            t.block_number = $block_number,
+            t.status = $status,
+            t.memo = $memo,
+            t.processed_at = timestamp()
+
+        FOREACH (_ IN CASE WHEN $from_address IS NULL THEN [] ELSE [1] END |
+            MERGE (from_addr:Address {address: $from_address, blockchain: 'lightning'})
+            ON CREATE SET from_addr.first_seen = $timestamp
+            ON MATCH SET from_addr.last_seen = $timestamp,
+                         from_addr.transaction_count = coalesce(from_addr.transaction_count, 0) + 1
+            MERGE (from_addr)-[:SENT {blockchain: 'lightning'}]->(t)
+        )
+
+        FOREACH (_ IN CASE WHEN $to_address IS NULL THEN [] ELSE [1] END |
+            MERGE (to_addr:Address {address: $to_address, blockchain: 'lightning'})
+            ON CREATE SET to_addr.first_seen = $timestamp
+            ON MATCH SET to_addr.last_seen = $timestamp,
+                         to_addr.transaction_count = coalesce(to_addr.transaction_count, 0) + 1
+            MERGE (t)-[:RECEIVED {blockchain: 'lightning', value: $value}]->(to_addr)
+        )
+
+        MERGE (c:LightningChannel {channel_id: $channel_id})
+        MERGE (c)-[:FUNDED_BY]->(t)
+        """
+
+        async with get_neo4j_session() as session:
+            await session.run(
+                query,
+                tx_hash=tx.hash,
+                value=tx.value,
+                timestamp=tx.timestamp,
+                block_number=tx.block_number,
+                status=tx.status,
+                memo=tx.memo,
+                from_address=tx.from_address,
+                to_address=tx.to_address,
+                channel_id=channel_info.get("channel_id"),
+            )
+
+        await self._insert_raw_transaction(tx)
 
     async def store_channel(self, channel_info: Dict):
         """Store channel information in Neo4j"""
@@ -318,6 +611,8 @@ class LightningMonitor:
         if not payment_info.get("path"):
             return
 
+        tx = self._payment_to_transaction(payment_info)
+
         query = """
         MERGE (p:LightningPayment {payment_hash: $payment_hash})
         SET p.value = $value,
@@ -325,7 +620,33 @@ class LightningMonitor:
             p.status = $status,
             p.creation_time = $creation_time,
             p.payment_preimage = $payment_preimage,
-            p.created_at = timestamp()
+            p.created_at = timestamp(),
+            p.blockchain = 'lightning'
+
+        MERGE (t:Transaction {hash: $tx_hash, blockchain: 'lightning'})
+        SET t.value = $value,
+            t.timestamp = $creation_time,
+            t.fee = $fee,
+            t.status = $tx_status,
+            t.processed_at = timestamp()
+
+        FOREACH (_ IN CASE WHEN $from_address IS NULL THEN [] ELSE [1] END |
+            MERGE (from_addr:Address {address: $from_address, blockchain: 'lightning'})
+            ON CREATE SET from_addr.first_seen = $creation_time
+            ON MATCH SET from_addr.last_seen = $creation_time,
+                         from_addr.transaction_count = coalesce(from_addr.transaction_count, 0) + 1
+            MERGE (from_addr)-[:SENT {blockchain: 'lightning'}]->(t)
+        )
+
+        FOREACH (_ IN CASE WHEN $to_address IS NULL THEN [] ELSE [1] END |
+            MERGE (to_addr:Address {address: $to_address, blockchain: 'lightning'})
+            ON CREATE SET to_addr.first_seen = $creation_time
+            ON MATCH SET to_addr.last_seen = $creation_time,
+                         to_addr.transaction_count = coalesce(to_addr.transaction_count, 0) + 1
+            MERGE (t)-[:RECEIVED {blockchain: 'lightning', value: $value}]->(to_addr)
+        )
+
+        MERGE (t)-[:LIGHTNING_PAYMENT]->(p)
         
         WITH p
         UNWIND $path AS node_pubkey
@@ -343,6 +664,91 @@ class LightningMonitor:
                 creation_time=payment_info.get("creation_time"),
                 payment_preimage=payment_info.get("payment_preimage"),
                 path=payment_info.get("path"),
+                tx_hash=tx.hash,
+                tx_status=tx.status,
+                from_address=tx.from_address,
+                to_address=tx.to_address,
+            )
+
+        await self._insert_raw_transaction(tx)
+
+    def _payment_to_transaction(self, payment_info: Dict[str, Any]) -> Transaction:
+        """Project a Lightning payment into the canonical raw transaction shape."""
+        path = payment_info.get("path") or []
+        from_address = self.identity_pubkey or (path[0] if path else None)
+        to_address = path[-1] if path else None
+        created_at = payment_info.get("creation_time") or datetime.now(timezone.utc)
+
+        return Transaction(
+            hash=payment_info["payment_hash"],
+            blockchain="lightning",
+            timestamp=created_at,
+            from_address=from_address,
+            to_address=to_address,
+            value=float(payment_info.get("value", 0)) / 1e8,
+            fee=float(payment_info.get("fee", 0)) / 1e8,
+            status=self._normalize_payment_status(payment_info.get("status")),
+            confirmations=0,
+        )
+
+    def _normalize_payment_status(self, status: Any) -> str:
+        """Return a stable lowercase payment status string."""
+        if status is None:
+            return "unknown"
+        if hasattr(status, "name"):
+            return str(status.name).lower()
+        if isinstance(status, str):
+            return status.lower()
+
+        status_name = {
+            0: "unknown",
+            1: "in_flight",
+            2: "succeeded",
+            3: "failed",
+        }.get(int(status))
+        return status_name or str(status).lower()
+
+    async def _insert_raw_transaction(self, tx: Transaction) -> None:
+        """Persist canonical Lightning payments to the raw event store."""
+        query = """
+            INSERT INTO raw_transactions (
+                blockchain, tx_hash, block_number, timestamp,
+                from_address, to_address,
+                value_native,
+                gas_used, gas_price, status,
+                is_bridge_ingress, is_bridge_egress, bridge_protocol
+            ) VALUES (
+                $1, $2, $3, $4,
+                $5, $6,
+                $7,
+                $8, $9, $10,
+                $11, $12, $13
+            )
+            ON CONFLICT (blockchain, tx_hash) DO NOTHING
+        """
+        try:
+            async with get_postgres_connection() as conn:
+                await conn.execute(
+                    query,
+                    tx.blockchain,
+                    tx.hash,
+                    tx.block_number,
+                    tx.timestamp,
+                    tx.from_address,
+                    tx.to_address,
+                    float(tx.value) if tx.value is not None else None,
+                    tx.gas_used,
+                    tx.gas_price,
+                    tx.status,
+                    tx.is_bridge_ingress,
+                    tx.is_bridge_egress,
+                    tx.bridge_protocol,
+                )
+        except Exception as exc:
+            logger.warning(
+                "dual-write lightning _insert_raw_transaction failed for %s: %s",
+                tx.hash,
+                exc,
             )
 
     async def analyze_payments(self, payments: List[Dict]):
@@ -406,6 +812,10 @@ class LightningMonitor:
 
     async def update_network_graph(self):
         """Update Lightning Network graph"""
+        if self.public_mode:
+            await self._update_public_channels()
+            return
+
         try:
             import lnrpc
 
@@ -480,6 +890,11 @@ class LightningMonitor:
 
     async def track_routing_events(self):
         """Track routing events for analysis"""
+        if self.public_mode:
+            while self.is_running:
+                await asyncio.sleep(60)
+            return
+
         logger.info("Starting Lightning routing event tracking...")
 
         try:
@@ -597,7 +1012,7 @@ class LightningMonitor:
     async def get_network_stats(self) -> Dict[str, Any]:
         """Get Lightning Network statistics"""
         return {
-            "blockchain": "bitcoin_lightning",
+            "blockchain": "lightning",
             "channels_monitored": self.metrics.get("channels_monitored", 0),
             "payments_tracked": self.metrics.get("payments_tracked", 0),
             "nodes_discovered": self.metrics.get("nodes_discovered", 0),

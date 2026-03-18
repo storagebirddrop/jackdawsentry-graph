@@ -11,7 +11,9 @@ pydantic-settings==2.1.0
 PyJWT==2.12.0
 bcrypt==4.1.2
 asyncpg==0.29.0
-httpx==0.25.2
+# Solana 0.30.x requires httpx < 0.24; the runtime image only needs a
+# compatible client, not the newer pin from the dev environment.
+httpx>=0.23,<0.24
 psutil==5.9.7
 aiofiles==23.2.1
 python-dotenv==1.0.0
@@ -42,17 +44,19 @@ reportlab>=4.0.0
 # Excel export (compliance exports)
 openpyxl>=3.1.0
 
-# AI narrative generation (optional — falls back to template if key absent)
-anthropic>=0.25.0
-
 # scikit-learn (ML risk model feature extraction)
 scikit-learn>=1.4.0
 
 # Blockchain SDKs (Ethereum RPC + EVM chains)
 web3>=6.15.0
 eth-abi>=5.0.1
+base58>=2.1.1
+
+# Solana collector/runtime
+solana==0.30.2
+solders==0.18.1
+
 pillow>=10.0.0 # not directly required, pinned by Snyk to avoid a vulnerability
-h11>=0.16.0 # not directly required, pinned by Snyk to avoid a vulnerability
 urllib3>=2.6.3 # not directly required, pinned by Snyk to avoid a vulnerability
 protobuf>=4.25.8 # not directly required, pinned by Snyk to avoid a vulnerability
 anyio>=4.4.0 # FastAPI 0.104.x requires AnyIO<4; >=3.7.1 satisfies Snyk CVE

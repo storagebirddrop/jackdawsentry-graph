@@ -17,10 +17,15 @@ from src.api.config import settings
 from src.api.database import get_redis_connection
 
 from .base import BaseCollector
+from .backfill import EventStoreBackfillWorker
 from .bitcoin import BitcoinCollector
+from .cosmos import CosmosCollector
 from .ethereum import EthereumCollector
 from .solana import SolanaCollector
+from .starknet import StarknetCollector
+from .sui import SuiCollector
 from .tron import TronCollector
+from .xrpl import XrplCollector
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +36,7 @@ class CollectorManager:
     def __init__(self):
         self.collectors: Dict[str, BaseCollector] = {}
         self.is_running = False
+        self.backfill_worker: Optional[EventStoreBackfillWorker] = None
         self.metrics = {
             "total_collectors": 0,
             "running_collectors": 0,
@@ -126,7 +132,7 @@ class CollectorManager:
         # Initialize Base collector
         if settings.BASE_RPC_URL:
             base_config = {
-                "rpc_url": settings.BASE_RPC_URL,
+                "rpc_url": self._http_url(settings.BASE_RPC_URL, settings.BASE_RPC_FALLBACK),
                 "network": settings.BASE_NETWORK,
                 "erc20_tracking": True,
                 "contract_tracking": True,
@@ -139,7 +145,7 @@ class CollectorManager:
         # Initialize Avalanche collector
         if settings.AVALANCHE_RPC_URL:
             avalanche_config = {
-                "rpc_url": settings.AVALANCHE_RPC_URL,
+                "rpc_url": self._http_url(settings.AVALANCHE_RPC_URL, settings.AVALANCHE_RPC_FALLBACK),
                 "network": settings.AVALANCHE_NETWORK,
                 "erc20_tracking": True,
                 "contract_tracking": True,
@@ -151,6 +157,19 @@ class CollectorManager:
                 "avalanche", avalanche_config
             )
 
+        # Initialize Optimism collector
+        if settings.OPTIMISM_RPC_URL:
+            optimism_config = {
+                "rpc_url": self._http_url(settings.OPTIMISM_RPC_URL, settings.OPTIMISM_RPC_FALLBACK),
+                "network": settings.OPTIMISM_NETWORK,
+                "erc20_tracking": True,
+                "contract_tracking": True,
+                "event_tracking": True,
+                "collection_interval": 30,
+                "batch_size": 20,
+            }
+            self.collectors["optimism"] = EthereumCollector("optimism", optimism_config)
+
         # Initialize Solana collector
         if settings.SOLANA_RPC_URL:
             solana_config = {
@@ -161,6 +180,26 @@ class CollectorManager:
             }
             self.collectors["solana"] = SolanaCollector(solana_config)
 
+        # Initialize Sui collector
+        if settings.SUI_RPC_URL:
+            sui_config = {
+                "rpc_url": self._http_url(settings.SUI_RPC_URL, settings.SUI_RPC_FALLBACK),
+                "network": settings.SUI_NETWORK,
+                "collection_interval": 20,
+                "batch_size": 20,
+            }
+            self.collectors["sui"] = SuiCollector(sui_config)
+
+        # Initialize Starknet collector
+        if settings.STARKNET_RPC_URL:
+            starknet_config = {
+                "rpc_url": self._http_url(settings.STARKNET_RPC_URL, settings.STARKNET_RPC_FALLBACK),
+                "network": settings.STARKNET_NETWORK,
+                "collection_interval": 20,
+                "batch_size": 20,
+            }
+            self.collectors["starknet"] = StarknetCollector(starknet_config)
+
         # Initialize Tron collector
         if settings.TRON_RPC_URL:
             tron_config = {
@@ -170,6 +209,38 @@ class CollectorManager:
                 "batch_size": 20,
             }
             self.collectors["tron"] = TronCollector(tron_config)
+
+        # Initialize XRPL collector
+        if settings.XRPL_RPC_URL:
+            xrpl_config = {
+                "rpc_url": settings.XRPL_RPC_URL,
+                "network": settings.XRPL_NETWORK,
+                "collection_interval": 15,
+                "batch_size": 20,
+            }
+            self.collectors["xrpl"] = XrplCollector(xrpl_config)
+
+        # Initialize Cosmos collector
+        if settings.COSMOS_REST_URL:
+            cosmos_config = {
+                "rest_url": settings.COSMOS_REST_URL,
+                "network": settings.COSMOS_NETWORK,
+                "native_denom": "uatom",
+                "collection_interval": 20,
+                "batch_size": 10,
+            }
+            self.collectors["cosmos"] = CosmosCollector("cosmos", cosmos_config)
+
+        # Initialize Injective collector
+        if settings.INJECTIVE_REST_URL:
+            injective_config = {
+                "rest_url": settings.INJECTIVE_REST_URL,
+                "network": settings.INJECTIVE_NETWORK,
+                "native_denom": "inj",
+                "collection_interval": 20,
+                "batch_size": 10,
+            }
+            self.collectors["injective"] = CosmosCollector("injective", injective_config)
 
         self.metrics["total_collectors"] = len(self.collectors)
         logger.info(f"Initialized {len(self.collectors)} blockchain collectors")
@@ -195,6 +266,10 @@ class CollectorManager:
         # Start health monitoring
         tasks.append(asyncio.create_task(self.monitor_health()))
 
+        if settings.AUTO_BACKFILL_RAW_EVENT_STORE:
+            self.backfill_worker = EventStoreBackfillWorker(self.collectors)
+            tasks.append(asyncio.create_task(self.backfill_worker.start()))
+
         # Wait for all tasks
         await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -210,6 +285,9 @@ class CollectorManager:
         """Stop all collectors"""
         logger.info("Stopping all blockchain collectors...")
         self.is_running = False
+
+        if self.backfill_worker is not None:
+            await self.backfill_worker.stop()
 
         # Stop all collectors
         tasks = []
