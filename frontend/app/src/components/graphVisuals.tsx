@@ -2,8 +2,12 @@ import type { CSSProperties, ReactNode } from 'react';
 
 import type {
   AddressNodeData,
+  AtomicSwapData,
+  BtcSidechainPegData,
   BridgeHopData,
   InvestigationNode,
+  LightningChannelCloseData,
+  LightningChannelOpenData,
   SwapEventData,
   UTXONodeData,
 } from '../types/graph';
@@ -12,6 +16,9 @@ import type { GraphAppearanceState } from './graphAppearance';
 const CHAIN_COLORS: Record<string, string> = {
   bitcoin: '#f7931a',
   lightning: '#f2a900',
+  liquid: '#12b3a8',
+  rootstock: '#f97316',
+  stacks: '#5546ff',
   ethereum: '#627eea',
   bsc: '#f0b90b',
   polygon: '#8247e5',
@@ -34,6 +41,9 @@ type GlyphKind =
   | 'service'
   | 'bridge'
   | 'swap'
+  | 'lightning'
+  | 'peg'
+  | 'atomic'
   | 'utxo'
   | 'instruction'
   | 'cluster'
@@ -47,7 +57,7 @@ export function getChainColor(chain?: string): string {
 }
 
 export function shortHash(value: string, leading = 6, trailing = 4): string {
-  if (value.length <= leading + trailing + 1) return value;
+  if (value.length <= leading + trailing + 3) return value;
   return `${value.slice(0, leading)}...${value.slice(-trailing)}`;
 }
 
@@ -58,14 +68,14 @@ export function formatUsd(value?: number): string | null {
   return new Intl.NumberFormat('en-US', {
     style: 'currency',
     currency: 'USD',
-    maximumFractionDigits: value >= 100 ? 0 : 2,
+    maximumFractionDigits: Math.abs(value) >= 100 ? 0 : 2,
   }).format(value);
 }
 
 export function formatNative(value?: number, assetSymbol?: string): string | null {
   if (value === undefined || value === null || Number.isNaN(value)) return null;
   const formatted = new Intl.NumberFormat('en-US', {
-    maximumFractionDigits: value >= 100 ? 2 : 6,
+    maximumFractionDigits: Math.abs(value) >= 100 ? 2 : 6,
   }).format(value);
   return assetSymbol ? `${formatted} ${assetSymbol}` : formatted;
 }
@@ -107,6 +117,22 @@ export function inferNodeChain(node: InvestigationNode): string | undefined {
       return (node.node_data as BridgeHopData).source_chain;
     case 'swap_event':
       return (node.node_data as SwapEventData).chain;
+    case 'lightning_channel_open':
+    case 'lightning_channel_close':
+      return 'lightning';
+    case 'btc_sidechain_peg_in':
+    case 'btc_sidechain_peg_out': {
+      const peg = (node.btc_sidechain_peg_data ?? node.node_data) as
+        | BtcSidechainPegData
+        | undefined;
+      return peg?.sidechain ?? 'bitcoin';
+    }
+    case 'atomic_swap': {
+      const swap = (node.atomic_swap_data ?? node.node_data) as
+        | AtomicSwapData
+        | undefined;
+      return swap?.source_chain ?? node.chain;
+    }
     case 'utxo':
       return 'bitcoin';
     case 'solana_instruction':
@@ -135,6 +161,13 @@ export function nodeGlyphKind(node: InvestigationNode): GlyphKind {
   }
   if (node.node_type === 'bridge_hop') return 'bridge';
   if (node.node_type === 'swap_event') return 'swap';
+  if (node.node_type === 'lightning_channel_open' || node.node_type === 'lightning_channel_close') {
+    return 'lightning';
+  }
+  if (node.node_type === 'btc_sidechain_peg_in' || node.node_type === 'btc_sidechain_peg_out') {
+    return 'peg';
+  }
+  if (node.node_type === 'atomic_swap') return 'atomic';
   if (node.node_type === 'utxo') {
     const utxo = node.node_data as UTXONodeData;
     return utxo.is_coinjoin_halt ? 'coinjoin' : 'utxo';
@@ -166,6 +199,45 @@ export function semanticBadges(node: InvestigationNode): Array<{ label: string; 
   if (node.node_type === 'swap_event') {
     return [{ label: 'Swap', tone: '#0f766e' }];
   }
+  if (node.node_type === 'lightning_channel_open') {
+    const channel = (node.lightning_channel_open_data ?? node.node_data) as
+      | LightningChannelOpenData
+      | undefined;
+    return [
+      { label: 'Lightning', tone: '#f2a900' },
+      ...(channel?.is_private !== undefined
+        ? [{ label: channel.is_private ? 'Private' : 'Public', tone: '#2563eb' }]
+        : []),
+    ];
+  }
+  if (node.node_type === 'lightning_channel_close') {
+    const channel = (node.lightning_channel_close_data ?? node.node_data) as
+      | LightningChannelCloseData
+      | undefined;
+    return [
+      { label: 'Lightning', tone: '#f2a900' },
+      { label: 'Closed', tone: '#475569' },
+      ...(channel?.close_type ? [{ label: channel.close_type, tone: '#b45309' }] : []),
+    ];
+  }
+  if (node.node_type === 'btc_sidechain_peg_in' || node.node_type === 'btc_sidechain_peg_out') {
+    const peg = (node.btc_sidechain_peg_data ?? node.node_data) as
+      | BtcSidechainPegData
+      | undefined;
+    const directionLabel = node.node_type === 'btc_sidechain_peg_in' ? 'Peg In' : 'Peg Out';
+    return [
+      { label: directionLabel, tone: '#0f766e' },
+      ...(peg?.sidechain ? [{ label: peg.sidechain, tone: getChainColor(peg.sidechain) }] : []),
+    ];
+  }
+  if (node.node_type === 'atomic_swap') {
+    const swap = (node.atomic_swap_data ?? node.node_data) as AtomicSwapData | undefined;
+    return [
+      { label: 'Atomic Swap', tone: '#2563eb' },
+      ...(swap?.state ? [{ label: swap.state, tone: '#7c3aed' }] : []),
+      ...(swap?.protocol_id ? [{ label: swap.protocol_id, tone: '#0f766e' }] : []),
+    ];
+  }
   return [];
 }
 
@@ -174,7 +246,17 @@ export function isNodeVisibleInView(node: InvestigationNode, viewMode: GraphAppe
 
   if (viewMode === 'entities') {
     if (node.node_type === 'entity' || node.node_type === 'service') return true;
-    if (node.node_type === 'bridge_hop' || node.node_type === 'swap_event') return true;
+    if (
+      node.node_type === 'bridge_hop' ||
+      node.node_type === 'swap_event' ||
+      node.node_type === 'lightning_channel_open' ||
+      node.node_type === 'lightning_channel_close' ||
+      node.node_type === 'btc_sidechain_peg_in' ||
+      node.node_type === 'btc_sidechain_peg_out' ||
+      node.node_type === 'atomic_swap'
+    ) {
+      return true;
+    }
     if (node.node_type === 'cluster_summary') return true;
     if (node.node_type === 'address') {
       const address = (node.address_data ?? node.node_data) as AddressNodeData;
@@ -193,6 +275,15 @@ export function isNodeVisibleInView(node: InvestigationNode, viewMode: GraphAppe
   return node.node_type !== 'entity' && node.node_type !== 'service';
 }
 
+export function withAlpha(hexColor: string, alphaHex: string): string {
+  // Simple hex alpha concatenation, assuming 6-char hex input
+  // In a real app, this should handle 3-char, rgb, etc.
+  if (hexColor.startsWith('#') && hexColor.length === 7) {
+    return `${hexColor}${alphaHex}`;
+  }
+  return hexColor;
+}
+
 export function glyphSurfaceStyle(accent: string): CSSProperties {
   return {
     width: 38,
@@ -201,8 +292,8 @@ export function glyphSurfaceStyle(accent: string): CSSProperties {
     borderRadius: 12,
     display: 'grid',
     placeItems: 'center',
-    background: `linear-gradient(180deg, ${accent}22, ${accent}0c)`,
-    border: `1px solid ${accent}55`,
+    background: `linear-gradient(180deg, ${withAlpha(accent, '22')}, ${withAlpha(accent, '0c')})`,
+    border: `1px solid ${withAlpha(accent, '55')}`,
     color: accent,
   };
 }
@@ -270,6 +361,31 @@ function renderGlyph(kind: GlyphKind, accent: string): ReactNode {
           <path d="M10.5 3.5L13 6l-2.5 2.5" {...strokeProps} />
           <path d="M15 12H5.25" {...strokeProps} />
           <path d="M7.5 9.5L5 12l2.5 2.5" {...strokeProps} />
+        </>
+      );
+    case 'lightning':
+      return (
+        <>
+          <path d="M9.8 2.8L5.9 8.4h2.8L7.9 15.2l4.2-6h-2.8l.5-6.4Z" {...strokeProps} />
+        </>
+      );
+    case 'peg':
+      return (
+        <>
+          <path d="M3.5 9h3.25" {...strokeProps} />
+          <path d="M11.25 9H14.5" {...strokeProps} />
+          <path d="M5.75 6.25L8.9 9l-3.15 2.75" {...strokeProps} />
+          <path d="M12.25 5.2v7.6" {...strokeProps} />
+          <path d="M10.7 6.7h3.1" {...strokeProps} />
+        </>
+      );
+    case 'atomic':
+      return (
+        <>
+          <rect x="3.8" y="4.3" width="4.1" height="4.1" rx="1" {...strokeProps} />
+          <rect x="10.1" y="9.6" width="4.1" height="4.1" rx="1" {...strokeProps} />
+          <path d="M7.9 6.35h2.1l2.05 2.05v1.2" {...strokeProps} />
+          <path d="M9.2 12.9H7.1L5 10.8V9.6" {...strokeProps} />
         </>
       );
     case 'entity':

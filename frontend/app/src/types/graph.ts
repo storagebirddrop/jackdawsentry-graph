@@ -16,6 +16,11 @@ export type NodeType =
   | 'service'
   | 'bridge_hop'
   | 'swap_event'
+  | 'lightning_channel_open'
+  | 'lightning_channel_close'
+  | 'btc_sidechain_peg_in'
+  | 'btc_sidechain_peg_out'
+  | 'atomic_swap'
   | 'utxo'
   | 'solana_instruction'
   | 'cluster_summary';
@@ -33,7 +38,12 @@ export type ActivityType =
   | 'dex_interaction'
   | 'mixer_interaction'
   | 'router_interaction'
-  | 'cex_interaction';
+  | 'cex_interaction'
+  | 'lightning_channel_open'
+  | 'lightning_channel_close'
+  | 'btc_sidechain_peg_in'
+  | 'btc_sidechain_peg_out'
+  | 'atomic_swap';
 
 // ---------------------------------------------------------------------------
 // Node data payloads — each NodeType has a corresponding data shape
@@ -94,6 +104,62 @@ export interface SwapEventData {
   exchange_rate?: number;
 }
 
+export interface LightningChannelOpenData {
+  channel_id: string;
+  funding_tx_hash: string;
+  funding_vout?: number;
+  short_channel_id?: string;
+  capacity_btc: number;
+  local_pubkey?: string;
+  remote_pubkey?: string;
+  local_alias?: string;
+  remote_alias?: string;
+  is_private?: boolean;
+  status?: 'pending' | 'open' | 'closed';
+}
+
+export interface LightningChannelCloseData {
+  channel_id: string;
+  close_tx_hash: string;
+  close_type?: 'cooperative' | 'force' | 'breach' | 'unknown';
+  settled_btc?: number;
+  local_pubkey?: string;
+  remote_pubkey?: string;
+  local_alias?: string;
+  remote_alias?: string;
+  status?: 'closing' | 'closed';
+}
+
+export interface BtcSidechainPegData {
+  sidechain: 'liquid' | 'rootstock' | 'stacks' | string;
+  bitcoin_tx_hash?: string;
+  sidechain_tx_hash?: string;
+  peg_address_or_contract?: string;
+  asset_in: string;
+  asset_out: string;
+  amount_btc?: number;
+  amount_sidechain?: number;
+  mechanism?: 'federated' | 'contract' | 'bridge' | string;
+  confidence?: number;
+  status?: 'observed' | 'correlated' | 'settled' | 'failed';
+}
+
+export interface AtomicSwapData {
+  swap_id: string;
+  protocol_id?: string;
+  source_chain: string;
+  destination_chain: string;
+  source_tx_hash?: string;
+  destination_tx_hash?: string;
+  hashlock?: string;
+  timelock?: number;
+  source_asset: string;
+  destination_asset: string;
+  source_amount?: number;
+  destination_amount?: number;
+  state?: 'locked' | 'redeemed' | 'refunded' | 'partial' | 'failed';
+}
+
 export interface UTXONodeData {
   address: string;
   script_type: string;
@@ -151,6 +217,10 @@ export type NodeData =
   | ServiceNodeData
   | BridgeHopData
   | SwapEventData
+  | LightningChannelOpenData
+  | LightningChannelCloseData
+  | BtcSidechainPegData
+  | AtomicSwapData
   | UTXONodeData
   | SolanaInstructionData
   | ClusterSummaryData;
@@ -171,6 +241,17 @@ export interface InvestigationNode {
   risk_score?: number;
   balance_fiat?: number;
   address_data?: AddressNodeData;  // shorthand alias used by some compilers
+  entity_data?: EntityNodeData;
+  service_data?: ServiceNodeData;
+  bridge_hop_data?: BridgeHopData;
+  swap_event_data?: SwapEventData;
+  lightning_channel_open_data?: LightningChannelOpenData;
+  lightning_channel_close_data?: LightningChannelCloseData;
+  btc_sidechain_peg_data?: BtcSidechainPegData;
+  atomic_swap_data?: AtomicSwapData;
+  utxo_data?: UTXONodeData;
+  instruction_data?: SolanaInstructionData;
+  cluster_summary?: ClusterSummaryData;
   branch_id: string;
   path_id: string;
   lineage_id: string;
@@ -248,8 +329,8 @@ export interface ExpansionResponseV2 {
 
 export interface SessionCreateRequest {
   seed_address: string;
-  chain: string;
-  label?: string;
+  seed_chain: string;
+  case_id?: string;
 }
 
 export interface SessionCreateResponse {
@@ -258,13 +339,20 @@ export interface SessionCreateResponse {
 }
 
 export interface ExpandRequest {
-  node_id: string;
-  operation: 'expand_next' | 'expand_prev' | 'expand_neighbors';
-  chain?: string;
-  max_results?: number;
-  min_fiat_value?: number;
-  asset_filter?: string[];
-  cursor?: string;
+  operation_type: 'expand_next' | 'expand_prev' | 'expand_neighbors';
+  seed_node_id: string;
+  seed_lineage_id?: string;
+  options?: {
+    depth?: number;
+    asset_filter?: string[];
+    chain_filter?: string[];
+    min_value_fiat?: number;
+    max_results?: number;
+    include_services?: boolean;
+    follow_bridges?: boolean;
+    continuation_token?: string;
+    page_size?: number;
+  };
 }
 
 export interface BridgeHopStatusResponse {

@@ -33,6 +33,11 @@ NodeType = Literal[
     "service",
     "bridge_hop",
     "swap_event",
+    "lightning_channel_open",
+    "lightning_channel_close",
+    "btc_sidechain_peg_in",
+    "btc_sidechain_peg_out",
+    "atomic_swap",
     "utxo",
     "solana_instruction",
     "cluster_summary",
@@ -45,6 +50,11 @@ ActivityType = Literal[
     "mixer_interaction",
     "router_interaction",
     "cex_interaction",
+    "lightning_channel_open",
+    "lightning_channel_close",
+    "btc_sidechain_peg_in",
+    "btc_sidechain_peg_out",
+    "atomic_swap",
 ]
 
 EdgeType = Literal[
@@ -134,6 +144,70 @@ class SwapEventData(BaseModel):
     route_summary: Optional[str] = None
     tx_hash: str
     timestamp: str
+
+
+class LightningChannelOpenData(BaseModel):
+    """Lightning channel funding / open event data."""
+
+    channel_id: str
+    funding_tx_hash: str
+    funding_vout: Optional[int] = None
+    short_channel_id: Optional[str] = None
+    capacity_btc: float
+    local_pubkey: Optional[str] = None
+    remote_pubkey: Optional[str] = None
+    local_alias: Optional[str] = None
+    remote_alias: Optional[str] = None
+    is_private: Optional[bool] = None
+    status: str = "open"
+
+
+class LightningChannelCloseData(BaseModel):
+    """Lightning channel closure event data."""
+
+    channel_id: str
+    close_tx_hash: str
+    close_type: str = "unknown"
+    settled_btc: Optional[float] = None
+    local_pubkey: Optional[str] = None
+    remote_pubkey: Optional[str] = None
+    local_alias: Optional[str] = None
+    remote_alias: Optional[str] = None
+    status: str = "closed"
+
+
+class BtcSidechainPegData(BaseModel):
+    """Bitcoin-sidechain peg event data."""
+
+    sidechain: str  # "liquid" | "rootstock" | "stacks"
+    bitcoin_tx_hash: Optional[str] = None
+    sidechain_tx_hash: Optional[str] = None
+    peg_address_or_contract: Optional[str] = None
+    asset_in: str
+    asset_out: str
+    amount_btc: Optional[float] = None
+    amount_sidechain: Optional[float] = None
+    mechanism: str = "bridge"
+    confidence: float = 0.0
+    status: str = "observed"
+
+
+class AtomicSwapData(BaseModel):
+    """Cross-chain or cross-domain atomic swap / HTLC event data."""
+
+    swap_id: str
+    protocol_id: Optional[str] = None
+    source_chain: str
+    destination_chain: str
+    source_tx_hash: Optional[str] = None
+    destination_tx_hash: Optional[str] = None
+    hashlock: Optional[str] = None
+    timelock: Optional[int] = None
+    source_asset: str
+    destination_asset: str
+    source_amount: Optional[float] = None
+    destination_amount: Optional[float] = None
+    state: str = "partial"
 
 
 class UTXONodeData(BaseModel):
@@ -267,6 +341,10 @@ class InvestigationNode(BaseModel):
     service_data: Optional[ServiceNodeData] = None
     bridge_hop_data: Optional[BridgeHopData] = None
     swap_event_data: Optional[SwapEventData] = None
+    lightning_channel_open_data: Optional[LightningChannelOpenData] = None
+    lightning_channel_close_data: Optional[LightningChannelCloseData] = None
+    btc_sidechain_peg_data: Optional[BtcSidechainPegData] = None
+    atomic_swap_data: Optional[AtomicSwapData] = None
     utxo_data: Optional[UTXONodeData] = None
     instruction_data: Optional[SolanaInstructionData] = None
     cluster_summary: Optional[ClusterSummaryData] = None

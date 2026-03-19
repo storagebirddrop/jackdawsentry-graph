@@ -64,6 +64,7 @@ class Settings(BaseSettings):
     BITCOIN_RPC_USER: Optional[str] = None
     BITCOIN_RPC_PASSWORD: Optional[str] = None
     BITCOIN_NETWORK: str = "mainnet"
+    BITCOIN_SIDECHAIN_PEG_HINTS_JSON: Optional[str] = None
 
     # Lightning Network
     LND_RPC_URL: str = "localhost:10009"
@@ -318,6 +319,7 @@ class Settings(BaseSettings):
         "TRUST_PROXY_HEADERS",
         "RATE_LIMIT_ENABLED",
         "DUAL_WRITE_RAW_EVENT_STORE",
+        "AUTO_BACKFILL_RAW_EVENT_STORE",
         mode="before",
     )
     @classmethod

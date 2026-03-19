@@ -38,6 +38,10 @@ import ClusterSummaryNode from './nodes/ClusterSummaryNode';
 import UTXONode from './nodes/UTXONode';
 import SolanaInstructionNode from './nodes/SolanaInstructionNode';
 import SwapEventNode from './nodes/SwapEventNode';
+import LightningChannelOpenNode from './nodes/LightningChannelOpenNode';
+import LightningChannelCloseNode from './nodes/LightningChannelCloseNode';
+import BtcSidechainPegNode from './nodes/BtcSidechainPegNode';
+import AtomicSwapNode from './nodes/AtomicSwapNode';
 import FilterPanel, { type FilterState, DEFAULT_FILTERS } from './FilterPanel';
 import GraphAppearancePanel from './GraphAppearancePanel';
 import GraphInspectorPanel from './GraphInspectorPanel';
@@ -55,6 +59,11 @@ const NODE_TYPES = {
   cluster_summary: ClusterSummaryNode,
   utxo: UTXONode,
   swap_event: SwapEventNode,
+  lightning_channel_open: LightningChannelOpenNode,
+  lightning_channel_close: LightningChannelCloseNode,
+  btc_sidechain_peg_in: BtcSidechainPegNode,
+  btc_sidechain_peg_out: BtcSidechainPegNode,
+  atomic_swap: AtomicSwapNode,
   service: EntityNode,
   solana_instruction: SolanaInstructionNode,
 };
@@ -149,6 +158,7 @@ export default function InvestigationGraph({ sessionId }: Props) {
   const [appearanceVisible, setAppearanceVisible] = useState(false);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
+  const [inspectorCollapsed, setInspectorCollapsed] = useState(false);
 
   // Keep local RF state in sync with store, applying current filters
   useEffect(() => {
@@ -203,20 +213,27 @@ export default function InvestigationGraph({ sessionId }: Props) {
 
   // Expand a node in a given direction
   const handleExpand = useCallback(
-    async (nodeId: string, operation: ExpandRequest['operation'], chain?: string) => {
-      if (expandingNodeIds.has(nodeId)) return;
+    async (
+      node: Pick<InvestigationNode, 'node_id' | 'lineage_id'>,
+      operation: ExpandRequest['operation_type'],
+    ) => {
+      if (expandingNodeIds.has(node.node_id)) return;
       if (rfNodes.length >= NODE_OVERLOAD_THRESHOLD) {
         alert(`Graph has ${rfNodes.length} nodes. Collapse some branches before expanding further.`);
         return;
       }
-      setExpandingNode(nodeId, true);
+      setExpandingNode(node.node_id, true);
       try {
-        const response = await expandNode(sessionId, { node_id: nodeId, operation, chain });
+        const response = await expandNode(sessionId, {
+          seed_node_id: node.node_id,
+          seed_lineage_id: node.lineage_id,
+          operation_type: operation,
+        });
         applyExpansionDelta(response);
       } catch (err) {
         console.error('Expand failed:', err);
       } finally {
-        setExpandingNode(nodeId, false);
+        setExpandingNode(node.node_id, false);
       }
     },
     [sessionId, rfNodes.length, expandingNodeIds, setExpandingNode, applyExpansionDelta],
@@ -233,16 +250,19 @@ export default function InvestigationGraph({ sessionId }: Props) {
   }, []);
 
   // Inject expand handlers into node data
-  const enrichedNodes = nodes.map((n) => ({
-    ...n,
-    data: {
-      ...n.data,
-      onExpandNext: () => handleExpand(n.id, 'expand_next'),
-      onExpandPrev: () => handleExpand(n.id, 'expand_prev'),
-      isExpanding: expandingNodeIds.has(n.id),
-      appearance,
-    },
-  }));
+  const enrichedNodes = nodes.map((n) => {
+    const invNode = n.data as unknown as InvestigationNode;
+    return {
+      ...n,
+      data: {
+        ...n.data,
+        onExpandNext: () => handleExpand(invNode, 'expand_next'),
+        onExpandPrev: () => handleExpand(invNode, 'expand_prev'),
+        isExpanding: expandingNodeIds.has(n.id),
+        appearance,
+      },
+    };
+  });
 
   const enrichedEdges = edges.map((edge) => ({
     ...edge,
@@ -260,6 +280,12 @@ export default function InvestigationGraph({ sessionId }: Props) {
     () => enrichedEdges.find((edge) => edge.id === selectedEdgeId) ?? null,
     [enrichedEdges, selectedEdgeId],
   );
+
+  useEffect(() => {
+    if (selectedNodeId || selectedEdgeId) {
+      setInspectorCollapsed(false);
+    }
+  }, [selectedNodeId, selectedEdgeId]);
 
   return (
     <div
@@ -293,7 +319,12 @@ export default function InvestigationGraph({ sessionId }: Props) {
           style={toolbarBtnStyle}
         >
           Filters
-          {filters.chainFilter.length + (filters.minFiatValue !== null && filters.minFiatValue > 0 ? 1 : 0) > 0 ? ' •' : ''}
+          {[
+            filters.chainFilter.length > 0,
+            filters.minFiatValue !== null && filters.minFiatValue > 0,
+            filters.maxDepth !== undefined && filters.maxDepth < 20,
+            filters.assetFilter !== undefined && filters.assetFilter.length > 0
+          ].filter(Boolean).length > 0 ? ' •' : ''}
         </button>
         <button
           onClick={() => {
@@ -406,10 +437,12 @@ export default function InvestigationGraph({ sessionId }: Props) {
       <GraphInspectorPanel
         node={selectedNode}
         edge={selectedEdge}
+        collapsed={inspectorCollapsed}
         onClose={() => {
           setSelectedNodeId(null);
           setSelectedEdgeId(null);
         }}
+        onToggleCollapsed={() => setInspectorCollapsed((value) => !value)}
       />
     </div>
   );

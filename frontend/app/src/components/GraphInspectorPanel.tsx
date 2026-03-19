@@ -4,12 +4,16 @@ import type { Edge, Node } from '@xyflow/react';
 import type {
   ActivitySummary,
   AddressNodeData,
+  BtcSidechainPegData,
   BridgeHopData,
   EntityNodeData,
   InvestigationEdge,
   InvestigationNode,
+  LightningChannelCloseData,
+  LightningChannelOpenData,
   SwapEventData,
   UTXONodeData,
+  AtomicSwapData,
 } from '../types/graph';
 import {
   formatNative,
@@ -28,10 +32,18 @@ import {
 interface Props {
   node: Node | null;
   edge: Edge | null;
+  collapsed: boolean;
   onClose: () => void;
+  onToggleCollapsed: () => void;
 }
 
-export default function GraphInspectorPanel({ node, edge, onClose }: Props) {
+export default function GraphInspectorPanel({
+  node,
+  edge,
+  collapsed,
+  onClose,
+  onToggleCollapsed,
+}: Props) {
   const selectedNode = useMemo(
     () => (node?.data as InvestigationNode | undefined) ?? null,
     [node],
@@ -41,6 +53,27 @@ export default function GraphInspectorPanel({ node, edge, onClose }: Props) {
     [edge],
   );
 
+  if (collapsed) {
+    return (
+      <aside style={collapsedPanelStyle}>
+        <button
+          onClick={onToggleCollapsed}
+          style={collapseButtonStyle}
+          aria-label="Expand inspector"
+          title="Expand inspector"
+        >
+          {'<'}
+        </button>
+        <div style={collapsedLabelStyle}>Inspector</div>
+        {(selectedNode || selectedEdge) && (
+          <div style={collapsedMetaStyle}>
+            {selectedNode ? selectedNode.node_type.replace(/_/g, ' ') : 'edge'}
+          </div>
+        )}
+      </aside>
+    );
+  }
+
   return (
     <aside style={panelStyle}>
       <div style={headerStyle}>
@@ -48,9 +81,19 @@ export default function GraphInspectorPanel({ node, edge, onClose }: Props) {
           <div style={eyebrowStyle}>Selection</div>
           <div style={titleStyle}>Inspector</div>
         </div>
-        <button onClick={onClose} style={closeButtonStyle} aria-label="Close inspector">
-          x
-        </button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button
+            onClick={onToggleCollapsed}
+            style={collapseButtonStyle}
+            aria-label="Collapse inspector"
+            title="Collapse inspector"
+          >
+            {'>'}
+          </button>
+          <button onClick={onClose} style={closeButtonStyle} aria-label="Close inspector">
+            x
+          </button>
+        </div>
       </div>
 
       {!selectedNode && !selectedEdge ? (
@@ -104,7 +147,7 @@ function NodeInspectorContent({
             <GraphGlyph kind={nodeGlyphKind(node)} accent={accent} />
           </div>
           <div style={{ flex: 1 }}>
-            <div style={titleBadgeStyle}>{node.node_type.replace('_', ' ')}</div>
+            <div style={titleBadgeStyle}>{node.node_type.replace(/_/g, ' ')}</div>
             <div style={heroTitleStyle}>{title}</div>
             {subtitle && <div style={heroSubtitleStyle}>{subtitle}</div>}
           </div>
@@ -134,6 +177,12 @@ function NodeInspectorContent({
       {(node.node_type === 'entity' || node.node_type === 'service') && <EntitySection node={node} />}
       {node.node_type === 'swap_event' && <SwapSection node={node} />}
       {node.node_type === 'bridge_hop' && <BridgeSection node={node} />}
+      {node.node_type === 'lightning_channel_open' && <LightningChannelOpenSection node={node} />}
+      {node.node_type === 'lightning_channel_close' && <LightningChannelCloseSection node={node} />}
+      {(node.node_type === 'btc_sidechain_peg_in' || node.node_type === 'btc_sidechain_peg_out') && (
+        <BtcSidechainPegSection node={node} />
+      )}
+      {node.node_type === 'atomic_swap' && <AtomicSwapSection node={node} />}
       {node.node_type === 'utxo' && <UtxoSection node={node} />}
 
       <Section title="Graph lineage">
@@ -263,6 +312,99 @@ function BridgeSection({ node }: { node: InvestigationNode }) {
   );
 }
 
+function LightningChannelOpenSection({ node }: { node: InvestigationNode }) {
+  const channel = (node.lightning_channel_open_data ?? node.node_data) as
+    | LightningChannelOpenData
+    | undefined;
+  if (!channel) return null;
+
+  return (
+    <Section title="Lightning channel open">
+      <KeyValue label="Channel ID"><code style={codeStyle}>{channel.channel_id}</code></KeyValue>
+      {channel.short_channel_id && (
+        <KeyValue label="Short channel ID"><code style={codeStyle}>{channel.short_channel_id}</code></KeyValue>
+      )}
+      <KeyValue label="Funding TX"><code style={codeStyle}>{channel.funding_tx_hash}</code></KeyValue>
+      <KeyValue label="Funding Vout">{channel.funding_vout ?? 'Unknown'}</KeyValue>
+      <KeyValue label="Capacity">{formatNative(channel.capacity_btc, 'BTC') ?? 'Unknown'}</KeyValue>
+      <KeyValue label="Local peer">{channel.local_alias ?? channel.local_pubkey ?? 'Unknown'}</KeyValue>
+      <KeyValue label="Remote peer">{channel.remote_alias ?? channel.remote_pubkey ?? 'Unknown'}</KeyValue>
+      <KeyValue label="Visibility">{channel.is_private === undefined ? 'Unknown' : channel.is_private ? 'Private' : 'Public'}</KeyValue>
+      <KeyValue label="Status">{channel.status ?? 'open'}</KeyValue>
+    </Section>
+  );
+}
+
+function BtcSidechainPegSection({ node }: { node: InvestigationNode }) {
+  const peg = (node.btc_sidechain_peg_data ?? node.node_data) as
+    | BtcSidechainPegData
+    | undefined;
+  if (!peg) return null;
+
+  return (
+    <Section title="Bitcoin sidechain peg">
+      <KeyValue label="Sidechain">{peg.sidechain}</KeyValue>
+      <KeyValue label="Asset flow">{`${peg.asset_in} -> ${peg.asset_out}`}</KeyValue>
+      <KeyValue label="Bitcoin TX">
+        {peg.bitcoin_tx_hash ? <code style={codeStyle}>{peg.bitcoin_tx_hash}</code> : 'Unknown'}
+      </KeyValue>
+      <KeyValue label="Sidechain TX">
+        {peg.sidechain_tx_hash ? <code style={codeStyle}>{peg.sidechain_tx_hash}</code> : 'Unknown'}
+      </KeyValue>
+      <KeyValue label="Peg address / contract">
+        {peg.peg_address_or_contract ? <code style={codeStyle}>{peg.peg_address_or_contract}</code> : 'Unknown'}
+      </KeyValue>
+      <KeyValue label="BTC amount">{formatNative(peg.amount_btc, 'BTC') ?? 'Unknown'}</KeyValue>
+      <KeyValue label="Status">{peg.status ?? 'observed'}</KeyValue>
+    </Section>
+  );
+}
+
+function LightningChannelCloseSection({ node }: { node: InvestigationNode }) {
+  const channel = (node.lightning_channel_close_data ?? node.node_data) as
+    | LightningChannelCloseData
+    | undefined;
+  if (!channel) return null;
+
+  return (
+    <Section title="Lightning channel close">
+      <KeyValue label="Channel ID"><code style={codeStyle}>{channel.channel_id}</code></KeyValue>
+      <KeyValue label="Close TX">
+        <code style={codeStyle}>{channel.close_tx_hash}</code>
+      </KeyValue>
+      <KeyValue label="Close type">{channel.close_type ?? 'unknown'}</KeyValue>
+      <KeyValue label="Settled amount">{formatNative(channel.settled_btc, 'BTC') ?? 'Unknown'}</KeyValue>
+      <KeyValue label="Local peer">{channel.local_alias ?? channel.local_pubkey ?? 'Unknown'}</KeyValue>
+      <KeyValue label="Remote peer">{channel.remote_alias ?? channel.remote_pubkey ?? 'Unknown'}</KeyValue>
+      <KeyValue label="Status">{channel.status ?? 'closed'}</KeyValue>
+    </Section>
+  );
+}
+
+function AtomicSwapSection({ node }: { node: InvestigationNode }) {
+  const swap = (node.atomic_swap_data ?? node.node_data) as AtomicSwapData | undefined;
+  if (!swap) return null;
+
+  return (
+    <Section title="Atomic swap">
+      <KeyValue label="Protocol">{swap.protocol_id ?? 'Unknown'}</KeyValue>
+      <KeyValue label="Route">{`${swap.source_chain} -> ${swap.destination_chain}`}</KeyValue>
+      <KeyValue label="Assets">{`${swap.source_asset} -> ${swap.destination_asset}`}</KeyValue>
+      <KeyValue label="Source TX">
+        {swap.source_tx_hash ? <code style={codeStyle}>{swap.source_tx_hash}</code> : 'Unknown'}
+      </KeyValue>
+      <KeyValue label="Dest TX">
+        {swap.destination_tx_hash ? <code style={codeStyle}>{swap.destination_tx_hash}</code> : 'Unknown'}
+      </KeyValue>
+      <KeyValue label="Hashlock">
+        {swap.hashlock ? <code style={codeStyle}>{swap.hashlock}</code> : 'Unknown'}
+      </KeyValue>
+      <KeyValue label="Timelock">{swap.timelock ?? 'Unknown'}</KeyValue>
+      <KeyValue label="State">{swap.state ?? 'partial'}</KeyValue>
+    </Section>
+  );
+}
+
 function UtxoSection({ node }: { node: InvestigationNode }) {
   const utxo = node.node_data as UTXONodeData;
 
@@ -281,7 +423,7 @@ function EdgeInspectorContent({ edge }: { edge: InvestigationEdge }) {
   return (
     <div style={{ display: 'grid', gap: 18, marginTop: 18 }}>
       <div style={heroCardStyle}>
-        <div style={titleBadgeStyle}>{edge.edge_type.replace('_', ' ')}</div>
+        <div style={titleBadgeStyle}>{edge.edge_type.replace(/_/g, ' ')}</div>
         <div style={heroTitleStyle}>{activity?.title ?? 'Transaction edge'}</div>
         <div style={heroSubtitleStyle}>
           {edge.direction} flow across branch {shortHash(edge.branch_id, 10, 6)}
@@ -352,7 +494,7 @@ function nodeTitle(node: InvestigationNode): string {
   switch (node.node_type) {
     case 'address': {
       const address = (node.address_data ?? node.node_data) as AddressNodeData;
-      return address.entity_name ?? shortHash(address.address, 10, 6);
+      return address.entity_name ?? address.address;
     }
     case 'entity':
     case 'service':
@@ -364,10 +506,20 @@ function nodeTitle(node: InvestigationNode): string {
       return 'Cross-chain hop';
     case 'swap_event':
       return 'Swap event';
+    case 'lightning_channel_open':
+      return 'Lightning channel open';
+    case 'lightning_channel_close':
+      return 'Lightning channel close';
+    case 'btc_sidechain_peg_in':
+      return 'Bitcoin peg in';
+    case 'btc_sidechain_peg_out':
+      return 'Bitcoin peg out';
+    case 'atomic_swap':
+      return 'Atomic swap';
     case 'utxo':
-      return shortHash((node.node_data as UTXONodeData).address, 10, 6);
+      return (node.node_data as UTXONodeData).address;
     default:
-      return node.node_type.replace('_', ' ');
+      return node.node_type.replace(/_/g, ' ');
   }
 }
 
@@ -375,7 +527,7 @@ function nodeSubtitle(node: InvestigationNode): string | null {
   switch (node.node_type) {
     case 'address': {
       const address = (node.address_data ?? node.node_data) as AddressNodeData;
-      return `${address.chain} address`;
+      return `${address.chain ?? node.chain ?? 'unknown'} address`;
     }
     case 'entity':
     case 'service': {
@@ -392,6 +544,29 @@ function nodeSubtitle(node: InvestigationNode): string | null {
     case 'swap_event': {
       const swap = node.node_data as SwapEventData;
       return `${swap.input_asset} -> ${swap.output_asset}`;
+    }
+    case 'lightning_channel_open': {
+      const channel = (node.lightning_channel_open_data ?? node.node_data) as
+        | LightningChannelOpenData
+        | undefined;
+      return channel?.short_channel_id ?? channel?.channel_id ?? 'lightning channel';
+    }
+    case 'lightning_channel_close': {
+      const channel = (node.lightning_channel_close_data ?? node.node_data) as
+        | LightningChannelCloseData
+        | undefined;
+      return channel?.channel_id ?? channel?.close_tx_hash ?? 'lightning channel';
+    }
+    case 'btc_sidechain_peg_in':
+    case 'btc_sidechain_peg_out': {
+      const peg = (node.btc_sidechain_peg_data ?? node.node_data) as
+        | BtcSidechainPegData
+        | undefined;
+      return peg ? `${peg.asset_in} -> ${peg.asset_out}` : null;
+    }
+    case 'atomic_swap': {
+      const swap = (node.atomic_swap_data ?? node.node_data) as AtomicSwapData | undefined;
+      return swap ? `${swap.source_chain} -> ${swap.destination_chain}` : null;
     }
     default:
       return null;
@@ -412,6 +587,25 @@ const panelStyle: React.CSSProperties = {
   boxShadow: '-16px 0 38px rgba(15, 23, 42, 0.08)',
   backdropFilter: 'blur(14px)',
   fontFamily: '"IBM Plex Sans", "Segoe UI", sans-serif',
+};
+
+const collapsedPanelStyle: React.CSSProperties = {
+  position: 'absolute',
+  top: 0,
+  right: 0,
+  width: 68,
+  height: '100%',
+  zIndex: 120,
+  background: 'rgba(255,255,255,0.94)',
+  borderLeft: '1px solid rgba(148, 163, 184, 0.35)',
+  boxShadow: '-12px 0 28px rgba(15, 23, 42, 0.06)',
+  backdropFilter: 'blur(14px)',
+  fontFamily: '"IBM Plex Sans", "Segoe UI", sans-serif',
+  display: 'flex',
+  flexDirection: 'column',
+  alignItems: 'center',
+  gap: 14,
+  paddingTop: 18,
 };
 
 const headerStyle: React.CSSProperties = {
@@ -443,6 +637,38 @@ const closeButtonStyle: React.CSSProperties = {
   fontSize: 18,
   lineHeight: 1,
   cursor: 'pointer',
+};
+
+const collapseButtonStyle: React.CSSProperties = {
+  width: 30,
+  height: 30,
+  borderRadius: 10,
+  border: '1px solid rgba(148, 163, 184, 0.34)',
+  background: 'rgba(255,255,255,0.92)',
+  color: '#475569',
+  fontSize: 15,
+  lineHeight: 1,
+  cursor: 'pointer',
+  fontWeight: 700,
+};
+
+const collapsedLabelStyle: React.CSSProperties = {
+  writingMode: 'vertical-rl',
+  transform: 'rotate(180deg)',
+  fontSize: 12,
+  fontWeight: 800,
+  letterSpacing: '0.14em',
+  textTransform: 'uppercase',
+  color: '#475569',
+};
+
+const collapsedMetaStyle: React.CSSProperties = {
+  writingMode: 'vertical-rl',
+  transform: 'rotate(180deg)',
+  fontSize: 11,
+  color: '#64748b',
+  textTransform: 'uppercase',
+  letterSpacing: '0.08em',
 };
 
 const heroCardStyle: React.CSSProperties = {

@@ -12,6 +12,8 @@ Verifies:
 - Deduplication: multiple outputs to the same address → one node, N edges.
 """
 
+from unittest.mock import AsyncMock
+
 import pytest
 
 from src.trace_compiler.chains.bitcoin import UTXOChainCompiler
@@ -317,6 +319,141 @@ def test_deduplicates_same_counterparty():
     )
     assert len(nodes) == 1
     assert len(edges) == 2
+
+
+@pytest.mark.asyncio
+async def test_expand_next_emits_lightning_channel_open_node_for_funding_output():
+    compiler = UTXOChainCompiler()
+    row = _normal_row(counterparty=ADDR_1, tx_hash=TX_1, value_sats=250_000_000)
+    row["output_index"] = 1
+
+    compiler._fetch_outbound_event_store = AsyncMock(return_value=[row])
+    compiler._fetch_lightning_channel_open_events = AsyncMock(
+        return_value={
+            f"{TX_1}:1": {
+                "channel_id": "775673x1007x1",
+                "funding_ref": f"{TX_1}:1",
+                "funding_tx_hash": TX_1,
+                "funding_vout": 1,
+                "short_channel_id": "775673x1007x1",
+                "capacity_btc": 2.5,
+                "local_pubkey": "LOCALNODE",
+                "remote_pubkey": "REMOTENODE",
+                "local_alias": "Local",
+                "remote_alias": "Remote",
+                "is_private": False,
+                "status": "open",
+                "peer_summary": "Local <-> Remote",
+            }
+        }
+    )
+
+    nodes, edges = await compiler.expand_next(
+        session_id="session-1",
+        branch_id="branch-1",
+        path_sequence=0,
+        depth=0,
+        seed_address=SEED,
+        chain="bitcoin",
+        options=_opts(),
+    )
+
+    assert len(nodes) == 1
+    assert len(edges) == 1
+    node = nodes[0]
+    assert node.node_type == "lightning_channel_open"
+    assert node.chain == "lightning"
+    assert node.lightning_channel_open_data is not None
+    assert node.lightning_channel_open_data.channel_id == "775673x1007x1"
+    assert node.lightning_channel_open_data.funding_tx_hash == TX_1
+    assert node.activity_summary is not None
+    assert node.activity_summary.activity_type == "lightning_channel_open"
+    assert node.activity_summary.source_chain == "bitcoin"
+    assert node.activity_summary.destination_chain == "lightning"
+
+
+@pytest.mark.asyncio
+async def test_expand_next_emits_sidechain_peg_in_node_for_known_peg_address():
+    compiler = UTXOChainCompiler()
+    compiler._sidechain_peg_hints = {
+        "liquid": {
+            "peg_in_addresses": {ADDR_1.lower()},
+            "peg_out_addresses": set(),
+            "asset_out": "L-BTC",
+            "mechanism": "federated",
+            "confidence": 0.9,
+        }
+    }
+    row = _normal_row(counterparty=ADDR_1, tx_hash=TX_1, value_sats=125_000_000)
+    row["output_index"] = 2
+
+    compiler._fetch_outbound_event_store = AsyncMock(return_value=[row])
+    compiler._fetch_lightning_channel_open_events = AsyncMock(return_value={})
+
+    nodes, edges = await compiler.expand_next(
+        session_id="session-peg-in",
+        branch_id="branch-1",
+        path_sequence=0,
+        depth=0,
+        seed_address=SEED,
+        chain="bitcoin",
+        options=_opts(),
+    )
+
+    assert len(nodes) == 1
+    assert len(edges) == 1
+    node = nodes[0]
+    assert node.node_type == "btc_sidechain_peg_in"
+    assert node.btc_sidechain_peg_data is not None
+    assert node.btc_sidechain_peg_data.sidechain == "liquid"
+    assert node.btc_sidechain_peg_data.asset_in == "BTC"
+    assert node.btc_sidechain_peg_data.asset_out == "L-BTC"
+    assert node.activity_summary is not None
+    assert node.activity_summary.activity_type == "btc_sidechain_peg_in"
+    assert node.activity_summary.source_chain == "bitcoin"
+    assert node.activity_summary.destination_chain == "liquid"
+
+
+@pytest.mark.asyncio
+async def test_expand_prev_emits_sidechain_peg_out_node_for_known_peg_address():
+    compiler = UTXOChainCompiler()
+    compiler._sidechain_peg_hints = {
+        "rootstock": {
+            "peg_in_addresses": set(),
+            "peg_out_addresses": {ADDR_2.lower()},
+            "asset_out": "RBTC",
+            "mechanism": "contract",
+            "confidence": 0.82,
+        }
+    }
+    row = _normal_row(counterparty=ADDR_2, tx_hash=TX_2, value_sats=75_000_000)
+    row["output_index"] = 0
+
+    compiler._fetch_inbound_event_store = AsyncMock(return_value=[row])
+    compiler._fetch_lightning_channel_open_events = AsyncMock(return_value={})
+
+    nodes, edges = await compiler.expand_prev(
+        session_id="session-peg-out",
+        branch_id="branch-1",
+        path_sequence=0,
+        depth=0,
+        seed_address=SEED,
+        chain="bitcoin",
+        options=_opts(),
+    )
+
+    assert len(nodes) == 1
+    assert len(edges) == 1
+    node = nodes[0]
+    assert node.node_type == "btc_sidechain_peg_out"
+    assert node.btc_sidechain_peg_data is not None
+    assert node.btc_sidechain_peg_data.sidechain == "rootstock"
+    assert node.btc_sidechain_peg_data.asset_in == "RBTC"
+    assert node.btc_sidechain_peg_data.asset_out == "BTC"
+    assert node.activity_summary is not None
+    assert node.activity_summary.activity_type == "btc_sidechain_peg_out"
+    assert node.activity_summary.source_chain == "rootstock"
+    assert node.activity_summary.destination_chain == "bitcoin"
 
 
 def test_skips_self_loop():
