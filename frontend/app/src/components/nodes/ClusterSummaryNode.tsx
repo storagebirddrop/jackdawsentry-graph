@@ -5,10 +5,22 @@
  */
 
 import { Handle, Position, type NodeProps } from '@xyflow/react';
+
 import type { InvestigationNode, ClusterSummaryData } from '../../types/graph';
+import {
+  DEFAULT_GRAPH_APPEARANCE,
+  type GraphAppearanceState,
+} from '../graphAppearance';
+import {
+  GraphGlyph,
+  glyphSurfaceStyle,
+  nodeAccentColor,
+  nodeGlyphKind,
+} from '../graphVisuals';
 
 interface ClusterNodeData extends InvestigationNode {
   branch_color: string;
+  appearance?: GraphAppearanceState;
   onExpand?: () => void;
 }
 
@@ -26,47 +38,64 @@ export default function ClusterSummaryNode({ data }: NodeProps) {
     );
   }
   const cluster = clusterData.node_data as ClusterSummaryData;
+  const appearance = clusterData.appearance ?? DEFAULT_GRAPH_APPEARANCE;
+  const accent = nodeAccentColor(clusterData, appearance, clusterData.branch_color);
 
   return (
     <div
       style={{
-        border: `2px dashed ${clusterData.branch_color}`,
-        borderRadius: 8,
-        background: '#1e293b',
-        color: '#f1f5f9',
-        padding: '6px 10px',
-        minWidth: 140,
+        border: `1px dashed ${accent}`,
+        borderRadius: 18,
+        background: 'rgba(255,255,255,0.96)',
+        color: '#0f172a',
+        padding: '14px 16px',
+        minWidth: 200,
         fontSize: 11,
-        textAlign: 'center',
+        boxShadow: '0 14px 28px rgba(15, 23, 42, 0.08)',
+        fontFamily: '"IBM Plex Sans", "Segoe UI", sans-serif',
       }}
     >
       <Handle type="target" position={Position.Left} />
-
-      <div style={{ color: '#94a3b8', fontSize: 12, fontWeight: 700 }}>
-        {cluster.total_nodes} nodes
-      </div>
-
-      <div style={{ color: '#64748b', fontSize: 9, marginTop: 2 }}>
-        {cluster.dominant_type}
-        {cluster.max_risk_score !== undefined &&
-          ` · risk ${(cluster.max_risk_score * 100).toFixed(0)}%`}
+      <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+        {appearance.showEntityIcons && (
+          <div style={glyphSurfaceStyle(accent)}>
+            <GraphGlyph kind={nodeGlyphKind(clusterData)} accent={accent} />
+          </div>
+        )}
+        <div style={{ flex: 1 }}>
+          <div style={{ color: '#64748b', fontSize: 10, fontWeight: 800, letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+            Cluster summary
+          </div>
+          <div style={{ color: '#0f172a', fontSize: 16, fontWeight: 700, marginTop: 4 }}>
+            {cluster.total_nodes} nodes
+          </div>
+          <div style={{ color: '#64748b', fontSize: 11, marginTop: 6 }}>
+            {cluster.dominant_type}
+            {cluster.max_risk_score !== undefined &&
+              ` · risk ${(cluster.max_risk_score * 100).toFixed(0)}%`}
+          </div>
+        </div>
       </div>
 
       {clusterData.onExpand && (
         <button
-          onClick={clusterData.onExpand}
+          onClick={(event) => {
+            event.stopPropagation();
+            clusterData.onExpand?.();
+          }}
           style={{
-            marginTop: 6,
-            padding: '2px 8px',
-            background: clusterData.branch_color,
+            marginTop: 12,
+            padding: '8px 12px',
+            background: accent,
             border: 'none',
-            borderRadius: 4,
+            borderRadius: 10,
             color: '#fff',
-            fontSize: 10,
+            fontSize: 11,
+            fontWeight: 700,
             cursor: 'pointer',
           }}
         >
-          Expand
+          Expand cluster
         </button>
       )}
 

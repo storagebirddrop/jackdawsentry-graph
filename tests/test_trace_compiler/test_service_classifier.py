@@ -5,8 +5,8 @@ Verifies:
 - Known service contracts are correctly identified (Uniswap, Tornado Cash, etc.)
 - Bridge contract exclusion: bridge addresses are NOT classified as services
 - process_row returns None for unknown addresses
-- process_row returns (nodes, edges) with correct types for known services
-- Service nodes deduplicate by protocol_id in EVM _build_graph
+- process_row returns transaction-centric service activity nodes + edges
+- Service interactions are emitted per transaction hash in EVM _build_graph
 - Both forward (service_deposit) and backward (service_receipt) edge types
 """
 
@@ -91,6 +91,7 @@ def test_build_service_node_type():
         record=record,
         contract_address=UNISWAP_V3_ROUTER,
         chain="ethereum",
+        tx_hash=TX_HASH,
         session_id="s",
         branch_id="b",
         path_id="p",
@@ -101,6 +102,9 @@ def test_build_service_node_type():
     assert node.service_data.protocol_id == "uniswap_v3"
     assert node.service_data.service_type == "dex"
     assert UNISWAP_V3_ROUTER in node.service_data.known_contracts
+    assert node.activity_summary is not None
+    assert node.activity_summary.tx_hash == TX_HASH
+    assert node.activity_summary.protocol_id == "uniswap_v3"
 
 
 def test_build_service_node_label():
@@ -110,13 +114,14 @@ def test_build_service_node_label():
         record=record,
         contract_address=TORNADO_10ETH,
         chain="ethereum",
+        tx_hash=TX_HASH,
         session_id="s",
         branch_id="b",
         path_id="p",
         depth=2,
     )
     assert "Tornado" in node.display_label
-    assert node.display_sublabel == "MIXER"
+    assert node.display_sublabel.startswith("MIXER")
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +173,8 @@ async def test_process_row_known_service_forward():
     nodes, edges = result
     assert len(nodes) == 1
     assert nodes[0].node_type == "service"
+    assert nodes[0].activity_summary is not None
+    assert nodes[0].activity_summary.activity_type == "dex_interaction"
     assert len(edges) == 1
     assert edges[0].edge_type == "service_deposit"
     assert edges[0].source_node_id == SEED_NODE_ID
@@ -199,6 +206,8 @@ async def test_process_row_known_service_backward():
     assert edges[0].edge_type == "service_receipt"
     assert edges[0].source_node_id == nodes[0].node_id  # service → seed
     assert edges[0].target_node_id == SEED_NODE_ID
+    assert edges[0].activity_summary is not None
+    assert edges[0].activity_summary.direction == "backward"
 
 
 # ---------------------------------------------------------------------------
@@ -239,8 +248,8 @@ async def test_evm_build_graph_service_row_produces_service_node():
 
 
 @pytest.mark.asyncio
-async def test_evm_build_graph_service_deduplication():
-    """Multiple transfers to the same service protocol produce one service node."""
+async def test_evm_build_graph_service_nodes_are_transaction_specific():
+    """Multiple transfers to the same protocol produce one service node per tx."""
     evm = EVMChainCompiler()
     # Two transfers to the same Uniswap V3 contract
     rows = [
@@ -273,10 +282,9 @@ async def test_evm_build_graph_service_deduplication():
         options=_opts(),
         prices=None,
     )
-    # One service node despite two transfers
-    assert len(nodes) == 1
-    assert nodes[0].node_type == "service"
-    # But two separate edges (one per transfer)
+    assert len(nodes) == 2
+    assert all(node.node_type == "service" for node in nodes)
+    assert nodes[0].node_id != nodes[1].node_id
     assert len(edges) == 2
 
 

@@ -10,7 +10,7 @@
  */
 
 import { create } from 'zustand';
-import type { Node, Edge } from '@xyflow/react';
+import { MarkerType, type Node, type Edge } from '@xyflow/react';
 import type {
   InvestigationNode,
   InvestigationEdge,
@@ -68,7 +68,7 @@ export function toRfEdge(inv: InvestigationEdge): Edge {
     id: inv.edge_id,
     source: inv.source_node_id,
     target: inv.target_node_id,
-    type: 'default',
+    type: 'investigation',
     data: {
       ...inv,
       branch_color_index: colorIdx,
@@ -76,6 +76,10 @@ export function toRfEdge(inv: InvestigationEdge): Edge {
     },
     style: { stroke: BRANCH_COLORS[colorIdx], strokeWidth: 2 },
     animated: inv.edge_type === 'bridge_hop',
+    markerEnd: {
+      type: MarkerType.ArrowClosed,
+      color: BRANCH_COLORS[colorIdx],
+    },
   };
 }
 

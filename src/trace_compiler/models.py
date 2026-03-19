@@ -38,6 +38,15 @@ NodeType = Literal[
     "cluster_summary",
 ]
 
+ActivityType = Literal[
+    "bridge",
+    "service_interaction",
+    "dex_interaction",
+    "mixer_interaction",
+    "router_interaction",
+    "cex_interaction",
+]
+
 EdgeType = Literal[
     "transfer",
     "bridge_source",
@@ -161,6 +170,36 @@ class ClusterSummaryData(BaseModel):
     total_value_fiat: Optional[float] = None
 
 
+class ActivitySummary(BaseModel):
+    """Transaction-centric summary for graph activity nodes and edges."""
+
+    activity_type: ActivityType
+    title: str
+    protocol_id: Optional[str] = None
+    protocol_type: Optional[str] = None
+    tx_hash: Optional[str] = None
+    tx_chain: Optional[str] = None
+    timestamp: Optional[str] = None
+    direction: Optional[str] = None
+    status: Optional[str] = None
+    contract_address: Optional[str] = None
+    source_chain: Optional[str] = None
+    destination_chain: Optional[str] = None
+    source_tx_hash: Optional[str] = None
+    destination_tx_hash: Optional[str] = None
+    order_id: Optional[str] = None
+    asset_symbol: Optional[str] = None
+    canonical_asset_id: Optional[str] = None
+    value_native: Optional[float] = None
+    value_fiat: Optional[float] = None
+    source_asset: Optional[str] = None
+    destination_asset: Optional[str] = None
+    source_amount: Optional[float] = None
+    destination_amount: Optional[float] = None
+    route_summary: Optional[str] = None
+    method_name: Optional[str] = None
+
+
 # ---------------------------------------------------------------------------
 # InvestigationNode
 # ---------------------------------------------------------------------------
@@ -231,6 +270,7 @@ class InvestigationNode(BaseModel):
     utxo_data: Optional[UTXONodeData] = None
     instruction_data: Optional[SolanaInstructionData] = None
     cluster_summary: Optional[ClusterSummaryData] = None
+    activity_summary: Optional[ActivitySummary] = None
 
 
 # ---------------------------------------------------------------------------
@@ -274,6 +314,7 @@ class InvestigationEdge(BaseModel):
     is_suspected_change: bool = False  # Bitcoin change output
     taint_percentage: Optional[float] = None  # 0.0–1.0 if taint model applied
     direction: str = "forward"  # "forward" | "backward" | "lateral"
+    activity_summary: Optional[ActivitySummary] = None
 
 
 # ---------------------------------------------------------------------------

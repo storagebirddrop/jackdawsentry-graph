@@ -95,6 +95,9 @@ def test_build_hop_node_pending():
     assert node.bridge_hop_data.status == "pending"
     assert node.bridge_hop_data.protocol_id == "thorchain"
     assert node.bridge_hop_data.source_chain == "ethereum"
+    assert node.activity_summary is not None
+    assert node.activity_summary.source_tx_hash == TX_HASH
+    assert node.activity_summary.activity_type == "bridge"
     assert "pending" in node.display_label.lower() or "THORChain" in node.display_label
 
 
@@ -110,6 +113,8 @@ def test_build_hop_node_completed():
         "destination_amount": 0.05,
         "time_delta_seconds": 45,
         "correlation_confidence": 0.99,
+        "destination_tx_hash": "0x" + "cd" * 32,
+        "order_id": "ord-123",
     }
     node = c.build_hop_node(
         protocol=protocol,
@@ -126,6 +131,9 @@ def test_build_hop_node_completed():
     assert node.bridge_hop_data.source_amount == 1.5
     assert node.bridge_hop_data.dest_amount == 0.05
     assert node.bridge_hop_data.correlation_conf == 0.99
+    assert node.activity_summary is not None
+    assert node.activity_summary.destination_tx_hash == "0x" + "cd" * 32
+    assert node.activity_summary.order_id == "ord-123"
     assert "next" in node.expandable_directions
 
 
@@ -212,9 +220,12 @@ async def test_process_row_bridge_no_correlation_returns_pending_node():
     hop_node = nodes[0]
     assert hop_node.node_type == "bridge_hop"
     assert hop_node.bridge_hop_data.status == "pending"
+    assert hop_node.activity_summary is not None
+    assert hop_node.activity_summary.tx_hash == TX_HASH
     # One edge: seed → bridge_hop
     assert len(edges) == 1
     assert edges[0].edge_type == "bridge_source"
+    assert edges[0].activity_summary is not None
 
 
 @pytest.mark.asyncio
@@ -233,6 +244,8 @@ async def test_process_row_bridge_completed_returns_dest_node():
             "destination_amount": 0.03,
             "time_delta_seconds": 30,
             "correlation_confidence": 0.99,
+            "destination_tx_hash": "0x" + "ef" * 32,
+            "order_id": "bridge-order-1",
         }
 
     c.lookup_correlation = _mock_lookup
@@ -264,6 +277,9 @@ async def test_process_row_bridge_completed_returns_dest_node():
     edge_types = {e.edge_type for e in edges}
     assert "bridge_source" in edge_types
     assert "bridge_dest" in edge_types
+    hop_node = next(node for node in nodes if node.node_type == "bridge_hop")
+    assert hop_node.activity_summary is not None
+    assert hop_node.activity_summary.destination_tx_hash == "0x" + "ef" * 32
 
 
 # ---------------------------------------------------------------------------

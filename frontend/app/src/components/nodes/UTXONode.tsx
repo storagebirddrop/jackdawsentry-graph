@@ -6,10 +6,23 @@
  */
 
 import { Handle, Position, type NodeProps } from '@xyflow/react';
+
 import type { InvestigationNode, UTXONodeData } from '../../types/graph';
+import {
+  DEFAULT_GRAPH_APPEARANCE,
+  type GraphAppearanceState,
+} from '../graphAppearance';
+import {
+  badgeStyle,
+  GraphGlyph,
+  glyphSurfaceStyle,
+  nodeAccentColor,
+  nodeGlyphKind,
+} from '../graphVisuals';
 
 interface UTXONodeComponentData extends InvestigationNode {
   branch_color: string;
+  appearance?: GraphAppearanceState;
 }
 
 const SCRIPT_LABELS: Record<string, string> = {
@@ -24,51 +37,53 @@ export default function UTXONode({ data }: NodeProps) {
   const d = data as unknown as UTXONodeComponentData;
   const utxo = d.node_data as UTXONodeData;
   const scriptLabel = SCRIPT_LABELS[utxo.address_type ?? ''] ?? utxo.script_type ?? '?';
+  const appearance = d.appearance ?? DEFAULT_GRAPH_APPEARANCE;
+  const accent = nodeAccentColor(
+    d,
+    appearance,
+    utxo.is_coinjoin_halt ? '#b45309' : d.branch_color,
+  );
 
   return (
     <div
       style={{
-        border: `2px solid ${utxo.is_coinjoin_halt ? '#b45309' : d.branch_color}`,
-        borderRadius: 8,
-        background: '#1c1917',
-        color: '#f5f5f4',
-        padding: '6px 10px',
-        minWidth: 160,
-        fontFamily: 'monospace',
+        border: `1px solid ${accent}55`,
+        borderRadius: 18,
+        background: 'rgba(255,255,255,0.97)',
+        color: '#0f172a',
+        padding: '14px 16px',
+        minWidth: 220,
+        fontFamily: '"IBM Plex Sans", "Segoe UI", sans-serif',
         fontSize: 11,
+        boxShadow: '0 14px 28px rgba(15, 23, 42, 0.08)',
       }}
     >
       <Handle type="target" position={Position.Left} />
-
-      {/* Script type badge */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <span
-          style={{
-            background: '#292524',
-            borderRadius: 3,
-            padding: '1px 5px',
-            fontSize: 9,
-            color: '#a8a29e',
-            fontFamily: 'sans-serif',
-          }}
-        >
-          {scriptLabel}
-        </span>
-
-        {/* Change / CoinJoin flags */}
-        <div style={{ display: 'flex', gap: 3 }}>
-          {utxo.is_probable_change && (
-            <span style={badgeStyle('#1c1917', '#d6d3d1', '#57534e')}>CHANGE</span>
-          )}
-          {utxo.is_coinjoin_halt && (
-            <span style={badgeStyle('#78350f', '#fef3c7')}>COINJOIN</span>
-          )}
+      <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+        {appearance.showEntityIcons && (
+          <div style={glyphSurfaceStyle(accent)}>
+            <GraphGlyph kind={nodeGlyphKind(d)} accent={accent} />
+          </div>
+        )}
+        <div style={{ flex: 1 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
+            <span style={{ color: '#64748b', fontSize: 10, fontWeight: 800, letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+              UTXO
+            </span>
+            <span style={badgeStyle('#475569')}>{scriptLabel}</span>
+          </div>
+          <div style={{ color: '#0f172a', fontWeight: 700, fontSize: 14, marginTop: 6 }}>
+            {shortAddr(utxo.address || '')}
+          </div>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 10 }}>
+            {utxo.is_probable_change && (
+              <span style={badgeStyle('#64748b')}>Change</span>
+            )}
+            {utxo.is_coinjoin_halt && (
+              <span style={badgeStyle('#b45309')}>CoinJoin</span>
+            )}
+          </div>
         </div>
-      </div>
-
-      {/* Address */}
-      <div style={{ color: '#a8a29e', marginTop: 4, fontSize: 10 }}>
-        {shortAddr(utxo.address || '')}
       </div>
 
       <Handle type="source" position={Position.Right} />
@@ -79,18 +94,4 @@ export default function UTXONode({ data }: NodeProps) {
 function shortAddr(addr: string): string {
   if (addr.length <= 14) return addr;
   return `${addr.slice(0, 7)}…${addr.slice(-5)}`;
-}
-
-function badgeStyle(bg: string, text: string, border?: string) {
-  return {
-    background: bg,
-    color: text,
-    border: border ? `1px solid ${border}` : undefined,
-    borderRadius: 3,
-    padding: '1px 4px',
-    fontSize: 8,
-    fontFamily: 'sans-serif',
-    fontWeight: 700,
-    letterSpacing: '0.5px',
-  } as React.CSSProperties;
 }

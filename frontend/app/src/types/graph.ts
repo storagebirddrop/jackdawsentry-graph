@@ -27,6 +27,14 @@ export type EdgeType =
   | 'entity_membership'
   | 'annotation';
 
+export type ActivityType =
+  | 'bridge'
+  | 'service_interaction'
+  | 'dex_interaction'
+  | 'mixer_interaction'
+  | 'router_interaction'
+  | 'cex_interaction';
+
 // ---------------------------------------------------------------------------
 // Node data payloads — each NodeType has a corresponding data shape
 // ---------------------------------------------------------------------------
@@ -109,6 +117,34 @@ export interface ClusterSummaryData {
   representative_address?: string;
 }
 
+export interface ActivitySummary {
+  activity_type: ActivityType;
+  title: string;
+  protocol_id?: string;
+  protocol_type?: string;
+  tx_hash?: string;
+  tx_chain?: string;
+  timestamp?: string;
+  direction?: string;
+  status?: string;
+  contract_address?: string;
+  source_chain?: string;
+  destination_chain?: string;
+  source_tx_hash?: string;
+  destination_tx_hash?: string;
+  order_id?: string;
+  asset_symbol?: string;
+  canonical_asset_id?: string;
+  value_native?: number;
+  value_fiat?: number;
+  source_asset?: string;
+  destination_asset?: string;
+  source_amount?: number;
+  destination_amount?: number;
+  route_summary?: string;
+  method_name?: string;
+}
+
 export type NodeData =
   | AddressNodeData
   | EntityNodeData
@@ -127,6 +163,13 @@ export interface InvestigationNode {
   node_id: string;
   node_type: NodeType;
   node_data: NodeData;
+  chain?: string;
+  display_label?: string;
+  display_sublabel?: string;
+  entity_name?: string;
+  entity_category?: string;
+  risk_score?: number;
+  balance_fiat?: number;
   address_data?: AddressNodeData;  // shorthand alias used by some compilers
   branch_id: string;
   path_id: string;
@@ -134,6 +177,7 @@ export interface InvestigationNode {
   depth: number;
   expandable_directions: Array<'next' | 'prev' | 'neighbors'>;
   is_seed?: boolean;
+  activity_summary?: ActivitySummary;
   /** Branch color index (0-7) assigned from branch_id hash */
   branch_color_index?: number;
 }
@@ -151,6 +195,7 @@ export interface InvestigationEdge {
   tx_hash?: string;
   timestamp?: string;
   is_suspected_change?: boolean;
+  activity_summary?: ActivitySummary;
   branch_id: string;
   /** Same branch_color_index as the source node */
   branch_color_index?: number;

@@ -38,6 +38,7 @@ from typing import Tuple
 from src.trace_compiler.lineage import edge_id as mk_edge_id
 from src.trace_compiler.lineage import lineage_id as mk_lineage
 from src.trace_compiler.lineage import node_id as mk_node_id
+from src.trace_compiler.models import ActivitySummary
 from src.trace_compiler.models import InvestigationEdge
 from src.trace_compiler.models import InvestigationNode
 from src.trace_compiler.models import ServiceNodeData
@@ -285,10 +286,17 @@ class ServiceClassifier:
         record: _ServiceRecord,
         contract_address: str,
         chain: str,
+        tx_hash: str,
         session_id: str,
         branch_id: str,
         path_id: str,
         depth: int,
+        timestamp: Optional[str] = None,
+        value_native: Optional[float] = None,
+        value_fiat: Optional[float] = None,
+        asset_symbol: Optional[str] = None,
+        canonical_asset_id: Optional[str] = None,
+        direction: Optional[str] = None,
     ) -> InvestigationNode:
         """Build a ServiceNode InvestigationNode for a known protocol contract.
 
@@ -304,7 +312,7 @@ class ServiceClassifier:
         Returns:
             InvestigationNode with ``node_type="service"``.
         """
-        node_id = mk_node_id(chain, "service", record.protocol_id)
+        node_id = mk_node_id(chain, "service", f"{record.protocol_id}:{tx_hash}")
         lineage = mk_lineage(session_id, branch_id, path_id, depth)
 
         # Aggregate all known contract addresses for this protocol on this chain.
@@ -320,13 +328,29 @@ class ServiceClassifier:
             path_id=path_id,
             depth=depth,
             display_label=record.display_name,
-            display_sublabel=record.service_type.upper(),
+            display_sublabel=f"{record.service_type.upper()} · {tx_hash[:10]}…",
             chain=chain,
             expandable_directions=[],  # Service nodes are not expanded further.
             service_data=ServiceNodeData(
                 protocol_id=record.protocol_id,
                 service_type=record.service_type,
                 known_contracts=known,
+            ),
+            activity_summary=ActivitySummary(
+                activity_type=_activity_type_for_service(record.service_type),
+                title=f"{record.display_name} interaction",
+                protocol_id=record.protocol_id,
+                protocol_type=record.service_type,
+                tx_hash=tx_hash,
+                tx_chain=chain,
+                timestamp=timestamp,
+                direction=direction,
+                contract_address=contract_address.lower(),
+                asset_symbol=asset_symbol,
+                canonical_asset_id=canonical_asset_id,
+                value_native=value_native,
+                value_fiat=value_fiat,
+                route_summary=f"{record.display_name} {record.service_type} contract interaction",
             ),
         )
 
@@ -385,10 +409,17 @@ class ServiceClassifier:
             record=record,
             contract_address=to_address,
             chain=chain,
+            tx_hash=tx_hash,
             session_id=session_id,
             branch_id=branch_id,
             path_id=path_id,
             depth=depth + 1,
+            timestamp=timestamp,
+            value_native=value_native,
+            value_fiat=value_fiat,
+            asset_symbol=asset_symbol,
+            canonical_asset_id=canonical_asset_id,
+            direction=direction,
         )
 
         if direction == "forward":
@@ -413,6 +444,7 @@ class ServiceClassifier:
             tx_chain=chain,
             timestamp=timestamp,
             direction=direction,
+            activity_summary=service_node.activity_summary,
         )
 
         short_hash = (tx_hash[:16] if tx_hash else "None")
@@ -426,3 +458,13 @@ class ServiceClassifier:
         )
 
         return [service_node], [edge]
+
+
+def _activity_type_for_service(service_type: str) -> str:
+    mapping = {
+        "dex": "dex_interaction",
+        "router": "router_interaction",
+        "mixer": "mixer_interaction",
+        "cex": "cex_interaction",
+    }
+    return mapping.get(service_type, "service_interaction")

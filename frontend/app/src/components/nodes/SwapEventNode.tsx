@@ -6,10 +6,24 @@
  */
 
 import { Handle, Position, type NodeProps } from '@xyflow/react';
+
 import type { InvestigationNode, SwapEventData } from '../../types/graph';
+import {
+  DEFAULT_GRAPH_APPEARANCE,
+  type GraphAppearanceState,
+} from '../graphAppearance';
+import {
+  badgeStyle,
+  formatNative,
+  GraphGlyph,
+  glyphSurfaceStyle,
+  nodeAccentColor,
+  nodeGlyphKind,
+} from '../graphVisuals';
 
 interface SwapNodeData extends InvestigationNode {
   branch_color: string;
+  appearance?: GraphAppearanceState;
 }
 
 export default function SwapEventNode({ data }: NodeProps) {
@@ -17,46 +31,60 @@ export default function SwapEventNode({ data }: NodeProps) {
   // cast via unknown to reach our richer interface.
   const swapData = data as unknown as SwapNodeData;
   const swap = swapData.node_data as SwapEventData;
+  const appearance = swapData.appearance ?? DEFAULT_GRAPH_APPEARANCE;
+  const accent = nodeAccentColor(swapData, appearance, '#0f766e');
 
   return (
     <div
       style={{
-        border: `2px solid #0891b2`,
-        borderRadius: 8,
-        background: '#0c1a1f',
-        color: '#f1f5f9',
-        padding: '6px 10px',
-        minWidth: 170,
+        border: `1px solid ${accent}55`,
+        borderRadius: 18,
+        background: 'rgba(255,255,255,0.97)',
+        color: '#0f172a',
+        padding: '14px 16px',
+        minWidth: 230,
         fontSize: 11,
+        boxShadow: '0 14px 28px rgba(15, 23, 42, 0.08)',
+        fontFamily: '"IBM Plex Sans", "Segoe UI", sans-serif',
       }}
     >
       <Handle type="target" position={Position.Left} />
+      <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+        {appearance.showEntityIcons && (
+          <div style={glyphSurfaceStyle(accent)}>
+            <GraphGlyph kind={nodeGlyphKind(swapData)} accent={accent} />
+          </div>
+        )}
+        <div style={{ flex: 1 }}>
+          <div style={{ color: '#64748b', fontSize: 10, fontWeight: 800, letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+            Swap
+          </div>
+          <div style={{ color: accent, fontWeight: 700, fontSize: 14, marginTop: 4 }}>
+            {(swap.protocol_id ?? 'UNKNOWN').toUpperCase()}
+          </div>
 
-      {/* Protocol */}
-      <div style={{ color: '#22d3ee', fontWeight: 700, fontSize: 12 }}>
-        {(swap.protocol_id ?? 'UNKNOWN').toUpperCase()}
-      </div>
+          <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+            <span style={{ ...badgeStyle(accent), textTransform: 'uppercase' }}>{swap.input_asset ?? '--'}</span>
+            <span style={{ color: '#64748b', fontWeight: 700 }}>to</span>
+            <span style={{ ...badgeStyle('#2563eb'), textTransform: 'uppercase' }}>{swap.output_asset ?? '--'}</span>
+          </div>
 
-      {/* Asset pair */}
-      <div style={{ marginTop: 4, display: 'flex', alignItems: 'center', gap: 6 }}>
-        <span style={{ color: '#f8fafc', fontWeight: 600 }}>{swap.input_asset ?? '—'}</span>
-        <span style={{ color: '#64748b' }}>→</span>
-        <span style={{ color: '#f8fafc', fontWeight: 600 }}>{swap.output_asset ?? '—'}</span>
-      </div>
+          {(swap.input_amount !== undefined || swap.output_amount !== undefined) && (
+            <div style={{ color: '#334155', fontSize: 12, marginTop: 10 }}>
+              {[
+                formatNative(swap.input_amount, swap.input_asset) ?? '--',
+                formatNative(swap.output_amount, swap.output_asset) ?? '--',
+              ].join(' -> ')}
+            </div>
+          )}
 
-      {/* Exchange rate */}
-      {swap.exchange_rate !== undefined && (
-        <div style={{ color: '#64748b', fontSize: 9, marginTop: 2 }}>
-          rate {swap.exchange_rate.toFixed(6)}
+          {swap.exchange_rate !== undefined && (
+            <div style={{ color: '#64748b', fontSize: 11, marginTop: 5 }}>
+              rate {swap.exchange_rate.toFixed(6)}
+            </div>
+          )}
         </div>
-      )}
-
-      {/* Amounts */}
-      {(swap.input_amount !== undefined || swap.output_amount !== undefined) && (
-        <div style={{ color: '#94a3b8', fontSize: 9, marginTop: 1 }}>
-          {swap.input_amount?.toFixed(4)} → {swap.output_amount?.toFixed(4)}
-        </div>
-      )}
+      </div>
 
       <Handle type="source" position={Position.Right} />
     </div>

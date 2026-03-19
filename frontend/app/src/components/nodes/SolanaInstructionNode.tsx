@@ -6,10 +6,23 @@
  */
 
 import { Handle, Position, type NodeProps } from '@xyflow/react';
+
 import type { InvestigationNode, SolanaInstructionData } from '../../types/graph';
+import {
+  DEFAULT_GRAPH_APPEARANCE,
+  type GraphAppearanceState,
+} from '../graphAppearance';
+import {
+  badgeStyle,
+  GraphGlyph,
+  glyphSurfaceStyle,
+  nodeAccentColor,
+  nodeGlyphKind,
+} from '../graphVisuals';
 
 interface SolanaNodeData extends InvestigationNode {
   branch_color: string;
+  appearance?: GraphAppearanceState;
 }
 
 const DECODE_COLORS: Record<string, string> = {
@@ -39,56 +52,57 @@ export default function SolanaInstructionNode({ data: rawData }: NodeProps) {
   const ix = data.node_data as SolanaInstructionData;
   const decodeStatus = ix.decode_status ?? 'unknown';
   const decodeColor = DECODE_COLORS[decodeStatus] ?? DECODE_COLORS.unknown;
+  const appearance = data.appearance ?? DEFAULT_GRAPH_APPEARANCE;
+  const accent = nodeAccentColor(data, appearance, '#9945ff');
 
   return (
     <div
       style={{
-        border: `2px solid #9945ff`,
-        borderRadius: 8,
-        background: '#0d0e1a',
-        color: '#f1f5f9',
-        padding: '6px 10px',
-        minWidth: 160,
+        border: `1px solid ${accent}55`,
+        borderRadius: 18,
+        background: 'rgba(255,255,255,0.97)',
+        color: '#0f172a',
+        padding: '14px 16px',
+        minWidth: 220,
         fontSize: 11,
+        boxShadow: '0 14px 28px rgba(15, 23, 42, 0.08)',
+        fontFamily: '"IBM Plex Sans", "Segoe UI", sans-serif',
       }}
     >
       <Handle type="target" position={Position.Left} />
+      <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+        {appearance.showEntityIcons && (
+          <div style={glyphSurfaceStyle(accent)}>
+            <GraphGlyph kind={nodeGlyphKind(data)} accent={accent} />
+          </div>
+        )}
+        <div style={{ flex: 1 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
+            <div style={{ color: '#64748b', fontSize: 10, fontWeight: 800, letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+              Solana instruction
+            </div>
+            <span style={badgeStyle(decodeColor)} title={`Decode: ${decodeStatus}`}>
+              {decodeStatus.toUpperCase()}
+            </span>
+          </div>
+          <div style={{ color: accent, fontWeight: 700, fontSize: 15, marginTop: 6 }}>
+            {displayProgram(ix)}
+          </div>
 
-      {/* Program name + decode status */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <span style={{ color: '#9945ff', fontWeight: 700, fontSize: 12 }}>
-          {displayProgram(ix)}
-        </span>
-        <span
-          style={{
-            background: decodeColor,
-            color: '#fff',
-            borderRadius: 3,
-            padding: '1px 4px',
-            fontSize: 8,
-            fontFamily: 'sans-serif',
-            fontWeight: 700,
-          }}
-          title={`Decode: ${decodeStatus}`}
-        >
-          {decodeStatus.toUpperCase()}
-        </span>
+          {ix.instruction_type && (
+            <div style={{ color: '#334155', marginTop: 8, fontSize: 12 }}>
+              {ix.instruction_type}
+            </div>
+          )}
+
+          {ix.decoded_args && (
+            <div style={{ color: '#64748b', marginTop: 6, fontSize: 11 }}>
+              {Object.keys(ix.decoded_args).slice(0, 3).join(' · ')}
+              {Object.keys(ix.decoded_args).length > 3 && ' ...'}
+            </div>
+          )}
+        </div>
       </div>
-
-      {/* Instruction type */}
-      {ix.instruction_type && (
-        <div style={{ color: '#94a3b8', marginTop: 3, fontSize: 10 }}>
-          {ix.instruction_type}
-        </div>
-      )}
-
-      {/* Decoded args summary */}
-      {ix.decoded_args && (
-        <div style={{ color: '#64748b', marginTop: 2, fontSize: 9 }}>
-          {Object.keys(ix.decoded_args).slice(0, 3).join(' · ')}
-          {Object.keys(ix.decoded_args).length > 3 && ' …'}
-        </div>
-      )}
 
       <Handle type="source" position={Position.Right} />
     </div>

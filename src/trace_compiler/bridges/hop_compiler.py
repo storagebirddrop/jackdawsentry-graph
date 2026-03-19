@@ -27,6 +27,7 @@ from typing import Tuple
 from src.trace_compiler.lineage import edge_id as mk_edge_id
 from src.trace_compiler.lineage import lineage_id as mk_lineage
 from src.trace_compiler.lineage import node_id as mk_node_id
+from src.trace_compiler.models import ActivitySummary
 from src.trace_compiler.models import BridgeHopData
 from src.trace_compiler.models import InvestigationEdge
 from src.trace_compiler.models import InvestigationNode
@@ -109,6 +110,7 @@ class BridgeHopCompiler:
                 time_delta_seconds,
                 correlation_confidence,
                 status,
+                order_id,
                 destination_tx_hash,
                 destination_address
             FROM bridge_correlations
@@ -171,6 +173,8 @@ class BridgeHopCompiler:
             time_delta = correlation.get("time_delta_seconds")
             conf = float(correlation.get("correlation_confidence") or 1.0)
             is_same = source_asset == dest_asset
+            destination_tx_hash = correlation.get("destination_tx_hash")
+            order_id = correlation.get("order_id")
         else:
             status = "pending"
             dest_chain = None
@@ -181,6 +185,8 @@ class BridgeHopCompiler:
             time_delta = None
             conf = 0.5
             is_same = False
+            destination_tx_hash = None
+            order_id = None
 
         dest_label = f"→{dest_chain.upper()}" if dest_chain else "→pending"
         display_label = f"{protocol.display_name} {dest_label}"
@@ -216,6 +222,25 @@ class BridgeHopCompiler:
                 correlation_conf=conf,
                 status=status,
                 is_same_asset=is_same,
+            ),
+            activity_summary=ActivitySummary(
+                activity_type="bridge",
+                title=f"{protocol.display_name} bridge hop",
+                protocol_id=protocol.protocol_id,
+                protocol_type="bridge",
+                tx_hash=tx_hash,
+                tx_chain=source_chain,
+                status=status,
+                source_chain=source_chain,
+                destination_chain=dest_chain,
+                source_tx_hash=tx_hash,
+                destination_tx_hash=destination_tx_hash,
+                order_id=order_id,
+                source_asset=source_asset,
+                destination_asset=dest_asset,
+                source_amount=source_amount,
+                destination_amount=dest_amount,
+                route_summary=f"{source_chain} -> {dest_chain}" if dest_chain else f"{source_chain} -> pending",
             ),
         )
 
@@ -261,7 +286,7 @@ class BridgeHopCompiler:
     def build_edges(
         self,
         source_node_id: str,
-        hop_node_id: str,
+        hop_node: InvestigationNode,
         dest_node: Optional[InvestigationNode],
         branch_id: str,
         path_id: str,
@@ -277,7 +302,7 @@ class BridgeHopCompiler:
 
         Args:
             source_node_id:    Node ID of the expanding seed address.
-            hop_node_id:       Node ID of the BridgeHop node.
+            hop_node:          BridgeHop node carrying the resolved activity summary.
             dest_node:         Destination-side address node, or None.
             branch_id:         Branch ID for lineage.
             path_id:           Path ID for lineage.
@@ -297,9 +322,9 @@ class BridgeHopCompiler:
         # Source → BridgeHop
         edges.append(
             InvestigationEdge(
-                edge_id=mk_edge_id(source_node_id, hop_node_id, branch_id, tx_hash),
+                edge_id=mk_edge_id(source_node_id, hop_node.node_id, branch_id, tx_hash),
                 source_node_id=source_node_id,
-                target_node_id=hop_node_id,
+                target_node_id=hop_node.node_id,
                 branch_id=branch_id,
                 path_id=path_id,
                 edge_type="bridge_source",
@@ -311,6 +336,25 @@ class BridgeHopCompiler:
                 tx_chain=source_chain,
                 timestamp=timestamp,
                 direction="forward",
+                activity_summary=ActivitySummary(
+                    activity_type="bridge",
+                    title="Bridge ingress",
+                    protocol_id=hop_node.activity_summary.protocol_id if hop_node.activity_summary else None,
+                    protocol_type="bridge",
+                    tx_hash=tx_hash or None,
+                    tx_chain=source_chain,
+                    timestamp=timestamp,
+                    direction="forward",
+                    source_chain=source_chain,
+                    destination_chain=dest_node.chain if dest_node else None,
+                    source_tx_hash=tx_hash or None,
+                    destination_tx_hash=hop_node.activity_summary.destination_tx_hash if hop_node.activity_summary else None,
+                    order_id=hop_node.activity_summary.order_id if hop_node.activity_summary else None,
+                    asset_symbol=asset_symbol,
+                    canonical_asset_id=canonical_asset_id,
+                    value_native=value_native,
+                    value_fiat=value_fiat,
+                ),
             )
         )
 
@@ -319,9 +363,9 @@ class BridgeHopCompiler:
             edges.append(
                 InvestigationEdge(
                     edge_id=mk_edge_id(
-                        hop_node_id, dest_node.node_id, branch_id, tx_hash
+                        hop_node.node_id, dest_node.node_id, branch_id, tx_hash
                     ),
-                    source_node_id=hop_node_id,
+                    source_node_id=hop_node.node_id,
                     target_node_id=dest_node.node_id,
                     branch_id=branch_id,
                     path_id=path_id,
@@ -334,6 +378,20 @@ class BridgeHopCompiler:
                     tx_chain=dest_node.chain,
                     timestamp=timestamp,
                     direction="forward",
+                    activity_summary=ActivitySummary(
+                        activity_type="bridge",
+                        title="Bridge egress",
+                        protocol_type="bridge",
+                        tx_hash=None,
+                        tx_chain=dest_node.chain,
+                        timestamp=timestamp,
+                        direction="forward",
+                        source_chain=source_chain,
+                        destination_chain=dest_node.chain,
+                        source_tx_hash=tx_hash or None,
+                        destination_tx_hash=hop_node.activity_summary.destination_tx_hash if hop_node.activity_summary else None,
+                        order_id=hop_node.activity_summary.order_id if hop_node.activity_summary else None,
+                    ),
                 )
             )
 
@@ -402,7 +460,7 @@ class BridgeHopCompiler:
 
         edges = self.build_edges(
             source_node_id=seed_node_id,
-            hop_node_id=hop_node.node_id,
+            hop_node=hop_node,
             dest_node=dest_node,
             branch_id=branch_id,
             path_id=path_id,

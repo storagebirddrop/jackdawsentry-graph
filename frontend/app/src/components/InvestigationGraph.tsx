@@ -10,16 +10,18 @@
  * - Opens the bridge hop side drawer on BridgeHopNode click.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ReactFlow,
   Background,
+  BackgroundVariant,
   Controls,
   MiniMap,
   useNodesState,
   useEdgesState,
   type Node,
   type Edge,
+  type EdgeMouseHandler,
   type NodeMouseHandler,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
@@ -27,7 +29,7 @@ import '@xyflow/react/dist/style.css';
 import { useGraphStore } from '../store/graphStore';
 import { expandNode } from '../api/client';
 import { computeElkLayout } from '../layout/elkLayout';
-import type { ExpandRequest, BridgeHopData } from '../types/graph';
+import type { ExpandRequest, InvestigationNode } from '../types/graph';
 
 import AddressNode from './nodes/AddressNode';
 import EntityNode from './nodes/EntityNode';
@@ -37,7 +39,14 @@ import UTXONode from './nodes/UTXONode';
 import SolanaInstructionNode from './nodes/SolanaInstructionNode';
 import SwapEventNode from './nodes/SwapEventNode';
 import FilterPanel, { type FilterState, DEFAULT_FILTERS } from './FilterPanel';
-import BridgeHopDrawer from './BridgeHopDrawer';
+import GraphAppearancePanel from './GraphAppearancePanel';
+import GraphInspectorPanel from './GraphInspectorPanel';
+import InvestigationEdgeComponent from './edges/InvestigationEdge';
+import {
+  DEFAULT_GRAPH_APPEARANCE,
+  type GraphAppearanceState,
+} from './graphAppearance';
+import { isNodeVisibleInView } from './graphVisuals';
 
 const NODE_TYPES = {
   address: AddressNode,
@@ -48,6 +57,10 @@ const NODE_TYPES = {
   swap_event: SwapEventNode,
   service: EntityNode,
   solana_instruction: SolanaInstructionNode,
+};
+
+const EDGE_TYPES = {
+  investigation: InvestigationEdgeComponent,
 };
 
 const NODE_OVERLOAD_THRESHOLD = 500;
@@ -61,16 +74,25 @@ function applyFilters(
   nodes: Node[],
   edges: Edge[],
   filters: FilterState,
+  appearance: GraphAppearanceState,
 ): { nodes: Node[]; edges: Edge[] } {
-  let visibleNodes = nodes;
+  let visibleNodes = nodes.filter((node) => {
+    const data = node.data as unknown as InvestigationNode;
+    return isNodeVisibleInView(data, appearance.viewMode);
+  });
   let visibleEdges = edges;
+
+  let visibleIds = new Set(visibleNodes.map((n) => n.id));
+  visibleEdges = visibleEdges.filter(
+    (e) => visibleIds.has(e.source) && visibleIds.has(e.target),
+  );
 
   if (filters.chainFilter.length > 0) {
     visibleNodes = visibleNodes.filter((n) => {
       const chain = (n.data as Record<string, unknown>)?.chain as string | undefined;
       return !chain || filters.chainFilter.includes(chain);
     });
-    const visibleIds = new Set(visibleNodes.map((n) => n.id));
+    visibleIds = new Set(visibleNodes.map((n) => n.id));
     visibleEdges = visibleEdges.filter(
       (e) => visibleIds.has(e.source) && visibleIds.has(e.target),
     );
@@ -81,7 +103,7 @@ function applyFilters(
       const depth = (n.data as Record<string, unknown>)?.depth as number | undefined;
       return depth === undefined || depth <= filters.maxDepth;
     });
-    const visibleIds = new Set(visibleNodes.map((n) => n.id));
+    visibleIds = new Set(visibleNodes.map((n) => n.id));
     visibleEdges = visibleEdges.filter(
       (e) => visibleIds.has(e.source) && visibleIds.has(e.target),
     );
@@ -123,18 +145,17 @@ export default function InvestigationGraph({ sessionId }: Props) {
 
   const [filters, setFilters] = useState<FilterState>(DEFAULT_FILTERS);
   const [filterVisible, setFilterVisible] = useState(false);
-
-  const [selectedBridgeNode, setSelectedBridgeNode] = useState<{
-    nodeId: string;
-    hopData: BridgeHopData;
-  } | null>(null);
+  const [appearance, setAppearance] = useState<GraphAppearanceState>(DEFAULT_GRAPH_APPEARANCE);
+  const [appearanceVisible, setAppearanceVisible] = useState(false);
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
 
   // Keep local RF state in sync with store, applying current filters
   useEffect(() => {
-    const { nodes: fn, edges: fe } = applyFilters(rfNodes, rfEdges, filters);
+    const { nodes: fn, edges: fe } = applyFilters(rfNodes, rfEdges, filters, appearance);
     setNodes(fn);
     setEdges(fe);
-  }, [rfNodes, rfEdges, filters, setNodes, setEdges]);
+  }, [rfNodes, rfEdges, filters, appearance, setNodes, setEdges]);
 
   // Incremental ELK layout: only newly added nodes are placed freely.
   // Nodes that have already been laid out are passed to ELK as fixed-position
@@ -201,14 +222,14 @@ export default function InvestigationGraph({ sessionId }: Props) {
     [sessionId, rfNodes.length, expandingNodeIds, setExpandingNode, applyExpansionDelta],
   );
 
-  // Open bridge drawer on BridgeHopNode click
   const handleNodeClick: NodeMouseHandler = useCallback((_evt, node) => {
-    if (node.type === 'bridge_hop') {
-      const nodeData = node.data as Record<string, unknown> | undefined;
-      if (nodeData && nodeData.node_data != null) {
-        setSelectedBridgeNode({ nodeId: node.id, hopData: nodeData.node_data as BridgeHopData });
-      }
-    }
+    setSelectedNodeId(node.id);
+    setSelectedEdgeId(null);
+  }, []);
+
+  const handleEdgeClick: EdgeMouseHandler = useCallback((_evt, edge) => {
+    setSelectedEdgeId(edge.id);
+    setSelectedNodeId(null);
   }, []);
 
   // Inject expand handlers into node data
@@ -219,28 +240,69 @@ export default function InvestigationGraph({ sessionId }: Props) {
       onExpandNext: () => handleExpand(n.id, 'expand_next'),
       onExpandPrev: () => handleExpand(n.id, 'expand_prev'),
       isExpanding: expandingNodeIds.has(n.id),
+      appearance,
     },
   }));
 
+  const enrichedEdges = edges.map((edge) => ({
+    ...edge,
+    data: {
+      ...(edge.data as Record<string, unknown>),
+      appearance,
+    },
+  }));
+
+  const selectedNode = useMemo(
+    () => enrichedNodes.find((node) => node.id === selectedNodeId) ?? null,
+    [enrichedNodes, selectedNodeId],
+  );
+  const selectedEdge = useMemo(
+    () => enrichedEdges.find((edge) => edge.id === selectedEdgeId) ?? null,
+    [enrichedEdges, selectedEdgeId],
+  );
+
   return (
-    <div style={{ width: '100%', height: '100vh', background: '#0f172a', position: 'relative' }}>
+    <div
+      style={{
+        width: '100%',
+        height: '100vh',
+        background:
+          'radial-gradient(circle at top left, rgba(191,219,254,0.28), transparent 30%), linear-gradient(180deg, #f8fafc 0%, #eef2ff 100%)',
+        position: 'relative',
+      }}
+    >
 
       {/* Toolbar */}
       <div
         style={{
           position: 'absolute',
-          top: 12,
-          left: 12,
+          top: 16,
+          left: 16,
           zIndex: 100,
           display: 'flex',
-          gap: 8,
+          gap: 10,
+          alignItems: 'center',
+          flexWrap: 'wrap',
         }}
       >
         <button
-          onClick={() => setFilterVisible((v) => !v)}
+          onClick={() => {
+            setAppearanceVisible(false);
+            setFilterVisible((v) => !v);
+          }}
           style={toolbarBtnStyle}
         >
-          Filters {filters.chainFilter.length + (filters.minFiatValue !== null && filters.minFiatValue > 0 ? 1 : 0) > 0 ? '●' : ''}
+          Filters
+          {filters.chainFilter.length + (filters.minFiatValue !== null && filters.minFiatValue > 0 ? 1 : 0) > 0 ? ' •' : ''}
+        </button>
+        <button
+          onClick={() => {
+            setFilterVisible(false);
+            setAppearanceVisible((v) => !v);
+          }}
+          style={toolbarBtnStyle}
+        >
+          Appearance
         </button>
         <button
           onClick={() => {
@@ -256,10 +318,10 @@ export default function InvestigationGraph({ sessionId }: Props) {
           style={toolbarBtnStyle}
           title="Save session snapshot"
         >
-          Save
+          Export
         </button>
         <label style={{ ...toolbarBtnStyle, cursor: 'pointer' }} title="Restore session snapshot">
-          Restore
+          Import
           <input
             type="file"
             accept=".json"
@@ -280,7 +342,13 @@ export default function InvestigationGraph({ sessionId }: Props) {
             }}
           />
         </label>
-        <span style={{ color: '#475569', fontSize: 11, alignSelf: 'center' }}>
+        <span style={toolbarPillStyle}>
+          {appearance.viewMode} view
+        </span>
+        <span style={toolbarPillStyle}>
+          {appearance.interactionMode} mode
+        </span>
+        <span style={{ color: '#475569', fontSize: 12, alignSelf: 'center', fontWeight: 600 }}>
           {rfNodes.length} nodes · {rfEdges.length} edges
         </span>
       </div>
@@ -292,46 +360,81 @@ export default function InvestigationGraph({ sessionId }: Props) {
         visible={filterVisible}
         onClose={() => setFilterVisible(false)}
       />
+      <GraphAppearancePanel
+        appearance={appearance}
+        visible={appearanceVisible}
+        onClose={() => setAppearanceVisible(false)}
+        onChange={setAppearance}
+      />
 
       <ReactFlow
         nodes={enrichedNodes}
-        edges={edges}
+        edges={enrichedEdges}
         nodeTypes={NODE_TYPES}
+        edgeTypes={EDGE_TYPES}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onNodeClick={handleNodeClick}
+        onEdgeClick={handleEdgeClick}
+        onPaneClick={() => {
+          setSelectedNodeId(null);
+          setSelectedEdgeId(null);
+        }}
         fitView
         minZoom={0.1}
-        maxZoom={2}
+        maxZoom={2.2}
+        panOnDrag={appearance.interactionMode === 'grab'}
+        nodesDraggable={appearance.interactionMode === 'move'}
+        selectionOnDrag={appearance.interactionMode === 'move'}
       >
-        <Background color="#1e293b" gap={24} />
+        {appearance.showGrid && (
+          <Background color="#cbd5e1" gap={24} size={1.25} variant={BackgroundVariant.Dots} />
+        )}
         <Controls />
-        <MiniMap
-          nodeColor={(n) => (n.data as { branch_color?: string }).branch_color ?? '#3b82f6'}
-          style={{ background: '#1e293b' }}
-        />
+        {appearance.showMiniMap && (
+          <MiniMap
+            nodeColor={(n) => (n.data as { branch_color?: string }).branch_color ?? '#3b82f6'}
+            style={{
+              background: 'rgba(255,255,255,0.94)',
+              border: '1px solid rgba(148, 163, 184, 0.4)',
+            }}
+            maskColor="rgba(226,232,240,0.65)"
+          />
+        )}
       </ReactFlow>
 
-      {/* Bridge hop side drawer */}
-      {selectedBridgeNode && (
-        <BridgeHopDrawer
-          sessionId={sessionId}
-          nodeId={selectedBridgeNode.nodeId}
-          hopData={selectedBridgeNode.hopData}
-          onClose={() => setSelectedBridgeNode(null)}
-        />
-      )}
+      <GraphInspectorPanel
+        node={selectedNode}
+        edge={selectedEdge}
+        onClose={() => {
+          setSelectedNodeId(null);
+          setSelectedEdgeId(null);
+        }}
+      />
     </div>
   );
 }
 
 const toolbarBtnStyle: React.CSSProperties = {
-  padding: '4px 12px',
-  background: '#1e293b',
-  border: '1px solid #334155',
-  borderRadius: 5,
-  color: '#94a3b8',
-  fontSize: 11,
+  padding: '8px 14px',
+  background: 'rgba(255,255,255,0.9)',
+  border: '1px solid rgba(148, 163, 184, 0.4)',
+  borderRadius: 999,
+  color: '#0f172a',
+  fontSize: 12,
+  fontWeight: 700,
   cursor: 'pointer',
-  fontFamily: 'sans-serif',
+  fontFamily: '"IBM Plex Sans", "Segoe UI", sans-serif',
+  boxShadow: '0 8px 24px rgba(15, 23, 42, 0.08)',
+};
+
+const toolbarPillStyle: React.CSSProperties = {
+  padding: '7px 12px',
+  borderRadius: 999,
+  background: 'rgba(219, 234, 254, 0.9)',
+  border: '1px solid rgba(96, 165, 250, 0.36)',
+  color: '#1d4ed8',
+  fontSize: 12,
+  fontWeight: 700,
+  textTransform: 'capitalize',
 };
