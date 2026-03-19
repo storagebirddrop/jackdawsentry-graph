@@ -43,6 +43,7 @@ from src.trace_compiler.models import BtcSidechainPegData
 from src.trace_compiler.models import ExpandOptions
 from src.trace_compiler.models import InvestigationEdge
 from src.trace_compiler.models import InvestigationNode
+from src.trace_compiler.models import LightningChannelCloseData
 from src.trace_compiler.models import LightningChannelOpenData
 from src.api.config import settings
 
@@ -112,6 +113,9 @@ class UTXOChainCompiler(BaseChainCompiler):
         lightning_channel_opens = await self._fetch_lightning_channel_open_events(
             rows, chain=chain, direction="forward"
         )
+        lightning_channel_closes = await self._fetch_lightning_channel_close_events(
+            rows, chain=chain, direction="forward"
+        )
         sidechain_peg_events = self._match_sidechain_peg_events(
             rows, chain=chain, direction="forward"
         )
@@ -127,6 +131,7 @@ class UTXOChainCompiler(BaseChainCompiler):
             direction="forward",
             options=options,
             lightning_channel_opens=lightning_channel_opens,
+            lightning_channel_closes=lightning_channel_closes,
             sidechain_peg_events=sidechain_peg_events,
         )
 
@@ -155,6 +160,9 @@ class UTXOChainCompiler(BaseChainCompiler):
         lightning_channel_opens = await self._fetch_lightning_channel_open_events(
             rows, chain=chain, direction="backward"
         )
+        lightning_channel_closes = await self._fetch_lightning_channel_close_events(
+            rows, chain=chain, direction="backward"
+        )
         sidechain_peg_events = self._match_sidechain_peg_events(
             rows, chain=chain, direction="backward"
         )
@@ -170,6 +178,7 @@ class UTXOChainCompiler(BaseChainCompiler):
             direction="backward",
             options=options,
             lightning_channel_opens=lightning_channel_opens,
+            lightning_channel_closes=lightning_channel_closes,
             sidechain_peg_events=sidechain_peg_events,
         )
 
@@ -452,6 +461,91 @@ class UTXOChainCompiler(BaseChainCompiler):
 
         return events
 
+    async def _fetch_lightning_channel_close_events(
+        self,
+        rows: List[Dict[str, Any]],
+        chain: str,
+        direction: str,
+    ) -> Dict[str, Dict[str, Any]]:
+        """Return Lightning channel-close metadata keyed by Bitcoin close tx hash."""
+        if direction != "backward" or chain != "bitcoin" or self._neo4j is None:
+            return {}
+
+        close_tx_hashes = list(
+            {
+                str(row.get("tx_hash"))
+                for row in rows
+                if row.get("tx_hash")
+            }
+        )
+        if not close_tx_hashes:
+            return {}
+
+        cypher = """
+            MATCH (c:LightningChannel)-[:CLOSED_BY]->(t:Transaction {blockchain: 'lightning'})
+            WHERE t.hash IN $close_tx_hashes
+            OPTIONAL MATCH (local:LightningNode)-[:CHANNEL {channel_id: c.channel_id}]->(remote:LightningNode)
+            RETURN
+                t.hash AS close_tx_hash,
+                c.channel_id AS channel_id,
+                c.close_type AS close_type,
+                c.settled_balance AS settled_balance_sats,
+                c.status AS status,
+                local.pubkey AS local_pubkey,
+                local.alias AS local_alias,
+                remote.pubkey AS remote_pubkey,
+                remote.alias AS remote_alias
+        """
+
+        try:
+            async with self._neo4j.session() as session:
+                result = await session.run(cypher, close_tx_hashes=close_tx_hashes)
+                records = [dict(record) async for record in result]
+        except Exception as exc:
+            logger.debug(
+                "UTXOChainCompiler._fetch_lightning_channel_close_events failed: %s",
+                exc,
+            )
+            return {}
+
+        events: Dict[str, Dict[str, Any]] = {}
+        for record in records:
+            close_tx_hash = record.get("close_tx_hash")
+            channel_id = record.get("channel_id")
+            if not close_tx_hash or not channel_id:
+                continue
+
+            settled_balance_sats = record.get("settled_balance_sats")
+            try:
+                settled_btc = float(settled_balance_sats or 0) / 1e8
+            except (TypeError, ValueError):
+                settled_btc = 0.0
+
+            local_alias = record.get("local_alias")
+            remote_alias = record.get("remote_alias")
+            local_pubkey = record.get("local_pubkey")
+            remote_pubkey = record.get("remote_pubkey")
+            peer_summary = " <-> ".join(
+                part
+                for part in [local_alias or local_pubkey, remote_alias or remote_pubkey]
+                if part
+            )
+
+            events[str(close_tx_hash)] = {
+                "channel_id": str(channel_id),
+                "close_tx_hash": str(close_tx_hash),
+                "close_type": str(record.get("close_type") or "unknown").lower(),
+                "settled_btc": settled_btc,
+                "local_pubkey": local_pubkey,
+                "remote_pubkey": remote_pubkey,
+                "local_alias": local_alias,
+                "remote_alias": remote_alias,
+                "status": record.get("status") or "closed",
+                "peer_summary": peer_summary or "Lightning channel",
+            }
+
+        return events
+
     def _match_sidechain_peg_events(
         self,
         rows: List[Dict[str, Any]],
@@ -533,6 +627,7 @@ class UTXOChainCompiler(BaseChainCompiler):
         direction: str,
         options: ExpandOptions,
         lightning_channel_opens: Optional[Dict[str, Dict[str, Any]]] = None,
+        lightning_channel_closes: Optional[Dict[str, Dict[str, Any]]] = None,
         sidechain_peg_events: Optional[Dict[str, Dict[str, Any]]] = None,
     ) -> Tuple[List[InvestigationNode], List[InvestigationEdge]]:
         """Convert UTXO transfer rows into InvestigationNodes and edges.
@@ -601,6 +696,7 @@ class UTXOChainCompiler(BaseChainCompiler):
         seen_nodes: Dict[str, InvestigationNode] = {}
         edges: List[InvestigationEdge] = []
         lightning_channel_opens = lightning_channel_opens or {}
+        lightning_channel_closes = lightning_channel_closes or {}
         sidechain_peg_events = sidechain_peg_events or {}
 
         for row in rows:
@@ -621,6 +717,11 @@ class UTXOChainCompiler(BaseChainCompiler):
                 if direction == "forward" and funding_ref
                 else None
             )
+            channel_close = (
+                lightning_channel_closes.get(tx_hash)
+                if direction == "backward" and tx_hash
+                else None
+            )
             sidechain_peg = sidechain_peg_events.get(funding_ref) if funding_ref else None
             value_sats: Optional[int] = row.get("value_satoshis")
             value_btc: Optional[float] = (
@@ -632,9 +733,13 @@ class UTXOChainCompiler(BaseChainCompiler):
                 f"lightning_channel_open:{funding_ref}"
                 if channel_open and funding_ref
                 else (
-                    f"btc_sidechain_peg:{sidechain_peg['direction']}:{funding_ref}"
-                    if sidechain_peg and funding_ref
-                    else counterparty
+                    f"lightning_channel_close:{tx_hash}"
+                    if channel_close and tx_hash
+                    else (
+                        f"btc_sidechain_peg:{sidechain_peg['direction']}:{funding_ref}"
+                        if sidechain_peg and funding_ref
+                        else counterparty
+                    )
                 )
             )
 
@@ -687,6 +792,54 @@ class UTXOChainCompiler(BaseChainCompiler):
                             asset_symbol="BTC",
                             canonical_asset_id="btc",
                             value_native=float(channel_open.get("capacity_btc") or 0.0),
+                            route_summary=peer_summary,
+                        ),
+                    )
+                elif channel_close and tx_hash:
+                    peer_summary = channel_close.get("peer_summary") or "Lightning channel"
+                    display_sublabel = (
+                        f"{channel_close['settled_btc']:.6f} BTC"
+                        if channel_close.get("settled_btc") is not None
+                        else None
+                    )
+                    node = InvestigationNode(
+                        node_id=mk_node_id(
+                            "lightning", "lightning_channel_close", tx_hash
+                        ),
+                        lineage_id=_lineage,
+                        node_type="lightning_channel_close",
+                        branch_id=branch_id,
+                        path_id=_path,
+                        depth=depth + 1,
+                        display_label="Channel Close",
+                        display_sublabel=display_sublabel,
+                        chain="lightning",
+                        expandable_directions=[],
+                        lightning_channel_close_data=LightningChannelCloseData(
+                            channel_id=channel_close["channel_id"],
+                            close_tx_hash=channel_close["close_tx_hash"],
+                            close_type=channel_close.get("close_type") or "unknown",
+                            settled_btc=float(channel_close.get("settled_btc") or 0.0),
+                            local_pubkey=channel_close.get("local_pubkey"),
+                            remote_pubkey=channel_close.get("remote_pubkey"),
+                            local_alias=channel_close.get("local_alias"),
+                            remote_alias=channel_close.get("remote_alias"),
+                            status=channel_close.get("status") or "closed",
+                        ),
+                        activity_summary=ActivitySummary(
+                            activity_type="lightning_channel_close",
+                            title="Lightning channel close",
+                            protocol_id="lightning",
+                            protocol_type="channel_close",
+                            tx_hash=tx_hash,
+                            tx_chain="bitcoin",
+                            status=channel_close.get("status") or "closed",
+                            source_chain="lightning",
+                            destination_chain="bitcoin",
+                            destination_tx_hash=tx_hash,
+                            asset_symbol="BTC",
+                            canonical_asset_id="btc",
+                            value_native=float(channel_close.get("settled_btc") or 0.0),
                             route_summary=peer_summary,
                         ),
                     )

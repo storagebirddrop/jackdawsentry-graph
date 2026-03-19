@@ -373,6 +373,55 @@ async def test_expand_next_emits_lightning_channel_open_node_for_funding_output(
 
 
 @pytest.mark.asyncio
+async def test_expand_prev_emits_lightning_channel_close_node_for_close_tx():
+    compiler = UTXOChainCompiler()
+    row = _normal_row(counterparty=ADDR_1, tx_hash=TX_1, value_sats=91180)
+    row["output_index"] = 0
+
+    compiler._fetch_inbound_event_store = AsyncMock(return_value=[row])
+    compiler._fetch_lightning_channel_open_events = AsyncMock(return_value={})
+    compiler._fetch_lightning_channel_close_events = AsyncMock(
+        return_value={
+            TX_1: {
+                "channel_id": "695713783583145985",
+                "close_tx_hash": TX_1,
+                "close_type": "cooperative",
+                "settled_btc": 0.0009118,
+                "local_pubkey": "LOCALNODE",
+                "remote_pubkey": "REMOTENODE",
+                "local_alias": "Local",
+                "remote_alias": "Remote",
+                "status": "closed",
+                "peer_summary": "Local <-> Remote",
+            }
+        }
+    )
+
+    nodes, edges = await compiler.expand_prev(
+        session_id="session-close",
+        branch_id="branch-1",
+        path_sequence=0,
+        depth=0,
+        seed_address=SEED,
+        chain="bitcoin",
+        options=_opts(),
+    )
+
+    assert len(nodes) == 1
+    assert len(edges) == 1
+    node = nodes[0]
+    assert node.node_type == "lightning_channel_close"
+    assert node.chain == "lightning"
+    assert node.lightning_channel_close_data is not None
+    assert node.lightning_channel_close_data.channel_id == "695713783583145985"
+    assert node.lightning_channel_close_data.close_tx_hash == TX_1
+    assert node.activity_summary is not None
+    assert node.activity_summary.activity_type == "lightning_channel_close"
+    assert node.activity_summary.source_chain == "lightning"
+    assert node.activity_summary.destination_chain == "bitcoin"
+
+
+@pytest.mark.asyncio
 async def test_expand_next_emits_sidechain_peg_in_node_for_known_peg_address():
     compiler = UTXOChainCompiler()
     compiler._sidechain_peg_hints = {

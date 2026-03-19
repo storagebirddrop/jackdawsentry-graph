@@ -310,8 +310,10 @@ class LightningMonitor:
                 # Store in Neo4j
                 await self.store_channel(channel_info)
 
+            closed_channels = await self.update_closed_channels()
+
             # Update metrics
-            self.metrics["channels_monitored"] = len(channels)
+            self.metrics["channels_monitored"] = len(channels) + len(closed_channels)
             self.metrics["network_capacity"] = total_capacity
             self.metrics["last_update"] = datetime.now(timezone.utc)
 
@@ -322,6 +324,37 @@ class LightningMonitor:
 
         except Exception as e:
             logger.error(f"Error updating channels: {e}")
+
+    async def update_closed_channels(self) -> List[Dict[str, Any]]:
+        """Update closed Lightning channels when full LND access is available."""
+        if self.public_mode:
+            return []
+
+        try:
+            import lnrpc
+
+            request = lnrpc.ClosedChannelsRequest()
+            response = await asyncio.get_event_loop().run_in_executor(
+                None, self.lnd_stub.ClosedChannels, request
+            )
+
+            closed_channels: List[Dict[str, Any]] = []
+            for summary in response.channels:
+                channel_info = self._closed_channel_to_channel_info(summary)
+                if not channel_info.get("channel_id") or not channel_info.get("close_tx_hash"):
+                    continue
+
+                closed_channels.append(channel_info)
+                await self.store_channel(channel_info)
+                await self._store_closed_channel_transaction(
+                    channel_info,
+                    self._closed_channel_to_transaction(channel_info),
+                )
+
+            return closed_channels
+        except Exception as e:
+            logger.error(f"Error updating closed channels: {e}")
+            return []
 
     async def _update_public_channels(self):
         """Update channel information using the public Lightning API."""
@@ -380,7 +413,7 @@ class LightningMonitor:
                     await self._store_public_channel_transaction(channel_info, tx)
 
             self.metrics["channels_monitored"] = len(channels)
-            self.metrics["payments_tracked"] = len(channels)
+            self.metrics["payments_tracked"] = 0  # No payments tracked in public mode
             self.metrics["network_capacity"] = total_capacity
             self.metrics["last_update"] = datetime.now(timezone.utc)
 
@@ -465,6 +498,58 @@ class LightningMonitor:
                     return self._parse_dt(int(value), assume_epoch_seconds=assume_epoch_seconds)
         return None
 
+    def _closed_channel_to_channel_info(self, summary: Any) -> Dict[str, Any]:
+        """Project an LND ChannelCloseSummary into channel graph storage shape."""
+        close_type = self._normalize_close_type(getattr(summary, "close_type", None))
+        return {
+            "channel_id": str(getattr(summary, "chan_id", "") or ""),
+            "remote_pubkey": getattr(summary, "remote_pubkey", None),
+            "local_pubkey": self.identity_pubkey,
+            "capacity": int(getattr(summary, "capacity", 0) or 0),
+            "local_balance": int(getattr(summary, "settled_balance", 0) or 0),
+            "remote_balance": int(getattr(summary, "time_locked_balance", 0) or 0),
+            "initiator": getattr(summary, "open_initiator", None),
+            "private": None,
+            "active": False,
+            "last_update": datetime.now(timezone.utc),
+            "close_tx_hash": getattr(summary, "closing_tx_hash", None),
+            "close_type": close_type,
+            "settled_balance_sats": int(getattr(summary, "settled_balance", 0) or 0),
+            "close_height": int(getattr(summary, "close_height", 0) or 0),
+            "status": "closed",
+        }
+
+    def _closed_channel_to_transaction(self, channel_info: Dict[str, Any]) -> Transaction:
+        """Project a closed channel summary into the canonical transaction shape."""
+        settled_sats = int(channel_info.get("settled_balance_sats") or 0)
+        close_tx_hash = channel_info.get("close_tx_hash") or f"lightning-close:{channel_info.get('channel_id')}"
+        return Transaction(
+            hash=close_tx_hash,
+            blockchain="lightning",
+            timestamp=channel_info.get("last_update") or datetime.now(timezone.utc),
+            from_address=channel_info.get("local_pubkey"),
+            to_address=channel_info.get("remote_pubkey"),
+            value=float(settled_sats) / 1e8,
+            block_number=channel_info.get("close_height"),
+            status="closed",
+            confirmations=0,
+            memo=channel_info.get("channel_id"),
+        )
+
+    def _normalize_close_type(self, value: Any) -> str:
+        """Normalize LND close type enums/strings into compact investigator labels."""
+        if value is None:
+            return "unknown"
+        raw = getattr(value, "name", value)
+        text = str(raw).upper()
+        if "COOPERATIVE" in text:
+            return "cooperative"
+        if "FORCE" in text:
+            return "force"
+        if "BREACH" in text:
+            return "breach"
+        return "unknown"
+
     async def _store_public_channel_transaction(
         self, channel_info: Dict[str, Any], tx: Transaction
     ) -> None:
@@ -481,17 +566,17 @@ class LightningMonitor:
         FOREACH (_ IN CASE WHEN $from_address IS NULL THEN [] ELSE [1] END |
             MERGE (from_addr:Address {address: $from_address, blockchain: 'lightning'})
             ON CREATE SET from_addr.first_seen = $timestamp
-            ON MATCH SET from_addr.last_seen = $timestamp,
-                         from_addr.transaction_count = coalesce(from_addr.transaction_count, 0) + 1
-            MERGE (from_addr)-[:SENT {blockchain: 'lightning'}]->(t)
+            ON MATCH SET from_addr.last_seen = $timestamp
+            MERGE (from_addr)-[s:SENT {blockchain: 'lightning'}]->(t)
+            ON CREATE SET from_addr.transaction_count = coalesce(from_addr.transaction_count, 0) + 1
         )
 
         FOREACH (_ IN CASE WHEN $to_address IS NULL THEN [] ELSE [1] END |
             MERGE (to_addr:Address {address: $to_address, blockchain: 'lightning'})
             ON CREATE SET to_addr.first_seen = $timestamp
-            ON MATCH SET to_addr.last_seen = $timestamp,
-                         to_addr.transaction_count = coalesce(to_addr.transaction_count, 0) + 1
-            MERGE (t)-[:RECEIVED {blockchain: 'lightning', value: $value}]->(to_addr)
+            ON MATCH SET to_addr.last_seen = $timestamp
+            MERGE (t)-[r:RECEIVED {blockchain: 'lightning', value: $value}]->(to_addr)
+            ON CREATE SET to_addr.transaction_count = coalesce(to_addr.transaction_count, 0) + 1
         )
 
         MERGE (c:LightningChannel {channel_id: $channel_id})
@@ -510,6 +595,64 @@ class LightningMonitor:
                 from_address=tx.from_address,
                 to_address=tx.to_address,
                 channel_id=channel_info.get("channel_id"),
+            )
+
+        await self._insert_raw_transaction(tx)
+
+    async def _store_closed_channel_transaction(
+        self, channel_info: Dict[str, Any], tx: Transaction
+    ) -> None:
+        """Persist a closed Lightning channel as graph context plus a raw event row."""
+        query = """
+        MERGE (t:Transaction {hash: $tx_hash, blockchain: 'lightning'})
+        SET t.value = $value,
+            t.timestamp = $timestamp,
+            t.block_number = $block_number,
+            t.status = $status,
+            t.memo = $memo,
+            t.close_type = $close_type,
+            t.processed_at = timestamp()
+
+        FOREACH (_ IN CASE WHEN $from_address IS NULL THEN [] ELSE [1] END |
+            MERGE (from_addr:Address {address: $from_address, blockchain: 'lightning'})
+            ON CREATE SET from_addr.first_seen = $timestamp
+            ON MATCH SET from_addr.last_seen = $timestamp
+            MERGE (from_addr)-[:SENT {blockchain: 'lightning'}]->(t)
+        )
+
+        FOREACH (_ IN CASE WHEN $to_address IS NULL THEN [] ELSE [1] END |
+            MERGE (to_addr:Address {address: $to_address, blockchain: 'lightning'})
+            ON CREATE SET to_addr.first_seen = $timestamp
+            ON MATCH SET to_addr.last_seen = $timestamp
+            MERGE (t)-[:RECEIVED {blockchain: 'lightning', value: $value}]->(to_addr)
+        )
+
+        MERGE (c:LightningChannel {channel_id: $channel_id})
+        SET c.active = false,
+            c.status = 'closed',
+            c.close_tx_hash = $tx_hash,
+            c.close_type = $close_type,
+            c.settled_balance = $settled_balance_sats,
+            c.close_height = $close_height,
+            c.updated_at = timestamp()
+        MERGE (c)-[:CLOSED_BY]->(t)
+        """
+
+        async with get_neo4j_session() as session:
+            await session.run(
+                query,
+                tx_hash=tx.hash,
+                value=tx.value,
+                timestamp=tx.timestamp,
+                block_number=tx.block_number,
+                status=tx.status,
+                memo=tx.memo,
+                close_type=channel_info.get("close_type"),
+                from_address=tx.from_address,
+                to_address=tx.to_address,
+                channel_id=channel_info.get("channel_id"),
+                settled_balance_sats=channel_info.get("settled_balance_sats"),
+                close_height=channel_info.get("close_height"),
             )
 
         await self._insert_raw_transaction(tx)
@@ -633,27 +776,21 @@ class LightningMonitor:
         FOREACH (_ IN CASE WHEN $from_address IS NULL THEN [] ELSE [1] END |
             MERGE (from_addr:Address {address: $from_address, blockchain: 'lightning'})
             ON CREATE SET from_addr.first_seen = $creation_time
-            ON MATCH SET from_addr.last_seen = $creation_time,
-                         from_addr.transaction_count = coalesce(from_addr.transaction_count, 0) + 1
+            ON MATCH SET from_addr.last_seen = $creation_time
             MERGE (from_addr)-[:SENT {blockchain: 'lightning'}]->(t)
+            ON CREATE SET from_addr.transaction_count = coalesce(from_addr.transaction_count, 0) + 1
         )
 
         FOREACH (_ IN CASE WHEN $to_address IS NULL THEN [] ELSE [1] END |
             MERGE (to_addr:Address {address: $to_address, blockchain: 'lightning'})
             ON CREATE SET to_addr.first_seen = $creation_time
-            ON MATCH SET to_addr.last_seen = $creation_time,
-                         to_addr.transaction_count = coalesce(to_addr.transaction_count, 0) + 1
+            ON MATCH SET to_addr.last_seen = $creation_time
             MERGE (t)-[:RECEIVED {blockchain: 'lightning', value: $value}]->(to_addr)
+            ON CREATE SET to_addr.transaction_count = coalesce(to_addr.transaction_count, 0) + 1
         )
 
         MERGE (t)-[:LIGHTNING_PAYMENT]->(p)
-        
-        WITH p
-        UNWIND $path AS node_pubkey
-        MATCH (n:LightningNode {pubkey: node_pubkey})
-        MERGE (p)-[r:USES_PATH]->(n)
         """
-
         async with get_neo4j_session() as session:
             await session.run(
                 query,
