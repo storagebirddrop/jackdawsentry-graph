@@ -15,8 +15,20 @@ import type {
 
 const API_BASE = '/api/v1';
 
+function getAuthToken(): string | null {
+  return localStorage.getItem('jds_token') ?? localStorage.getItem('access_token');
+}
+
+export function isAuthenticated(): boolean {
+  return !!getAuthToken();
+}
+
+export function redirectToLogin(): void {
+  window.location.href = '/login';
+}
+
 function authHeaders(): HeadersInit {
-  const token = localStorage.getItem('access_token');
+  const token = getAuthToken();
   return {
     'Content-Type': 'application/json',
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -24,6 +36,10 @@ function authHeaders(): HeadersInit {
 }
 
 async function handleResponse<T>(res: Response): Promise<T> {
+  if (res.status === 401) {
+    redirectToLogin();
+    throw new Error('Not authenticated');
+  }
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText);
     throw new Error(`API ${res.status}: ${text}`);
@@ -48,6 +64,7 @@ export async function createSession(
   const res = await fetch(`${API_BASE}/graph/sessions`, {
     method: 'POST',
     headers: authHeaders(),
+    credentials: 'same-origin',
     body: JSON.stringify(req),
   });
   return handleResponse<SessionCreateResponse>(res);
@@ -61,6 +78,7 @@ export async function expandNode(
   const res = await fetch(`${API_BASE}/graph/sessions/${sessionId}/expand`, {
     method: 'POST',
     headers: authHeaders(),
+    credentials: 'same-origin',
     body: JSON.stringify(req),
   });
   return normalizeExpansionResponse(await handleResponse<ExpansionResponseV2>(res));
@@ -73,7 +91,7 @@ export async function getBridgeHopStatus(
 ): Promise<BridgeHopStatusResponse> {
   const res = await fetch(
     `${API_BASE}/graph/sessions/${sessionId}/hops/${hopId}/status`,
-    { headers: authHeaders() },
+    { headers: authHeaders(), credentials: 'same-origin' },
   );
   return handleResponse<BridgeHopStatusResponse>(res);
 }
