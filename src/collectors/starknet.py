@@ -148,21 +148,49 @@ class StarknetCollector(BaseCollector):
             return None
 
         receipt = await self.rpc_call("starknet_getTransactionReceipt", [tx_hash]) or {}
+        
+        # Safely parse calldata - don't assume transfer structure
         calldata = tx.get("calldata") or []
-        to_address = calldata[0] if calldata else None
-        amount = self._hex_to_int(calldata[1]) if len(calldata) > 1 else 0
+        to_address = None
+        amount = 0.0
+        
+        # Only attempt to parse as transfer if calldata has sufficient length
+        # and transaction type is INVOKE (type 1)
+        tx_type = tx.get("type") or tx.get("transaction_type")
+        if tx_type in ("INVOKE", "INVOKE_FUNCTION", 1, "1") and len(calldata) >= 2:
+            # Note: calldata[0] and calldata[1] are NOT guaranteed to be address/amount
+            # This is a heuristic that may not work for all contracts
+            # For safety, validate the first element looks like an address (hex string)
+            potential_addr = calldata[0]
+            if isinstance(potential_addr, str) and potential_addr.startswith("0x"):
+                to_address = potential_addr
+                # Only parse amount if second element exists and is numeric
+                try:
+                    amount = self._hex_to_int(calldata[1]) / WEI_PER_ETH
+                except (TypeError, ValueError, IndexError):
+                    amount = 0.0
+        
         status = (receipt.get("execution_status") or "").upper()
+
+        # Safely parse fee - handle both dict (new RPC) and hex string (legacy RPC)
+        fee_data = receipt.get("actual_fee")
+        fee_amount = 0.0
+        if isinstance(fee_data, dict):
+            fee_amount = self._hex_to_int(fee_data.get("amount")) / WEI_PER_ETH
+        elif isinstance(fee_data, (str, bytes)):
+            # Legacy RPC returns fee as hex string directly
+            fee_amount = self._hex_to_int(fee_data) / WEI_PER_ETH
 
         return Transaction(
             hash=tx_hash,
             blockchain=self.blockchain,
             from_address=tx.get("sender_address") or tx.get("contract_address"),
             to_address=to_address,
-            value=amount / WEI_PER_ETH if amount else 0.0,
+            value=amount,
             timestamp=self._parse_timestamp(receipt.get("timestamp")),
             block_number=receipt.get("block_number"),
             block_hash=receipt.get("block_hash"),
-            fee=self._hex_to_int((receipt.get("actual_fee") or {}).get("amount")) / WEI_PER_ETH,
+            fee=fee_amount,
             status="confirmed" if status == "SUCCEEDED" else "failed",
         )
 

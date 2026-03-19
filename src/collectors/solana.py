@@ -469,7 +469,12 @@ class SolanaCollector(BaseCollector):
             if not self.client:
                 return []
 
-            token_accounts = await self.client.get_token_accounts_by_owner(address)
+            from solana.rpc.types import TokenAccountOpts
+            # SPL Token Program ID for filtering all SPL token accounts
+            SPL_TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+            token_accounts = await self.client.get_token_accounts_by_owner(
+                address, TokenAccountOpts(program_id=SPL_TOKEN_PROGRAM_ID, encoding="jsonParsed")
+            )
             if not token_accounts.value:
                 return []
 

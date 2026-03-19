@@ -157,16 +157,43 @@ class SuiCollector(BaseCollector):
         sender = transaction_data.get("sender")
         gas_data = transaction_data.get("gasData") or {}
         payments = gas_data.get("payment") or []
-        recipient = payments[0].get("owner") if payments else None
+        
+        # Safely extract recipient from payments
+        recipient = None
+        if isinstance(payments, list) and len(payments) > 0:
+            first_payment = payments[0]
+            if isinstance(first_payment, dict):
+                recipient = first_payment.get("owner")
 
+        # Defensively parse balance changes
         value = 0.0
         balance_changes = tx.get("balanceChanges") or []
-        if balance_changes:
-            value = self._mist_to_sui(balance_changes[0].get("amount"))
+        if isinstance(balance_changes, list) and len(balance_changes) > 0:
+            first_change = balance_changes[0]
+            if isinstance(first_change, dict):
+                amount = first_change.get("amount")
+                if amount is not None:
+                    try:
+                        value = self._mist_to_sui(amount)
+                    except (TypeError, ValueError):
+                        value = 0.0
 
         effects = tx.get("effects") or {}
         checkpoint = effects.get("checkpoint")
-        status = ((effects.get("status") or {}).get("status") or "").lower()
+        
+        # Defensively parse status
+        status_obj = effects.get("status") or {}
+        if isinstance(status_obj, dict):
+            status = (status_obj.get("status") or "").lower()
+        else:
+            status = ""
+        
+        # Defensively parse gas used
+        gas_used = effects.get("gasUsed") or {}
+        computation_cost = 0
+        if isinstance(gas_used, dict):
+            computation_cost = gas_used.get("computationCost") or 0
+        fee = self._mist_to_sui(computation_cost)
 
         return Transaction(
             hash=tx_hash,
@@ -176,7 +203,7 @@ class SuiCollector(BaseCollector):
             value=value,
             timestamp=self._parse_timestamp_ms(tx.get("timestampMs")),
             block_number=int(checkpoint) if checkpoint is not None else None,
-            fee=self._mist_to_sui(((effects.get("gasUsed") or {}).get("computationCost"))),
+            fee=fee,
             status="confirmed" if status == "success" else "failed",
         )
 
