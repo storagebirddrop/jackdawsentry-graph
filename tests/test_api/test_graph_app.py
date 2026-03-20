@@ -43,10 +43,36 @@ def test_graph_app_root_and_health(graph_client):
     assert health_response.json()["service"] == "Jackdaw Sentry Graph API"
 
 
-def test_graph_app_openapi_exposes_only_graph_surface(graph_client):
-    schema = graph_client.get("/openapi.json").json()
-    paths = set(schema["paths"])
+def test_graph_app_docs_disabled_by_default(graph_client):
+    assert graph_client.get("/openapi.json").status_code == 404
+    assert graph_client.get("/docs").status_code == 404
 
+
+def test_graph_app_openapi_can_be_enabled():
+    from src.api import graph_app as graph_app_module
+
+    graph_app_module.settings.EXPOSE_API_DOCS = True
+    try:
+        temp_app = graph_app_module.create_graph_app()
+        with (
+            patch("src.api.graph_app.init_databases", new_callable=AsyncMock),
+            patch("src.api.graph_app.close_databases", new_callable=AsyncMock),
+            patch(
+                "src.api.migrations.migration_manager.run_database_migrations",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+        ):
+            with TestClient(
+                temp_app,
+                raise_server_exceptions=False,
+                base_url="http://localhost",
+            ) as client:
+                schema = client.get("/openapi.json").json()
+    finally:
+        graph_app_module.settings.EXPOSE_API_DOCS = False
+
+    paths = set(schema["paths"])
     assert "/api/v1/auth/login" in paths
     assert "/api/v1/graph/sessions" in paths
     assert "/api/v1/graph/sessions/{session_id}/expand" in paths

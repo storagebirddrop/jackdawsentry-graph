@@ -7,19 +7,42 @@ const Auth = (function () {
     const TOKEN_KEY = 'jds_token';
     const USER_KEY = 'jds_user';
     const LOGIN_PATH = '/login';
+    const STORAGE = window.sessionStorage;
+
+    function migrateLegacySession() {
+        try {
+            const legacyToken = window.localStorage.getItem(TOKEN_KEY);
+            const legacyUser = window.localStorage.getItem(USER_KEY);
+
+            if (legacyToken && !STORAGE.getItem(TOKEN_KEY)) {
+                STORAGE.setItem(TOKEN_KEY, legacyToken);
+            }
+            if (legacyUser && !STORAGE.getItem(USER_KEY)) {
+                STORAGE.setItem(USER_KEY, legacyUser);
+            }
+
+            window.localStorage.removeItem(TOKEN_KEY);
+            window.localStorage.removeItem(USER_KEY);
+            window.localStorage.removeItem('access_token');
+        } catch (_) {
+            // Ignore storage migration failures.
+        }
+    }
+
+    migrateLegacySession();
 
     /** Store token + user after successful login */
     function setSession(tokenResponse) {
-        localStorage.setItem(TOKEN_KEY, tokenResponse.access_token);
+        STORAGE.setItem(TOKEN_KEY, tokenResponse.access_token);
         if (tokenResponse.user) {
-            localStorage.setItem(USER_KEY, JSON.stringify(tokenResponse.user));
+            STORAGE.setItem(USER_KEY, JSON.stringify(tokenResponse.user));
         }
     }
 
     /** Get stored JWT or null */
     function getToken() {
         try {
-            return localStorage.getItem(TOKEN_KEY);
+            return STORAGE.getItem(TOKEN_KEY);
         } catch (_) {
             return null;
         }
@@ -28,7 +51,7 @@ const Auth = (function () {
     /** Get stored user object or null */
     function getUser() {
         try {
-            const raw = localStorage.getItem(USER_KEY);
+            const raw = STORAGE.getItem(USER_KEY);
             return raw ? JSON.parse(raw) : null;
         } catch (_) {
             return null;
@@ -42,8 +65,8 @@ const Auth = (function () {
 
     /** Clear session and redirect to login */
     function logout() {
-        localStorage.removeItem(TOKEN_KEY);
-        localStorage.removeItem(USER_KEY);
+        STORAGE.removeItem(TOKEN_KEY);
+        STORAGE.removeItem(USER_KEY);
         window.location.href = LOGIN_PATH;
     }
 

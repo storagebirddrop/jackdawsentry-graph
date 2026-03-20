@@ -82,18 +82,6 @@ async def lifespan(app: FastAPI):
     logger.info("Shutting down Jackdaw Sentry Graph API...")
     await close_databases()
 
-
-app = FastAPI(
-    title="Jackdaw Sentry Graph API",
-    description="Standalone investigation graph API",
-    version="1.0.0",
-    docs_url="/docs",
-    redoc_url="/redoc",
-    openapi_url="/openapi.json",
-    lifespan=lifespan,
-    default_response_class=CustomJSONResponse,
-)
-
 def configure_middleware(target_app: FastAPI) -> None:
     """Attach the graph runtime middleware stack to an app."""
     target_app.add_middleware(
@@ -111,126 +99,138 @@ def configure_middleware(target_app: FastAPI) -> None:
 
     if not settings.TESTING:
         target_app.add_middleware(SecurityMiddleware)
-        target_app.add_middleware(RateLimitMiddleware)
+        if settings.RATE_LIMIT_ENABLED:
+            target_app.add_middleware(RateLimitMiddleware)
 
     target_app.add_middleware(GraphLatencyMiddleware)
 
 
-configure_middleware(app)
-
-
-@app.exception_handler(JackdawException)
-async def jackdaw_exception_handler(request, exc: JackdawException):
-    """Handle Jackdaw-specific exceptions."""
-    logger.error("JackdawException: %s", exc.message)
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={
-            "error": "JackdawError",
-            "message": exc.message,
-            "code": exc.error_code,
-            "timestamp": exc.timestamp,
-        },
+def create_graph_app() -> FastAPI:
+    """Build the standalone graph FastAPI application."""
+    app = FastAPI(
+        title="Jackdaw Sentry Graph API",
+        description="Standalone investigation graph API",
+        version="1.0.0",
+        docs_url="/docs" if settings.EXPOSE_API_DOCS else None,
+        redoc_url="/redoc" if settings.EXPOSE_API_DOCS else None,
+        openapi_url="/openapi.json" if settings.EXPOSE_API_DOCS else None,
+        lifespan=lifespan,
+        default_response_class=CustomJSONResponse,
     )
 
+    configure_middleware(app)
 
-@app.exception_handler(HTTPException)
-async def http_exception_handler(request, exc: HTTPException):
-    """Return HTTP errors without the default exception stack."""
-    kwargs = {
-        "status_code": exc.status_code,
-        "content": {"detail": exc.detail},
-    }
-    if exc.headers:
-        kwargs["headers"] = exc.headers
-    return JSONResponse(**kwargs)
+    @app.exception_handler(JackdawException)
+    async def jackdaw_exception_handler(request, exc: JackdawException):
+        """Handle Jackdaw-specific exceptions."""
+        logger.error("JackdawException: %s", exc.message)
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={
+                "error": "JackdawError",
+                "message": exc.message,
+                "code": exc.error_code,
+                "timestamp": exc.timestamp,
+            },
+        )
 
+    @app.exception_handler(HTTPException)
+    async def http_exception_handler(request, exc: HTTPException):
+        """Return HTTP errors without the default exception stack."""
+        kwargs = {
+            "status_code": exc.status_code,
+            "content": {"detail": exc.detail},
+        }
+        if exc.headers:
+            kwargs["headers"] = exc.headers
+        return JSONResponse(**kwargs)
 
-@app.exception_handler(ComplianceException)
-async def compliance_exception_handler(request, exc: ComplianceException):
-    """Handle shared compliance-shaped exceptions without private routes."""
-    logger.error("ComplianceException: %s", exc.message)
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={
-            "error": "ComplianceError",
-            "message": exc.message,
-            "regulation": exc.regulation,
-            "timestamp": exc.timestamp,
-        },
+    @app.exception_handler(ComplianceException)
+    async def compliance_exception_handler(request, exc: ComplianceException):
+        """Handle shared compliance-shaped exceptions without private routes."""
+        logger.error("ComplianceException: %s", exc.message)
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={
+                "error": "ComplianceError",
+                "message": exc.message,
+                "regulation": exc.regulation,
+                "timestamp": exc.timestamp,
+            },
+        )
+
+    @app.exception_handler(BlockchainException)
+    async def blockchain_exception_handler(request, exc: BlockchainException):
+        """Handle blockchain exceptions."""
+        logger.error("BlockchainException: %s", exc.message)
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={
+                "error": "BlockchainError",
+                "message": exc.message,
+                "blockchain": exc.blockchain,
+                "timestamp": exc.timestamp,
+            },
+        )
+
+    @app.get("/health", tags=["Health"])
+    async def health_check():
+        """Basic graph-runtime health check."""
+        return {
+            "status": "healthy",
+            "service": "Jackdaw Sentry Graph API",
+            "version": "1.0.0",
+        }
+
+    @app.get("/health/detailed", tags=["Health"])
+    async def detailed_health_check():
+        """Detailed graph-runtime health check."""
+        from src.api.database import check_database_health
+
+        db_health = await check_database_health()
+        return {
+            "status": "healthy" if all(db_health.values()) else "degraded",
+            "service": "Jackdaw Sentry Graph API",
+            "version": "1.0.0",
+            "databases": db_health,
+        }
+
+    @app.get("/api/v1/status", tags=["Status"])
+    async def api_status(current_user: User = Depends(get_current_user)):
+        """Status endpoint for authenticated graph users."""
+        return {
+            "status": "operational",
+            "product": "graph",
+            "user": current_user.username,
+            "features": {
+                "graph_sessions": True,
+                "graph_expansion": True,
+                "bridge_status_polling": True,
+            },
+        }
+
+    app.include_router(auth_router.router, prefix="/api/v1/auth", tags=["Authentication"])
+    app.include_router(
+        graph.router,
+        prefix="/api/v1/graph",
+        tags=["Graph"],
+        dependencies=[Depends(get_current_user)],
     )
 
+    @app.get("/", tags=["Root"])
+    async def root():
+        """Root endpoint with graph-runtime information."""
+        payload = {
+            "name": "Jackdaw Sentry Graph API",
+            "description": "Standalone investigation graph API",
+            "health": "/health",
+            "status": "/api/v1/status",
+        }
+        if settings.EXPOSE_API_DOCS:
+            payload["docs"] = "/docs"
+        return payload
 
-@app.exception_handler(BlockchainException)
-async def blockchain_exception_handler(request, exc: BlockchainException):
-    """Handle blockchain exceptions."""
-    logger.error("BlockchainException: %s", exc.message)
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={
-            "error": "BlockchainError",
-            "message": exc.message,
-            "blockchain": exc.blockchain,
-            "timestamp": exc.timestamp,
-        },
-    )
-
-
-@app.get("/health", tags=["Health"])
-async def health_check():
-    """Basic graph-runtime health check."""
-    return {
-        "status": "healthy",
-        "service": "Jackdaw Sentry Graph API",
-        "version": "1.0.0",
-    }
+    return app
 
 
-@app.get("/health/detailed", tags=["Health"])
-async def detailed_health_check():
-    """Detailed graph-runtime health check."""
-    from src.api.database import check_database_health
-
-    db_health = await check_database_health()
-    return {
-        "status": "healthy" if all(db_health.values()) else "degraded",
-        "service": "Jackdaw Sentry Graph API",
-        "version": "1.0.0",
-        "databases": db_health,
-    }
-
-
-@app.get("/api/v1/status", tags=["Status"])
-async def api_status(current_user: User = Depends(get_current_user)):
-    """Status endpoint for authenticated graph users."""
-    return {
-        "status": "operational",
-        "product": "graph",
-        "user": current_user.username,
-        "features": {
-            "graph_sessions": True,
-            "graph_expansion": True,
-            "bridge_status_polling": True,
-        },
-    }
-
-
-app.include_router(auth_router.router, prefix="/api/v1/auth", tags=["Authentication"])
-app.include_router(
-    graph.router,
-    prefix="/api/v1/graph",
-    tags=["Graph"],
-    dependencies=[Depends(get_current_user)],
-)
-
-
-@app.get("/", tags=["Root"])
-async def root():
-    """Root endpoint with graph-runtime information."""
-    return {
-        "name": "Jackdaw Sentry Graph API",
-        "description": "Standalone investigation graph API",
-        "docs": "/docs",
-        "health": "/health",
-        "status": "/api/v1/status",
-    }
+app = create_graph_app()

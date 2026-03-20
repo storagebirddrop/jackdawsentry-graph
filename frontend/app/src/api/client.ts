@@ -2,7 +2,7 @@
  * Jackdaw Sentry — Investigation Graph API client.
  *
  * Thin wrapper around the v2 session / expansion endpoints.
- * Auth token is read from localStorage (set by the existing login page).
+ * Auth token is read from sessionStorage (set by the graph login page).
  */
 
 import type {
@@ -16,7 +16,7 @@ import type {
 const API_BASE = '/api/v1';
 
 function getAuthToken(): string | null {
-  return localStorage.getItem('jds_token') ?? localStorage.getItem('access_token');
+  return sessionStorage.getItem('jds_token');
 }
 
 export function isAuthenticated(): boolean {

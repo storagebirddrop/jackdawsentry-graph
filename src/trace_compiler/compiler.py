@@ -46,6 +46,7 @@ from src.trace_compiler.models import SessionCreateResponse
 logger = logging.getLogger(__name__)
 
 _EXPANSION_CACHE_TTL = 900  # 15 minutes
+_HOP_ALLOWLIST_TTL_SECONDS = 24 * 60 * 60
 
 
 def _expansion_cache_key(
@@ -164,7 +165,9 @@ class TraceCompiler:
         )
 
     async def create_session(
-        self, request: SessionCreateRequest
+        self,
+        request: SessionCreateRequest,
+        owner_user_id: Optional[str] = None,
     ) -> SessionCreateResponse:
         """Create a new investigation session and persist it to PostgreSQL.
 
@@ -220,14 +223,23 @@ class TraceCompiler:
                     await conn.execute(
                         """
                         INSERT INTO graph_sessions
-                            (session_id, seed_address, seed_chain, case_id, created_at, updated_at)
-                        VALUES ($1, $2, $3, $4, $5, $5)
+                            (
+                                session_id,
+                                seed_address,
+                                seed_chain,
+                                case_id,
+                                created_by,
+                                created_at,
+                                updated_at
+                            )
+                        VALUES ($1, $2, $3, $4, $5, $6, $6)
                         ON CONFLICT (session_id) DO NOTHING
                         """,
                         uuid.UUID(session_id),
                         request.seed_address,
                         request.seed_chain,
                         getattr(request, "case_id", None),
+                        owner_user_id,
                         created_at,
                     )
                 logger.debug("graph_sessions: persisted session %s", session_id)
@@ -287,6 +299,7 @@ class TraceCompiler:
                         nodes=cached_nodes,
                         edges=cached_edges,
                     )
+                    await self._register_bridge_hops(session_id, added_nodes)
                     # Override session-scoped fields so the caller receives
                     # IDs that match their current session, not the session
                     # that originally populated the cache.
@@ -465,6 +478,8 @@ class TraceCompiler:
                 self._upsert_canonical_assets(added_edges)
             )
 
+        await self._register_bridge_hops(session_id, added_nodes)
+
         # Cache successful non-empty results in Redis (15-minute TTL).
         if added_nodes and self._redis is not None:
             try:
@@ -494,6 +509,53 @@ class TraceCompiler:
                 logger.debug("Redis cache write failed: %s", cache_exc)
 
         return response
+
+    @staticmethod
+    def _bridge_hop_allowlist_key(session_id: str) -> str:
+        return f"tc:session:{session_id}:bridge_hops"
+
+    async def _register_bridge_hops(
+        self,
+        session_id: str,
+        nodes: List[InvestigationNode],
+    ) -> None:
+        """Allow only bridge hops that were emitted to this session."""
+        if self._redis is None:
+            return
+
+        hop_ids = [
+            node.bridge_hop_data.hop_id
+            for node in nodes
+            if node.bridge_hop_data and node.bridge_hop_data.hop_id
+        ]
+        if not hop_ids:
+            return
+
+        try:
+            allowlist_key = self._bridge_hop_allowlist_key(session_id)
+            await self._redis.sadd(allowlist_key, *hop_ids)
+            await self._redis.expire(allowlist_key, _HOP_ALLOWLIST_TTL_SECONDS)
+        except Exception as exc:
+            logger.debug("Bridge hop allowlist write failed: %s", exc)
+
+    async def is_bridge_hop_allowed(self, session_id: str, hop_id: str) -> bool:
+        """Return True only when the hop was materialized in this session."""
+        if self._redis is None:
+            logger.warning(
+                "Bridge hop allowlist unavailable because Redis is not configured"
+            )
+            return False
+
+        try:
+            return bool(
+                await self._redis.sismember(
+                    self._bridge_hop_allowlist_key(session_id),
+                    hop_id,
+                )
+            )
+        except Exception as exc:
+            logger.warning("Bridge hop allowlist lookup failed: %s", exc)
+            return False
 
     async def _upsert_canonical_assets(
         self, edges: List[InvestigationEdge]

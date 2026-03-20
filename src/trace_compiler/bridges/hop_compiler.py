@@ -210,6 +210,7 @@ class BridgeHopCompiler:
             chain=source_chain,
             expandable_directions=expandable,
             bridge_hop_data=BridgeHopData(
+                hop_id=tx_hash,
                 protocol_id=protocol.protocol_id,
                 mechanism=protocol.mechanism,
                 source_chain=source_chain,

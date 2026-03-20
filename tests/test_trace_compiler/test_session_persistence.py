@@ -113,3 +113,17 @@ async def test_create_session_persists_seed_address_and_chain():
     param_values = list(args[1:])
     assert "0xtest" in param_values
     assert "polygon" in param_values
+
+
+@pytest.mark.asyncio
+async def test_create_session_persists_owner_user_id():
+    pg = _pg_pool()
+    compiler = TraceCompiler(postgres_pool=pg)
+
+    await compiler.create_session(
+        _create_request(),
+        owner_user_id="00000000-0000-0000-0000-000000000111",
+    )
+
+    param_values = list(pg._conn.execute.call_args[0][1:])
+    assert "00000000-0000-0000-0000-000000000111" in param_values

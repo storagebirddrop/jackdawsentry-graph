@@ -1,0 +1,182 @@
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+        transform: translateY(12px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+@keyframes spin {
+    from {
+        transform: rotate(0deg);
+    }
+
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html,
+body {
+    margin: 0;
+    min-height: 100%;
+}
+
+body.graph-login-body {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+    background:
+        radial-gradient(circle at top, rgba(59, 130, 246, 0.18), transparent 35%),
+        linear-gradient(180deg, #020617 0%, #0f172a 100%);
+    color: #e2e8f0;
+    font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+}
+
+.graph-login-shell {
+    width: 100%;
+    max-width: 420px;
+    animation: fadeIn 0.4s ease-out;
+}
+
+.graph-login-brand {
+    text-align: center;
+    margin-bottom: 32px;
+}
+
+.graph-login-logo {
+    display: block;
+    margin: 0 auto 16px;
+    width: 64px;
+    height: 64px;
+}
+
+.graph-login-title {
+    margin: 0;
+    font-size: 2rem;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+}
+
+.graph-login-subtitle {
+    margin: 10px 0 0;
+    color: #94a3b8;
+    font-size: 0.95rem;
+    line-height: 1.5;
+}
+
+.graph-login-card {
+    border: 1px solid rgba(51, 65, 85, 0.95);
+    border-radius: 24px;
+    padding: 32px;
+    background: rgba(15, 23, 42, 0.92);
+    box-shadow: 0 24px 80px rgba(2, 6, 23, 0.55);
+    backdrop-filter: blur(16px);
+}
+
+.graph-login-card-title {
+    margin: 0 0 24px;
+    font-size: 1.05rem;
+    font-weight: 600;
+}
+
+.graph-login-error {
+    margin-bottom: 16px;
+    padding: 12px 14px;
+    border: 1px solid #7f1d1d;
+    border-radius: 14px;
+    background: rgba(127, 29, 29, 0.28);
+    color: #fecaca;
+    font-size: 0.95rem;
+}
+
+.graph-login-form {
+    display: grid;
+    gap: 20px;
+}
+
+.graph-login-field {
+    display: grid;
+    gap: 8px;
+}
+
+.graph-login-label {
+    font-size: 0.92rem;
+    font-weight: 600;
+    color: #cbd5e1;
+}
+
+.graph-login-input {
+    width: 100%;
+    padding: 12px 14px;
+    border: 1px solid #334155;
+    border-radius: 14px;
+    background: #020617;
+    color: #f8fafc;
+    font-size: 0.95rem;
+    outline: none;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.graph-login-input::placeholder {
+    color: #64748b;
+}
+
+.graph-login-input:focus {
+    border-color: #3b82f6;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.18);
+}
+
+.graph-login-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    width: 100%;
+    padding: 12px 14px;
+    border: 0;
+    border-radius: 14px;
+    background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+    color: #eff6ff;
+    font-size: 0.97rem;
+    font-weight: 700;
+    cursor: pointer;
+    transition: transform 0.15s ease, filter 0.15s ease, opacity 0.15s ease;
+}
+
+.graph-login-button:hover {
+    filter: brightness(1.06);
+}
+
+.graph-login-button:disabled {
+    cursor: not-allowed;
+    opacity: 0.7;
+}
+
+.graph-login-spinner {
+    width: 18px;
+    height: 18px;
+    animation: spin 1s linear infinite;
+}
+
+.graph-login-spinner-track {
+    opacity: 0.25;
+}
+
+.graph-login-spinner-head {
+    opacity: 0.8;
+}
+
+.hidden {
+    display: none !important;
+}

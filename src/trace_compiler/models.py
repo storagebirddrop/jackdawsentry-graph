@@ -120,6 +120,7 @@ class BridgeHopData(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True)
 
+    hop_id: str
     protocol_id: str
     mechanism: str   # "lock_mint" | "burn_release" | "native_amm" | "solver" | "liquidity"
     source_chain: str
@@ -442,8 +443,8 @@ class ChainContext(BaseModel):
 class PaginationMeta(BaseModel):
     """Pagination metadata for large result sets."""
 
-    page_size: int = 50
-    max_results: int = 500
+    page_size: int = 25
+    max_results: int = 100
     has_more: bool = False
     next_token: Optional[str] = None
 
@@ -564,15 +565,15 @@ class SessionSnapshotResponse(BaseModel):
 class ExpandOptions(BaseModel):
     """Expansion options for POST /api/v1/graph/sessions/{session_id}/expand."""
 
-    depth: int = Field(default=1, ge=1, le=5)
+    depth: int = Field(default=1, ge=1, le=3)
     asset_filter: List[str] = []
     chain_filter: List[str] = []
     min_value_fiat: Optional[float] = None
-    max_results: int = Field(default=50, ge=1, le=500)
+    max_results: int = Field(default=25, ge=1, le=100)
     include_services: bool = True
     follow_bridges: bool = True
     continuation_token: Optional[str] = None
-    page_size: int = Field(default=50, ge=1, le=100)
+    page_size: int = Field(default=25, ge=1, le=50)
 
 
 class ExpandRequest(BaseModel):

@@ -92,6 +92,7 @@ def test_build_hop_node_pending():
     )
     assert node.node_type == "bridge_hop"
     assert node.bridge_hop_data is not None
+    assert node.bridge_hop_data.hop_id == TX_HASH
     assert node.bridge_hop_data.status == "pending"
     assert node.bridge_hop_data.protocol_id == "thorchain"
     assert node.bridge_hop_data.source_chain == "ethereum"
@@ -127,6 +128,7 @@ def test_build_hop_node_completed():
         depth=2,
     )
     assert node.bridge_hop_data.status == "completed"
+    assert node.bridge_hop_data.hop_id == TX_HASH
     assert node.bridge_hop_data.destination_chain == "bitcoin"
     assert node.bridge_hop_data.source_amount == 1.5
     assert node.bridge_hop_data.destination_amount == 0.05

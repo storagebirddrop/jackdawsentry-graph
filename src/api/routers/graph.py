@@ -6,16 +6,19 @@ legacy flat graph endpoints that are still carried for compatibility.
 """
 
 import asyncio
+import hashlib
+import json
 import logging
 import time
 from datetime import datetime
 from datetime import timezone
+from email.utils import format_datetime
 from typing import Any
 from typing import Dict
 from typing import List
 from typing import Optional
+import uuid as _uuid
 from uuid import uuid4
-from email.utils import format_datetime
 
 from fastapi import APIRouter
 from fastapi import Depends
@@ -28,6 +31,7 @@ from pydantic import field_validator
 from src.api.auth import PERMISSIONS
 from src.api.auth import User
 from src.api.auth import check_permissions
+from src.api.config import settings
 from src.api.config import get_supported_blockchains
 from src.api.graph_dependencies import get_edge_price_oracle
 from src.api.graph_dependencies import get_known_bridge_addresses as load_known_bridge_addresses
@@ -36,8 +40,6 @@ from src.api.graph_dependencies import get_known_mixer_addresses as load_known_m
 from src.api.graph_dependencies import lookup_addresses_bulk
 from src.api.graph_dependencies import screen_address
 from src.api.middleware import get_graph_latency_stats
-import hashlib
-import json
 
 from src.api.database import cache_get
 from src.api.database import cache_set
@@ -52,6 +54,92 @@ router = APIRouter()
 
 MAX_GRAPH_NODES = 500
 MAX_DEPTH = 5
+
+
+def _legacy_graph_endpoints_enabled() -> bool:
+    return (
+        settings.ENABLE_LEGACY_GRAPH_ENDPOINTS
+        or settings.DEBUG
+        or settings.TESTING
+    )
+
+
+def _require_legacy_graph_endpoint_enabled() -> None:
+    if _legacy_graph_endpoints_enabled():
+        return
+
+    raise HTTPException(
+        status_code=410,
+        detail=(
+            "Legacy graph endpoints are disabled. "
+            "Use the investigation session APIs instead."
+        ),
+    )
+
+
+async def _get_owned_session_row(session_id: str, current_user: User) -> Dict[str, Any]:
+    """Return the session row only when it belongs to the authenticated user."""
+    try:
+        session_uuid = str(_uuid.UUID(session_id))
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid session_id: must be a UUID",
+        ) from exc
+
+    try:
+        pg = get_postgres_pool()
+        async with pg.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT
+                    session_id,
+                    seed_address,
+                    seed_chain,
+                    case_id,
+                    created_by,
+                    snapshot,
+                    snapshot_saved_at,
+                    created_at,
+                    updated_at
+                FROM graph_sessions
+                WHERE session_id = $1::uuid
+                  AND created_by = $2
+                LIMIT 1
+                """,
+                session_uuid,
+                str(current_user.id),
+            )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning(
+            "Failed to look up graph session %s for %s: %s",
+            session_id,
+            current_user.username,
+            exc,
+        )
+        raise HTTPException(status_code=503, detail="Session store unavailable") from exc
+
+    if row is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    return dict(row)
+
+
+def _validate_expand_request(request: "ExpandRequest") -> None:
+    """Reject expansion controls that are not implemented server-side."""
+    if request.options.chain_filter:
+        raise HTTPException(
+            status_code=400,
+            detail="chain_filter is not supported by this deployment",
+        )
+
+    if request.options.continuation_token:
+        raise HTTPException(
+            status_code=400,
+            detail="continuation_token is not supported by this deployment",
+        )
 
 
 # =============================================================================
@@ -219,6 +307,7 @@ async def expand_address(
     Uses Neo4j variable-length path queries bounded by depth.
     Falls back to live RPC if address is not in Neo4j.
     """
+    _require_legacy_graph_endpoint_enabled()
     response.headers["Deprecation"] = "true"
     sunset_date = datetime(2026, 6, 30, tzinfo=timezone.utc)
     response.headers["Sunset"] = format_datetime(sunset_date, usegmt=True)
@@ -460,6 +549,7 @@ async def trace_transaction(
 
     Uses Neo4j variable-length paths to follow fund flow.
     """
+    _require_legacy_graph_endpoint_enabled()
     response.headers["Deprecation"] = "true"
     sunset_date = datetime(2026, 6, 30, tzinfo=timezone.utc)
     response.headers["Sunset"] = format_datetime(sunset_date, usegmt=True)
@@ -647,6 +737,7 @@ async def graph_search(
         This endpoint returns lineage-free flat data and will be removed after T1.15
         event-store cutover is complete (ADR-004).
     """
+    _require_legacy_graph_endpoint_enabled()
     response.headers["Deprecation"] = "true"
     sunset_date = datetime(2026, 6, 30, tzinfo=timezone.utc)
     response.headers["Sunset"] = format_datetime(sunset_date, usegmt=True)
@@ -945,6 +1036,7 @@ async def cluster_addresses(
         This endpoint returns lineage-free flat data and will be removed after T1.15
         event-store cutover is complete (ADR-004).
     """
+    _require_legacy_graph_endpoint_enabled()
     response.headers["Deprecation"] = "true"
     sunset_date = datetime(2026, 6, 30, tzinfo=timezone.utc)
     response.headers["Sunset"] = format_datetime(sunset_date, usegmt=True)
@@ -1101,6 +1193,7 @@ async def expand_solana_tx(
     All returned nodes carry ``branch_id``, ``depth``, ``parent_id``, and
     ``path_id`` for correct frontend graph insertion.
     """
+    _require_legacy_graph_endpoint_enabled()
     from src.collectors.solana_instruction_parser import SolanaInstructionParser
     from src.collectors.rpc.solana_rpc import SolanaRpcClient
 
@@ -1278,6 +1371,7 @@ async def expand_bridge(
     Both nodes carry ``branch_id``, ``depth``, and ``parent_id`` for
     correct frontend graph insertion.
     """
+    _require_legacy_graph_endpoint_enabled()
     from src.tracing.bridge_tracer import BridgeCorrelation, BridgeTracer
 
     tracer = BridgeTracer()
@@ -1482,6 +1576,7 @@ async def expand_utxo(
 
     Falls back to the live Bitcoin RPC client when no data exists in Neo4j.
     """
+    _require_legacy_graph_endpoint_enabled()
     branch_id = request.branch_id or str(uuid4())
     parent_node_id = request.parent_node_id or f"bitcoin:{request.address}"
     depth = request.insertion_depth
@@ -1964,7 +2059,7 @@ async def create_investigation_session(
     graph lookup and Neo4j session persistence is implemented in Phase 4.
     """
     compiler = await _get_trace_compiler()
-    return await compiler.create_session(request)
+    return await compiler.create_session(request, owner_user_id=str(current_user.id))
 
 
 @router.get("/sessions/{session_id}", response_model=dict)
@@ -1978,14 +2073,26 @@ async def get_investigation_session(
 
     Phase 3 status: stub — returns an empty snapshot.
     """
-    # TODO Phase 4: load session from Neo4j InvestigationAnnotation + Redis cache.
+    row = await _get_owned_session_row(session_id, current_user)
+    snapshot = row.get("snapshot")
+    if isinstance(snapshot, str):
+        try:
+            snapshot = json.loads(snapshot)
+        except json.JSONDecodeError:
+            snapshot = []
+
     return {
-        "session_id": session_id,
+        "session_id": str(row["session_id"]),
+        "seed_address": row.get("seed_address"),
+        "seed_chain": row.get("seed_chain"),
+        "case_id": row.get("case_id"),
+        "snapshot": snapshot or [],
         "nodes": [],
         "edges": [],
         "branch_map": {},
-        "created_at": None,
-        "updated_at": None,
+        "created_at": row.get("created_at"),
+        "updated_at": row.get("updated_at"),
+        "snapshot_saved_at": row.get("snapshot_saved_at"),
     }
 
 
@@ -2001,11 +2108,7 @@ async def save_session_snapshot(
     in ``graph_sessions``.  The session row must already exist (created by
     ``POST /sessions``); if it does not, the snapshot is silently ignored.
     """
-    import uuid as _uuid
-    try:
-        _uuid.UUID(session_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid session_id: must be a UUID")
+    await _get_owned_session_row(session_id, current_user)
 
     saved_at = datetime.now(timezone.utc)
     snapshot_id = str(uuid4())
@@ -2019,10 +2122,12 @@ async def save_session_snapshot(
                 SET snapshot = $1::jsonb,
                     snapshot_saved_at = $2
                 WHERE session_id = $3::uuid
+                  AND created_by = $4
                 """,
                 json.dumps([ns.model_dump(mode="json") for ns in session_snapshot.node_states]),
                 saved_at,
                 session_id,
+                str(current_user.id),
             )
         logger.debug("Snapshot saved for session %s (%d nodes)", session_id, len(session_snapshot.node_states))
     except Exception as exc:
@@ -2050,6 +2155,8 @@ async def expand_session_node(
     Phase 3 status: stub — returns an empty expansion with correct metadata.
     Full chain-specific compilation is implemented in Phase 4.
     """
+    await _get_owned_session_row(session_id, current_user)
+    _validate_expand_request(request)
     compiler = await _get_trace_compiler()
     return await compiler.expand(session_id, request)
 
@@ -2072,7 +2179,10 @@ async def get_bridge_hop_status(
 
     Phase 3 status: stub — always returns status="pending".
     """
+    await _get_owned_session_row(session_id, current_user)
     compiler = await _get_trace_compiler()
+    if not await compiler.is_bridge_hop_allowed(session_id, hop_id):
+        raise HTTPException(status_code=404, detail="Bridge hop not found")
     return await compiler.get_bridge_hop_status(session_id, hop_id)
 
 

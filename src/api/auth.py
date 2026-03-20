@@ -4,7 +4,6 @@ JWT-based authentication with GDPR compliance
 """
 
 import logging
-import uuid
 from datetime import datetime
 from datetime import timedelta
 from datetime import timezone
@@ -22,6 +21,7 @@ from fastapi import status
 from fastapi.security import HTTPAuthorizationCredentials
 from fastapi.security import HTTPBearer
 from pydantic import BaseModel
+from pydantic import Field
 
 from src.api.config import settings
 
@@ -49,7 +49,7 @@ class TokenData(BaseModel):
 
     user_id: Optional[str] = None
     username: Optional[str] = None
-    permissions: List[str] = []
+    permissions: List[str] = Field(default_factory=list)
     exp: Optional[datetime] = None
 
 
@@ -228,16 +228,10 @@ async def get_current_user(
         raise
     except Exception as e:
         logger.error(f"Database error during user lookup: {e}")
-        # Fallback: construct user from token data if DB is unavailable
-        return User(
-            id=UUID(token_data.user_id) if token_data.user_id else uuid.uuid4(),
-            username=token_data.username,
-            email=f"{token_data.username}@jackdawsentry.com",
-            role="viewer",
-            permissions=token_data.permissions,
-            is_active=True,
-            created_at=datetime.now(timezone.utc),
-            last_login=datetime.now(timezone.utc),
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication backend unavailable",
+            headers={"WWW-Authenticate": "Bearer"},
         )
 
 

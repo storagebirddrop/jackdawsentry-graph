@@ -8,6 +8,7 @@ import logging
 from fastapi import APIRouter
 from fastapi import HTTPException
 from fastapi import Request
+from fastapi import Response
 from fastapi import status
 
 from src.api.auth import LoginRequest
@@ -23,7 +24,7 @@ router = APIRouter()
 
 
 @router.post("/login", response_model=TokenResponse)
-async def login(request: Request, login_data: LoginRequest):
+async def login(request: Request, response: Response, login_data: LoginRequest):
     """Authenticate user and return JWT token"""
     client_ip = request.headers.get(
         "X-Forwarded-For", request.client.host if request.client else "unknown"
@@ -42,6 +43,8 @@ async def login(request: Request, login_data: LoginRequest):
     log_access_attempt(user.username, success=True, ip_address=client_ip)
 
     access_token = create_user_token(user)
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
 
     return TokenResponse(
         access_token=access_token,

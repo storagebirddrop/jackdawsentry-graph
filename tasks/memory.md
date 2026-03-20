@@ -41,3 +41,14 @@ Read this file before touching graph schema, graph API, trace compiler semantics
   back later.
 - Keep graph session/state continuity and layout quality high priority.
 - Prefer state-of-the-art graph UX only when it keeps the standalone product clearer, not more coupled.
+
+## Security Invariants
+
+- Auth must fail closed. If user lookup or auth backends fail, requests are denied.
+- Graph sessions are owner-bound. Missing or non-owned session IDs return `404`.
+- Bridge-hop polling is session-scoped. A hop ID is only visible after it was emitted into that session.
+- Production defaults keep `/docs`, `/redoc`, `/openapi.json`, and legacy flat graph endpoints disabled.
+- Proxy headers are untrusted by default. Only enable proxy trust in controlled deployments.
+- Browser bearer tokens may only live in `sessionStorage` during the current wave. Do not reintroduce `localStorage`.
+- Expansion guardrails are mandatory: depth <= `3`, `max_results` <= `100`, `page_size` <= `50`.
+- Unsupported expansion controls must fail fast rather than silently no-op.

@@ -231,7 +231,10 @@ class Settings(BaseSettings):
 
     DEBUG: bool = False
     TESTING: bool = False
-    TRUST_PROXY_HEADERS: bool = True
+    TRUST_PROXY_HEADERS: bool = False
+    EXPOSE_API_DOCS: bool = False
+    ENABLE_LEGACY_GRAPH_ENDPOINTS: bool = False
+    EXPOSE_METRICS: bool = False
 
     # API Rate Limiting
     RATE_LIMIT_ENABLED: bool = True
@@ -284,7 +287,7 @@ class Settings(BaseSettings):
     # JWT Configuration
     JWT_SECRET_KEY: str
     JWT_ALGORITHM: str = "HS256"
-    JWT_EXPIRE_MINUTES: int = 1440  # 24 hours
+    JWT_EXPIRE_MINUTES: int = 30
 
     # =============================================================================
     # Validators
@@ -317,6 +320,9 @@ class Settings(BaseSettings):
         "DEBUG",
         "TESTING",
         "TRUST_PROXY_HEADERS",
+        "EXPOSE_API_DOCS",
+        "ENABLE_LEGACY_GRAPH_ENDPOINTS",
+        "EXPOSE_METRICS",
         "RATE_LIMIT_ENABLED",
         "DUAL_WRITE_RAW_EVENT_STORE",
         "AUTO_BACKFILL_RAW_EVENT_STORE",

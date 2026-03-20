@@ -367,147 +367,200 @@ class AuditMiddleware(BaseHTTPMiddleware):
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
-    """Rate limiting middleware"""
+    """Redis-backed rate limiting middleware with local fallback."""
 
     def __init__(self, app, **kwargs):
         super().__init__(app)
-        self.requests_per_minute = kwargs.get("requests_per_minute", 100)
-        self.requests_per_hour = kwargs.get("requests_per_hour", 1000)
-        self.requests_per_day = kwargs.get("requests_per_day", 10000)
-        self.burst_size = kwargs.get("burst_size", 20)
-
-        # In-memory rate limiting storage (in production, use Redis)
-        self.rate_limits = defaultdict(
-            lambda: {"minute": deque(), "hour": deque(), "day": deque()}
+        self.default_requests_per_minute = kwargs.get(
+            "requests_per_minute",
+            settings.RATE_LIMIT_REQUESTS_PER_MINUTE,
         )
+        self.local_rate_limits = defaultdict(deque)
 
     async def dispatch(
         self, request: Request, call_next: RequestResponseEndpoint
     ) -> Response:
-        """Process request through rate limiting"""
-        # Skip rate limiting in test mode
-        if os.environ.get("TESTING"):
+        """Process request through rate limiting."""
+        if os.environ.get("TESTING") or not settings.RATE_LIMIT_ENABLED:
             return await call_next(request)
 
         client_ip = self._get_client_ip(request)
-        user_info = getattr(request.state, "user", None)
+        user_key = self._extract_user_key(request)
+        endpoint_label, specs = self._build_rate_limit_specs(request, client_ip, user_key)
 
-        # Use user ID for rate limiting if authenticated, otherwise IP
-        rate_limit_key = user_info.username if user_info else client_ip
-
-        # Check rate limits
-        if not self._check_rate_limit(rate_limit_key):
-            logger.warning(f"Rate limit exceeded for: {rate_limit_key}")
+        exceeded_spec = await self._check_rate_limits(endpoint_label, specs)
+        if exceeded_spec is not None:
+            scope, actor, limit, window_seconds = exceeded_spec
+            logger.warning(
+                "Rate limit exceeded for endpoint=%s scope=%s actor=%s limit=%s window=%ss",
+                endpoint_label,
+                scope,
+                actor,
+                limit,
+                window_seconds,
+            )
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 detail="Rate limit exceeded",
+                headers={"Retry-After": str(window_seconds)},
             )
 
-        # Record request
-        self._record_request(rate_limit_key)
-
-        # Add rate limit headers
         response = await call_next(request)
-        self._add_rate_limit_headers(response, rate_limit_key)
-
+        response.headers["X-RateLimit-Endpoint"] = endpoint_label
         return response
 
     @staticmethod
     def _get_client_ip(request: Request) -> str:
         return get_client_ip(request)
 
-    def _check_rate_limit(self, key: str) -> bool:
-        """Check if rate limit is exceeded"""
+    @staticmethod
+    def _extract_user_key(request: Request) -> Optional[str]:
+        auth_header = request.headers.get("authorization", "")
+        if not auth_header.lower().startswith("bearer "):
+            return None
+
+        token = auth_header.split(" ", 1)[1].strip()
+        if not token:
+            return None
+
+        try:
+            from src.api.auth import verify_token
+
+            token_data = verify_token(token)
+            return token_data.user_id or token_data.username
+        except Exception:
+            return None
+
+    def _build_rate_limit_specs(
+        self,
+        request: Request,
+        client_ip: str,
+        user_key: Optional[str],
+    ) -> tuple[str, List[tuple[str, str, int, int]]]:
+        path = request.url.path.rstrip("/") or "/"
+        method = request.method.upper()
+        specs: List[tuple[str, str, int, int]] = []
+
+        if method == "POST" and path == "/api/v1/auth/login":
+            specs.extend(
+                [
+                    ("ip", client_ip, 5, 60),
+                    ("ip", client_ip, 20, 3600),
+                ]
+            )
+            return "auth_login", specs
+
+        if method == "POST" and path == "/api/v1/graph/sessions":
+            if user_key:
+                specs.append(("user", user_key, 10, 60))
+            specs.append(("ip", client_ip, 30, 60))
+            return "graph_session_create", specs
+
+        if method == "POST" and (
+            path.endswith("/expand")
+            or path in {
+                "/api/v1/graph/expand",
+                "/api/v1/graph/expand-bridge",
+                "/api/v1/graph/expand-utxo",
+                "/api/v1/graph/expand-solana-tx",
+            }
+        ):
+            if user_key:
+                specs.append(("user", user_key, 30, 60))
+            specs.append(("ip", client_ip, 60, 60))
+            return "graph_expand", specs
+
+        if method == "GET" and "/api/v1/graph/sessions/" in path and path.endswith("/status"):
+            if user_key:
+                specs.append(("user", user_key, 60, 60))
+            specs.append(("ip", client_ip, 120, 60))
+            return "graph_hop_status", specs
+
+        specs.append(("ip", client_ip, self.default_requests_per_minute, 60))
+        return "default", specs
+
+    async def _check_rate_limits(
+        self,
+        endpoint_label: str,
+        specs: List[tuple[str, str, int, int]],
+    ) -> Optional[tuple[str, str, int, int]]:
+        for scope, actor, limit, window_seconds in specs:
+            if not actor:
+                continue
+
+            allowed = await self._check_limit(endpoint_label, scope, actor, limit, window_seconds)
+            if not allowed:
+                return (scope, actor, limit, window_seconds)
+        return None
+
+    async def _check_limit(
+        self,
+        endpoint_label: str,
+        scope: str,
+        actor: str,
+        limit: int,
+        window_seconds: int,
+    ) -> bool:
+        try:
+            async with get_redis_connection() as redis:
+                return await self._check_limit_redis(
+                    redis,
+                    endpoint_label,
+                    scope,
+                    actor,
+                    limit,
+                    window_seconds,
+                )
+        except Exception as exc:
+            logger.warning(
+                "Redis-backed rate limiting unavailable for %s/%s: %s; using local fallback",
+                endpoint_label,
+                actor,
+                exc,
+            )
+            return self._check_limit_local(
+                endpoint_label,
+                scope,
+                actor,
+                limit,
+                window_seconds,
+            )
+
+    async def _check_limit_redis(
+        self,
+        redis,
+        endpoint_label: str,
+        scope: str,
+        actor: str,
+        limit: int,
+        window_seconds: int,
+    ) -> bool:
+        bucket = int(time.time() // window_seconds)
+        key = f"rate:{endpoint_label}:{scope}:{actor}:{window_seconds}:{bucket}"
+        count = await redis.incr(key)
+        if count == 1:
+            await redis.expire(key, window_seconds)
+        return int(count) <= limit
+
+    def _check_limit_local(
+        self,
+        endpoint_label: str,
+        scope: str,
+        actor: str,
+        limit: int,
+        window_seconds: int,
+    ) -> bool:
         now = time.time()
-        limits = self.rate_limits[key]
-
-        # Clean old requests
-        self._cleanup_old_requests(limits, now)
-
-        # Check minute limit
-        if len(limits["minute"]) >= self.requests_per_minute:
+        key = f"{endpoint_label}:{scope}:{actor}:{window_seconds}"
+        window = self.local_rate_limits[key]
+        cutoff = now - window_seconds
+        while window and window[0] <= cutoff:
+            window.popleft()
+        if len(window) >= limit:
             return False
-
-        # Check hour limit
-        if len(limits["hour"]) >= self.requests_per_hour:
-            return False
-
-        # Check day limit
-        if len(limits["day"]) >= self.requests_per_day:
-            return False
-
-        # Check burst limit
-        recent_requests = [
-            req_time for req_time in limits["minute"] if now - req_time < 10
-        ]
-        if len(recent_requests) >= self.burst_size:
-            return False
-
+        window.append(now)
         return True
 
-    def _cleanup_old_requests(self, limits: Dict[str, deque], now: float):
-        """Remove old requests from rate limit tracking"""
-        # Clean minute window (60 seconds)
-        while limits["minute"] and now - limits["minute"][0] > 60:
-            limits["minute"].popleft()
-
-        # Clean hour window (3600 seconds)
-        while limits["hour"] and now - limits["hour"][0] > 3600:
-            limits["hour"].popleft()
-
-        # Clean day window (86400 seconds)
-        while limits["day"] and now - limits["day"][0] > 86400:
-            limits["day"].popleft()
-
-    def _record_request(self, key: str):
-        """Record request for rate limiting"""
-        now = time.time()
-        limits = self.rate_limits[key]
-
-        limits["minute"].append(now)
-        limits["hour"].append(now)
-        limits["day"].append(now)
-
-    def _add_rate_limit_headers(self, response: Response, key: str):
-        """Add rate limit headers to response"""
-        limits = self.rate_limits[key]
-        now = time.time()
-
-        # Clean old requests first
-        self._cleanup_old_requests(limits, now)
-
-        # Calculate remaining requests
-        remaining_minute = max(0, self.requests_per_minute - len(limits["minute"]))
-        remaining_hour = max(0, self.requests_per_hour - len(limits["hour"]))
-        remaining_day = max(0, self.requests_per_day - len(limits["day"]))
-
-        # Add headers
-        response.headers["X-RateLimit-Limit-Minute"] = str(self.requests_per_minute)
-        response.headers["X-RateLimit-Remaining-Minute"] = str(remaining_minute)
-        response.headers["X-RateLimit-Limit-Hour"] = str(self.requests_per_hour)
-        response.headers["X-RateLimit-Remaining-Hour"] = str(remaining_hour)
-        response.headers["X-RateLimit-Limit-Day"] = str(self.requests_per_day)
-        response.headers["X-RateLimit-Remaining-Day"] = str(remaining_day)
-
-        # Calculate reset times
-        if limits["minute"]:
-            reset_minute = int(limits["minute"][0] + 60 - now)
-        else:
-            reset_minute = 60
-
-        if limits["hour"]:
-            reset_hour = int(limits["hour"][0] + 3600 - now)
-        else:
-            reset_hour = 3600
-
-        if limits["day"]:
-            reset_day = int(limits["day"][0] + 86400 - now)
-        else:
-            reset_day = 86400
-
-        response.headers["X-RateLimit-Reset-Minute"] = str(reset_minute)
-        response.headers["X-RateLimit-Reset-Hour"] = str(reset_hour)
-        response.headers["X-RateLimit-Reset-Day"] = str(reset_day)
 
 
 # ---------------------------------------------------------------------------
