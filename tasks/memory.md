@@ -51,6 +51,11 @@ Read this file before touching graph schema, graph API, trace compiler semantics
   metadata so node accents, legend counts, and inspector focus actions stay in
   sync.
 
+### ADR-012
+- Branch compare should summarize the currently visible investigation lens, not
+  a hidden global graph state. Compare briefings must respect active route,
+  semantic, and pinned-path focus.
+
 ## Guardrails
 
 - Do not widen this repo into the private compliance dashboard.

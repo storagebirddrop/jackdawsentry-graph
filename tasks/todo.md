@@ -39,3 +39,4 @@ Acceptance criteria:
 - [x] branch workspace supports focus and compare flows
 - [x] inspector supports pinned path storytelling
 - [x] protocol-specific styling and legends cover more than bridge hops
+- [x] branch compare includes a visible briefing tied to the current graph lens

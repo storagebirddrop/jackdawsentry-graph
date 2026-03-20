@@ -769,6 +769,94 @@ export default function InvestigationGraph({ sessionId }: Props) {
     };
   }, [nodes]);
 
+  const branchCompareSummaries = useMemo(() => {
+    if (activeBranchIds.length === 0) return [];
+
+    return activeBranchIds
+      .map((branchId) => {
+        const branch = branchMetaById.get(branchId);
+        if (!branch) return null;
+
+        const branchNodes = nodes
+          .map((node) => node.data as unknown as InvestigationNode)
+          .filter((node) => node.branch_id === branchId);
+        const branchEdges = edges.filter((edge) => {
+          const data = edge.data as Record<string, unknown> | undefined;
+          return data?.branch_id === branchId;
+        });
+        const bridgeHopCount = branchNodes.filter((node) => node.node_type === 'bridge_hop').length;
+        const pathCount = new Set(branchNodes.map((node) => node.path_id)).size;
+        const pinnedPathCount = new Set(
+          branchNodes
+            .map((node) => node.path_id)
+            .filter((pathId) => pinnedPathIds.includes(pathId)),
+        ).size;
+        const chains = Array.from(
+          new Set(
+            branchNodes
+              .map((node) => node.chain ?? node.address_data?.chain)
+              .filter((value): value is string => Boolean(value)),
+          ),
+        );
+        const semanticCounts = new Map<string, { label: string; color: string; count: number }>();
+        for (const node of branchNodes) {
+          const meta = semanticMetaForNode(node);
+          if (!meta) continue;
+          const existing = semanticCounts.get(meta.key) ?? {
+            label: meta.label,
+            color: meta.color,
+            count: 0,
+          };
+          existing.count += 1;
+          semanticCounts.set(meta.key, existing);
+        }
+
+        return {
+          branch,
+          visibleNodes: branchNodes.length,
+          visibleEdges: branchEdges.length,
+          bridgeHopCount,
+          pathCount,
+          pinnedPathCount,
+          chains,
+          topSemantics: [...semanticCounts.values()]
+            .sort((a, b) => b.count - a.count)
+            .slice(0, 3),
+        };
+      })
+      .filter((summary): summary is NonNullable<typeof summary> => summary !== null);
+  }, [activeBranchIds, branchMetaById, edges, nodes, pinnedPathIds]);
+
+  const branchCompareHeadline = useMemo(() => {
+    if (branchCompareSummaries.length === 0) return null;
+    if (branchCompareSummaries.length === 1) {
+      const summary = branchCompareSummaries[0];
+      return `${branchLabel(summary.branch)} holds ${summary.visibleNodes} visible nodes across ${summary.pathCount} paths.`;
+    }
+
+    const [left, right] = branchCompareSummaries;
+    const nodeLeader = left.visibleNodes === right.visibleNodes
+      ? null
+      : left.visibleNodes > right.visibleNodes
+        ? left
+        : right;
+    const bridgeLeader = left.bridgeHopCount === right.bridgeHopCount
+      ? null
+      : left.bridgeHopCount > right.bridgeHopCount
+        ? left
+        : right;
+
+    if (bridgeLeader) {
+      const diff = Math.abs(left.bridgeHopCount - right.bridgeHopCount);
+      return `${branchLabel(bridgeLeader.branch)} carries ${diff} more bridge hop${diff === 1 ? '' : 's'} in the current lens.`;
+    }
+    if (nodeLeader) {
+      const diff = Math.abs(left.visibleNodes - right.visibleNodes);
+      return `${branchLabel(nodeLeader.branch)} carries ${diff} more visible node${diff === 1 ? '' : 's'} in the current lens.`;
+    }
+    return 'The active branches are balanced on visible node and bridge-hop counts.';
+  }, [branchCompareSummaries]);
+
   return (
     <div
       style={{
@@ -1259,6 +1347,121 @@ export default function InvestigationGraph({ sessionId }: Props) {
         </aside>
       )}
 
+      {branchCompareSummaries.length > 0 && (
+        <aside
+          style={{
+            position: 'absolute',
+            left: 16,
+            bottom: 24,
+            zIndex: 103,
+            width: 360,
+            padding: '16px 18px',
+            borderRadius: 22,
+            background: 'rgba(255,255,255,0.95)',
+            border: '1px solid rgba(37,99,235,0.16)',
+            boxShadow: '0 20px 44px rgba(15,23,42,0.12)',
+            backdropFilter: 'blur(14px)',
+            color: '#0f172a',
+          }}
+        >
+          <div style={{ color: '#2563eb', fontSize: 10, fontWeight: 800, letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+            Compare briefing
+          </div>
+          <div style={{ marginTop: 6, fontSize: 22, fontWeight: 800 }}>
+            {branchCompareSummaries.length === 1 ? 'Branch snapshot' : 'Branch compare'}
+          </div>
+          {branchCompareHeadline && (
+            <div style={{ color: '#475569', fontSize: 12, lineHeight: 1.55, marginTop: 8 }}>
+              {branchCompareHeadline}
+            </div>
+          )}
+
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
+            {filters.bridgeRoute && (
+              <span style={summaryChipStyle('#7c3aed')}>{filters.bridgeRoute}</span>
+            )}
+            {filters.bridgeProtocols.map((protocolId) => (
+              <span key={protocolId} style={summaryChipStyle(getBridgeProtocolColor(protocolId))}>
+                {bridgeProtocolLabel(protocolId)}
+              </span>
+            ))}
+            {activeSemanticKey && semanticLegend.entries.find((entry) => entry.key === activeSemanticKey) && (
+              <span
+                style={summaryChipStyle(
+                  semanticLegend.entries.find((entry) => entry.key === activeSemanticKey)?.color ?? '#0f766e',
+                )}
+              >
+                {semanticLegend.entries.find((entry) => entry.key === activeSemanticKey)?.label}
+              </span>
+            )}
+            {pinnedPathIds.length > 0 && (
+              <span style={summaryChipStyle('#b45309')}>
+                {pinnedPathIds.length} pinned path{pinnedPathIds.length === 1 ? '' : 's'}
+              </span>
+            )}
+          </div>
+
+          <div style={{ display: 'grid', gap: 10, marginTop: 14 }}>
+            {branchCompareSummaries.map((summary) => (
+              <div
+                key={summary.branch.branchId}
+                style={{
+                  borderRadius: 16,
+                  padding: '12px 14px',
+                  border: `1px solid ${summary.branch.color}28`,
+                  background: `${summary.branch.color}10`,
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center' }}>
+                  <div>
+                    <div style={{ color: summary.branch.color, fontSize: 12, fontWeight: 800 }}>
+                      {branchLabel(summary.branch)}
+                    </div>
+                    <div style={{ color: '#64748b', fontSize: 11, marginTop: 4 }}>
+                      depth {summary.branch.minDepth}-{summary.branch.maxDepth}
+                      {' · '}
+                      {summary.chains.length > 0 ? summary.chains.join(', ') : 'mixed chains'}
+                    </div>
+                  </div>
+                  <span style={summaryChipStyle(summary.branch.color)}>
+                    {summary.visibleNodes} nodes
+                  </span>
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 8, marginTop: 12 }}>
+                  <div style={compareMetricCardStyle}>
+                    <div style={compareMetricLabelStyle}>Visible edges</div>
+                    <div style={compareMetricValueStyle}>{summary.visibleEdges}</div>
+                  </div>
+                  <div style={compareMetricCardStyle}>
+                    <div style={compareMetricLabelStyle}>Bridge hops</div>
+                    <div style={compareMetricValueStyle}>{summary.bridgeHopCount}</div>
+                  </div>
+                  <div style={compareMetricCardStyle}>
+                    <div style={compareMetricLabelStyle}>Paths</div>
+                    <div style={compareMetricValueStyle}>{summary.pathCount}</div>
+                  </div>
+                  <div style={compareMetricCardStyle}>
+                    <div style={compareMetricLabelStyle}>Pinned paths</div>
+                    <div style={compareMetricValueStyle}>{summary.pinnedPathCount}</div>
+                  </div>
+                </div>
+
+                {summary.topSemantics.length > 0 && (
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12 }}>
+                    {summary.topSemantics.map((semantic) => (
+                      <span key={`${summary.branch.branchId}-${semantic.label}`} style={summaryChipStyle(semantic.color)}>
+                        {semantic.label} · {semantic.count}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </aside>
+      )}
+
       {/* Filter panel */}
       {filterVisible && (
         <FilterPanel
@@ -1466,4 +1669,26 @@ const clearRouteButtonStyle: React.CSSProperties = {
   fontSize: 11,
   fontWeight: 700,
   cursor: 'pointer',
+};
+
+const compareMetricCardStyle: React.CSSProperties = {
+  borderRadius: 12,
+  border: '1px solid rgba(148,163,184,0.18)',
+  background: 'rgba(255,255,255,0.82)',
+  padding: '10px 12px',
+};
+
+const compareMetricLabelStyle: React.CSSProperties = {
+  color: '#64748b',
+  fontSize: 10,
+  fontWeight: 800,
+  letterSpacing: '0.08em',
+  textTransform: 'uppercase',
+};
+
+const compareMetricValueStyle: React.CSSProperties = {
+  color: '#0f172a',
+  fontSize: 18,
+  fontWeight: 800,
+  marginTop: 4,
 };
