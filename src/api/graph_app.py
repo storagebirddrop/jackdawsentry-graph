@@ -1,9 +1,9 @@
 """
 Standalone graph-focused API application.
 
-This entrypoint keeps the runtime intentionally narrow so the investigation
-graph can be extracted into its own MIT-licensed repository without dragging
-along the private compliance dashboard surface.
+This entrypoint keeps the runtime intentionally narrow around authentication,
+graph sessions, and trace compilation for the standalone investigation graph
+product.
 """
 
 import json

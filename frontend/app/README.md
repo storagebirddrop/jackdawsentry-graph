@@ -11,7 +11,7 @@ This package is the standalone investigation graph frontend.
 
 This frontend is the primary graph UI for the canonical `jackdawsentry-graph`
 repository.
-Do not couple it to the private compliance dashboard.
+Do not couple it back to private-platform workflows.
 
 ## Commands
 

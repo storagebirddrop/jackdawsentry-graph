@@ -1,19 +1,28 @@
 {
   "name": "Jackdaw Sentry Graph",
   "short_name": "JDS Graph",
+  "id": "/app/",
+  "start_url": "/app/",
+  "scope": "/app/",
   "icons": [
     {
-      "src": "/icon-192.png",
+      "src": "./icon-192.png",
       "sizes": "192x192",
       "type": "image/png"
     },
     {
-      "src": "/icon-512.png",
+      "src": "./icon-512.png",
       "sizes": "512x512",
       "type": "image/png"
     },
     {
-      "src": "/maskable-512.png",
+      "src": "./maskable-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "./maskable-512.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "maskable"

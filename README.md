@@ -1,5 +1,10 @@
 # Jackdaw Sentry Graph
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/branding/jackdaw-sentry/generated/logo-lockup-dark.svg">
+  <img src="assets/branding/jackdaw-sentry/generated/logo-lockup-light.svg" alt="Jackdaw Sentry Graph" width="560">
+</picture>
+
 Standalone investigation graph for blockchain tracing and session-based graph exploration.
 
 ## Repo Posture
@@ -31,10 +36,29 @@ This repository is intentionally narrower than the private Jackdaw Sentry platfo
 - React investigation graph UI
 - graph-focused backend/runtime, contracts, and tests
 
+## Codebase Map
+
+- `src/api/graph_app.py` runs the standalone FastAPI graph runtime
+- `src/api/routers/graph.py` exposes graph session, expansion, search, trace,
+  and status endpoints
+- `src/trace_compiler/` owns the graph expansion contract and chain-aware
+  compilation logic
+- `frontend/app/` contains the React 19 + TypeScript investigation graph
+- `frontend/graph-login.html` is the static login shell served ahead of the app
+
 ## Quick Start
 
 ```bash
 # create .env with the required database and secret settings
+cat > .env <<'EOF'
+NEO4J_PASSWORD=change-me
+POSTGRES_PASSWORD=change-me
+REDIS_PASSWORD=change-me
+API_SECRET_KEY=replace-with-a-long-random-string
+JWT_SECRET_KEY=replace-with-a-long-random-string
+ENCRYPTION_KEY=replace-with-a-long-random-string
+EOF
+
 docker compose -f docker-compose.graph.yml up --build
 python scripts/dev/create_dev_user.py --username analyst --password change-me-now
 ```
@@ -44,6 +68,7 @@ Browse:
 ```text
 http://localhost:8081/login
 http://localhost:8081/app/
+http://localhost:8081/docs
 ```
 
 ## Development
@@ -71,6 +96,36 @@ Repo verification helpers:
 python scripts/quality/boundary_audit.py
 python scripts/quality/public_readiness_audit.py
 ```
+
+## Support
+
+For usage questions, bug reports, and feature requests, open a
+[GitHub issue](https://github.com/storagebirddrop/jackdawsentry-graph/issues)
+in this repository.
+
+For maintainer contact or private coordination, use
+`jackdawsentry.support@dawgus.com`.
+
+For security issues, do not open a public issue. Follow [SECURITY.md](SECURITY.md).
+
+This support surface covers the standalone graph product only. The private
+`jackdawsentry` platform and compliance workflows are out of scope here.
+
+More detail lives in [SUPPORT.md](SUPPORT.md).
+
+## Branding
+
+The canonical brand source and generated favicon/logo pack live under
+`assets/branding/jackdaw-sentry/`.
+
+To regenerate the public logo, favicon, app icons, and social preview assets:
+
+```bash
+python scripts/branding/generate_brand_assets.py
+```
+
+See [assets/branding/jackdaw-sentry/README.md](assets/branding/jackdaw-sentry/README.md)
+for the asset inventory and usage notes.
 
 ## License
 

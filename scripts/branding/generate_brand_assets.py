@@ -90,6 +90,9 @@ def sync_frontend_assets(outputs: dict[str, Path]) -> None:
         "favicon.ico": FRONTEND / "favicon.ico",
         "favicon-16x16.png": FRONTEND / "favicon-16x16.png",
         "favicon-32x32.png": FRONTEND / "favicon-32x32.png",
+        "favicon-48x48.png": FRONTEND / "favicon-48x48.png",
+        "favicon-64x64.png": FRONTEND / "favicon-64x64.png",
+        "apple-touch-icon.png": FRONTEND / "apple-touch-icon.png",
     }
     app_targets = {
         "favicon.ico": APP_PUBLIC / "favicon.ico",
@@ -113,19 +116,28 @@ def sync_frontend_assets(outputs: dict[str, Path]) -> None:
     manifest = {
         "name": "Jackdaw Sentry Graph",
         "short_name": "JDS Graph",
+        "id": "/app/",
+        "start_url": "/app/",
+        "scope": "/app/",
         "icons": [
             {
-                "src": "/icon-192.png",
+                "src": "./icon-192.png",
                 "sizes": "192x192",
                 "type": "image/png",
             },
             {
-                "src": "/icon-512.png",
+                "src": "./icon-512.png",
                 "sizes": "512x512",
                 "type": "image/png",
             },
             {
-                "src": "/maskable-512.png",
+                "src": "./maskable-192.png",
+                "sizes": "192x192",
+                "type": "image/png",
+                "purpose": "maskable",
+            },
+            {
+                "src": "./maskable-512.png",
                 "sizes": "512x512",
                 "type": "image/png",
                 "purpose": "maskable",

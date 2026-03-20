@@ -1,7 +1,8 @@
 """
-Jackdaw Sentry - Transaction Graph Router (M9.2)
-Returns {nodes, edges} JSON for the frontend Cytoscape.js graph renderer.
-Supports address expansion, transaction tracing, search, and clustering.
+Jackdaw Sentry graph router.
+
+This module serves both the session-based investigation graph APIs and the
+legacy flat graph endpoints that are still carried for compatibility.
 """
 
 import asyncio
