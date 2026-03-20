@@ -1,0 +1,19 @@
+name: Public Readiness
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  readiness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Boundary audit
+        run: python scripts/split/boundary_audit.py
+      - name: Public readiness audit
+        run: python scripts/split/public_readiness_audit.py
