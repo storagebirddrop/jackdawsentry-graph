@@ -34,6 +34,14 @@ Read this file before touching graph schema, graph API, trace compiler semantics
 - Private-repo graph dependencies must be actively migrated out rather than
   accepted as permanent coupling.
 
+### ADR-008
+- Branch compare/focus is the primary comparison surface for branch-scoped
+  investigation workflow.
+
+### ADR-009
+- Analyst storytelling should be derived from backend `path_id` and
+  `lineage_id` metadata, not invented as separate client-only identifiers.
+
 ## Guardrails
 
 - Do not widen this repo into the private compliance dashboard.
@@ -41,6 +49,8 @@ Read this file before touching graph schema, graph API, trace compiler semantics
   back later.
 - Keep graph session/state continuity and layout quality high priority.
 - Prefer state-of-the-art graph UX only when it keeps the standalone product clearer, not more coupled.
+- Branch and path workflow should stay explainable to investigators. Do not add
+  clever controls that hide lineage state or make the current focus ambiguous.
 
 ## Security Invariants
 

@@ -68,6 +68,24 @@ explicitly need them in a trusted environment.
 
 This repo is the default place for active sprint work on the graph product.
 
+## Investigation Workflow
+
+The current investigation shell is built around a few deliberate analyst
+workflows:
+
+- bridge intelligence cards surface visible protocols, dominant routes, and
+  bridge-hop status mix directly on the canvas
+- route focus lets investigators narrow the graph to a protocol or route slice
+  without losing surrounding context
+- branch workspace supports single-branch focus and two-branch compare using the
+  backend branch metadata tracked in session state
+- the inspector is the narrative surface for node detail, lineage, branch
+  actions, and active investigation context
+
+When you add new graph UX, prefer actions that help an analyst answer
+"what happened here?" or "how does this branch differ?" over generic dashboard
+chrome.
+
 Backend verification:
 
 ```bash
@@ -96,6 +114,11 @@ python scripts/quality/live_perf_probe.py --username analyst --password change-m
 `load_perf_fixture_dataset.py` seeds both a dense local hub and a bridge/cross-chain
 fixture slice so the live perf probe can exercise bridge-hop rendering and
 status polling instead of only same-chain address expansion.
+
+Local graph login:
+
+- username: `analyst`
+- password: `change-me-now`
 
 ## Support
 

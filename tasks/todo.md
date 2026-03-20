@@ -25,3 +25,17 @@ Acceptance criteria:
 - [x] root guidance files clearly state this repo owns new graph work
 - [x] memory file captures the private-repo boundary rule
 - [x] stale split-era language is removed from core docs
+
+## Investigation Workflow Pass [IN PROGRESS]
+
+Goal:
+- turn the graph from a generic canvas into an analyst workflow with clear
+  route, branch, and path reasoning surfaces
+
+Acceptance criteria:
+- [x] bridge intelligence summary is visible on-canvas
+- [x] bridge route and protocol focus are investigator actions, not passive
+      labels
+- [x] branch workspace supports focus and compare flows
+- [ ] inspector supports pinned path storytelling
+- [ ] protocol-specific styling and legends cover more than bridge hops

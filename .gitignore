@@ -4,3 +4,4 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .env
+.env.pre_phase5_backup_*
