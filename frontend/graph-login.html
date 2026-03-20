@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sign In - Jackdaw Sentry Graph</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="js/auth.js"></script>
+    <style>
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(12px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .fade-in { animation: fadeIn 0.4s ease-out; }
+    </style>
+</head>
+<body class="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center px-4">
+    <script>
+        if (Auth.isAuthenticated()) {
+            window.location.href = '/app/';
+        }
+    </script>
+
+    <div class="w-full max-w-md fade-in">
+        <div class="text-center mb-8">
+            <img
+                src="/favicon.svg"
+                alt="Jackdaw Sentry"
+                class="mx-auto mb-4 h-16 w-16"
+            >
+            <h1 class="text-3xl font-semibold tracking-tight">Jackdaw Sentry Graph</h1>
+            <p class="mt-2 text-sm text-slate-400">
+                Investigation-grade graph exploration without the private compliance dashboard.
+            </p>
+        </div>
+
+        <div class="rounded-2xl border border-slate-800 bg-slate-900/80 p-8 shadow-2xl shadow-blue-950/30 backdrop-blur">
+            <h2 class="mb-6 text-lg font-semibold">Sign in to continue</h2>
+            <div id="login-error" class="hidden mb-4 rounded-lg border border-rose-800 bg-rose-950/40 p-3 text-sm text-rose-200"></div>
+
+            <form id="login-form" class="space-y-5">
+                <div>
+                    <label for="username" class="mb-1.5 block text-sm font-medium text-slate-300">Username</label>
+                    <input
+                        id="username"
+                        name="username"
+                        type="text"
+                        required
+                        autocomplete="username"
+                        autofocus
+                        class="w-full rounded-lg border border-slate-700 bg-slate-950 px-4 py-2.5 text-slate-100 placeholder-slate-500 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
+                        placeholder="analyst"
+                    >
+                </div>
+
+                <div>
+                    <label for="password" class="mb-1.5 block text-sm font-medium text-slate-300">Password</label>
+                    <input
+                        id="password"
+                        name="password"
+                        type="password"
+                        required
+                        autocomplete="current-password"
+                        class="w-full rounded-lg border border-slate-700 bg-slate-950 px-4 py-2.5 text-slate-100 placeholder-slate-500 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
+                        placeholder="Enter your password"
+                    >
+                </div>
+
+                <button
+                    type="submit"
+                    id="login-btn"
+                    class="flex w-full items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 py-2.5 font-medium text-white transition-colors hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                    <span id="login-btn-text">Sign in</span>
+                    <svg id="login-spinner" class="hidden h-5 w-5 animate-spin text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                    </svg>
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        document.getElementById('login-form').addEventListener('submit', async function (event) {
+            event.preventDefault();
+
+            var errorEl = document.getElementById('login-error');
+            var btn = document.getElementById('login-btn');
+            var btnText = document.getElementById('login-btn-text');
+            var spinner = document.getElementById('login-spinner');
+            var username = document.getElementById('username').value.trim();
+            var password = document.getElementById('password').value;
+
+            errorEl.classList.add('hidden');
+            btn.disabled = true;
+            btnText.textContent = 'Signing in...';
+            spinner.classList.remove('hidden');
+
+            try {
+                await Auth.login(username, password);
+                window.location.href = '/app/';
+            } catch (err) {
+                errorEl.textContent = err.message || 'Login failed';
+                errorEl.classList.remove('hidden');
+                btn.disabled = false;
+                btnText.textContent = 'Sign in';
+                spinner.classList.add('hidden');
+            }
+        });
+    </script>
+</body>
+</html>

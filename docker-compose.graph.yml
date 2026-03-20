@@ -1,0 +1,121 @@
+# Graph-only stack for the future standalone MIT investigation graph product.
+
+services:
+  neo4j:
+    image: neo4j:5.14-community
+    container_name: jackdawsentry_graph_neo4j
+    restart: unless-stopped
+    ports:
+      - "7475:7474"
+      - "7688:7687"
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD}
+    volumes:
+      - graph_neo4j_data:/data
+    networks:
+      - jackdawsentry_graph_network
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: jackdawsentry_graph_postgres
+    restart: unless-stopped
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-jackdawsentry_graph}
+      POSTGRES_USER: ${POSTGRES_USER:-jackdawsentry_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - graph_postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - jackdawsentry_graph_network
+
+  redis:
+    image: redis:7-alpine
+    container_name: jackdawsentry_graph_redis
+    restart: unless-stopped
+    ports:
+      - "6380:6379"
+    command: >
+      sh -c 'redis-server /usr/local/etc/redis/redis.conf
+      --requirepass "$REDIS_PASSWORD"'
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    volumes:
+      - graph_redis_data:/data
+      - ./docker/redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+    networks:
+      - jackdawsentry_graph_network
+
+  graph-api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: jackdawsentry_graph_api
+    restart: unless-stopped
+    command:
+      - uvicorn
+      - src.api.graph_app:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --workers
+      - "2"
+      - --log-level
+      - info
+    environment:
+      API_HOST: 0.0.0.0
+      API_PORT: 8000
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-jackdawsentry_graph}
+      POSTGRES_USER: ${POSTGRES_USER:-jackdawsentry_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      REDIS_DB: ${REDIS_DB:-0}
+      API_SECRET_KEY: ${API_SECRET_KEY}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      DUAL_WRITE_RAW_EVENT_STORE: ${DUAL_WRITE_RAW_EVENT_STORE:-false}
+      AUTO_BACKFILL_RAW_EVENT_STORE: ${AUTO_BACKFILL_RAW_EVENT_STORE:-false}
+      BITCOIN_RPC_URL: ${BITCOIN_RPC_URL:-https://bitcoin-rpc.publicnode.com}
+      ETHEREUM_RPC_URL: ${ETHEREUM_RPC_URL:-https://ethereum-rpc.publicnode.com}
+      POLYGON_RPC_URL: ${POLYGON_RPC_URL:-https://polygon-rpc.com}
+      SOLANA_RPC_URL: ${SOLANA_RPC_URL:-https://solana-rpc.publicnode.com}
+    depends_on:
+      - neo4j
+      - postgres
+      - redis
+    networks:
+      - jackdawsentry_graph_network
+
+  graph-nginx:
+    image: nginx:alpine
+    container_name: jackdawsentry_graph_nginx
+    restart: unless-stopped
+    ports:
+      - "8081:80"
+    volumes:
+      - ./docker/nginx.graph.conf:/etc/nginx/nginx.conf
+      - ./frontend:/usr/share/nginx/html
+    depends_on:
+      - graph-api
+    networks:
+      - jackdawsentry_graph_network
+
+volumes:
+  graph_neo4j_data:
+  graph_postgres_data:
+  graph_redis_data:
+
+networks:
+  jackdawsentry_graph_network:
+    driver: bridge

@@ -27,6 +27,14 @@ CORE_BOOTSTRAP_MIGRATIONS = {
     "009_event_store_backfill.sql",
 }
 
+GRAPH_BOOTSTRAP_MIGRATIONS = {
+    "001_initial_schema.sql",
+    "005_bridge_correlations.sql",
+    "006_raw_event_store.sql",
+    "007_graph_sessions.sql",
+    "009_event_store_backfill.sql",
+}
+
 OPTIONAL_LEGACY_MIGRATIONS = {
     "003_competitive_schema.sql",
     "008_cluster_attribution.sql",
@@ -159,6 +167,10 @@ class MigrationManager:
         if profile == "core":
             migration_files = [
                 name for name in migration_files if name in CORE_BOOTSTRAP_MIGRATIONS
+            ]
+        elif profile == "graph":
+            migration_files = [
+                name for name in migration_files if name in GRAPH_BOOTSTRAP_MIGRATIONS
             ]
         elif profile != "all":
             raise ValueError(f"Unsupported migration profile: {profile}")
