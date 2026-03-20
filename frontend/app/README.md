@@ -9,7 +9,8 @@ This package is the standalone investigation graph frontend.
 - `elkjs` for layered layout
 - Zustand for graph session state
 
-This frontend is the nucleus of the future MIT `jackdawsentry-graph` repository.
+This frontend is the primary graph UI for the canonical `jackdawsentry-graph`
+repository.
 Do not couple it to the private compliance dashboard.
 
 ## Commands
