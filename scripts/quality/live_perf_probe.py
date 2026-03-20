@@ -114,7 +114,7 @@ async def _postgres_profile(env_values: Dict[str, str]) -> Dict[str, int]:
         database=_get_env(env_values, "POSTGRES_DB", "jackdawsentry_graph"),
     )
     try:
-        return await conn.fetchrow(
+        counts = await conn.fetchrow(
             """
             SELECT
                 COALESCE((
@@ -133,6 +133,51 @@ async def _postgres_profile(env_values: Dict[str, str]) -> Dict[str, int]:
                 (SELECT COUNT(*)::bigint FROM bridge_correlations) AS bridge_correlations
             """
         )
+        top_hubs = await conn.fetch(
+            """
+            WITH address_activity AS (
+                SELECT blockchain AS chain, lower(from_address) AS address, count(*)::bigint AS degree
+                FROM raw_transactions
+                WHERE from_address IS NOT NULL
+                GROUP BY blockchain, lower(from_address)
+                UNION ALL
+                SELECT blockchain AS chain, lower(to_address) AS address, count(*)::bigint AS degree
+                FROM raw_transactions
+                WHERE to_address IS NOT NULL
+                GROUP BY blockchain, lower(to_address)
+                UNION ALL
+                SELECT blockchain AS chain, lower(from_address) AS address, count(*)::bigint AS degree
+                FROM raw_token_transfers
+                WHERE from_address IS NOT NULL
+                GROUP BY blockchain, lower(from_address)
+                UNION ALL
+                SELECT blockchain AS chain, lower(to_address) AS address, count(*)::bigint AS degree
+                FROM raw_token_transfers
+                WHERE to_address IS NOT NULL
+                GROUP BY blockchain, lower(to_address)
+            )
+            SELECT chain, address, SUM(degree)::bigint AS degree
+            FROM address_activity
+            WHERE address IS NOT NULL
+            GROUP BY chain, address
+            ORDER BY degree DESC, address ASC
+            LIMIT 5
+            """
+        )
+        return {
+            "raw_transactions_estimate": counts["raw_transactions_estimate"],
+            "raw_token_transfers_estimate": counts["raw_token_transfers_estimate"],
+            "graph_sessions": counts["graph_sessions"],
+            "bridge_correlations": counts["bridge_correlations"],
+            "top_hubs": [
+                {
+                    "chain": row["chain"],
+                    "address": row["address"],
+                    "degree": row["degree"],
+                }
+                for row in top_hubs
+            ],
+        }
     finally:
         await conn.close()
 
@@ -258,6 +303,10 @@ def run_probe(args: argparse.Namespace) -> int:
         f" graph_sessions={postgres_profile['graph_sessions']}"
         f" bridge_correlations={postgres_profile['bridge_correlations']}"
     )
+    for hub in postgres_profile["top_hubs"]:
+        print(
+            f"[dataset] pg-top-hub address={hub['address']} chain={hub['chain']} degree={hub['degree']}"
+        )
     print(
         "[dataset] neo4j"
         f" nodes={neo4j_profile['nodes']}"
@@ -287,6 +336,10 @@ def run_probe(args: argparse.Namespace) -> int:
     token = _json_body(login)["access_token"]
     candidate_seed = args.seed_address
     candidate_chain = args.seed_chain
+    if not candidate_seed and postgres_profile["top_hubs"]:
+        candidate = postgres_profile["top_hubs"][0]
+        candidate_seed = candidate["address"]
+        candidate_chain = candidate["chain"]
     if not candidate_seed and neo4j_profile["top_hubs"]:
         candidate = neo4j_profile["top_hubs"][0]
         candidate_seed = candidate["address"]
