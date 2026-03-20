@@ -49,17 +49,8 @@ This repository is intentionally narrower than the private Jackdaw Sentry platfo
 ## Quick Start
 
 ```bash
-# create .env with the required database and secret settings
-cat > .env <<'EOF'
-NEO4J_PASSWORD=change-me
-POSTGRES_PASSWORD=change-me
-REDIS_PASSWORD=change-me
-API_SECRET_KEY=replace-with-a-long-random-string
-JWT_SECRET_KEY=replace-with-a-long-random-string
-ENCRYPTION_KEY=replace-with-a-long-random-string
-EOF
-
-docker compose -f docker-compose.graph.yml up --build
+cp .env.example .env
+docker compose -f docker-compose.graph.yml up -d --build
 python scripts/dev/create_dev_user.py --username analyst --password change-me-now
 ```
 
