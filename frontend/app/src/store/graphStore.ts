@@ -64,6 +64,7 @@ export function toRfNode(inv: InvestigationNode): Node {
 
 export function toRfEdge(inv: InvestigationEdge): Edge {
   const colorIdx = branchColorIndex(inv.branch_id);
+  const isBridgeEdge = inv.edge_type === 'bridge_source' || inv.edge_type === 'bridge_dest';
   return {
     id: inv.edge_id,
     source: inv.source_node_id,
@@ -74,8 +75,12 @@ export function toRfEdge(inv: InvestigationEdge): Edge {
       branch_color_index: colorIdx,
       branch_color: BRANCH_COLORS[colorIdx],
     },
-    style: { stroke: BRANCH_COLORS[colorIdx], strokeWidth: 2 },
-    animated: inv.edge_type === 'bridge_hop',
+    style: {
+      stroke: BRANCH_COLORS[colorIdx],
+      strokeWidth: isBridgeEdge ? 2.6 : 2,
+      strokeDasharray: isBridgeEdge ? '7 5' : undefined,
+    },
+    animated: isBridgeEdge,
     markerEnd: {
       type: MarkerType.ArrowClosed,
       color: BRANCH_COLORS[colorIdx],

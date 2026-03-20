@@ -35,6 +35,23 @@ const CHAIN_COLORS: Record<string, string> = {
   starknet: '#7f5af0',
 };
 
+const BRIDGE_PROTOCOL_META: Record<
+  string,
+  { color: string; label: string; family: 'native' | 'lock' | 'solver' | 'liquidity' | 'burn' }
+> = {
+  thorchain: { color: '#16a34a', label: 'THORChain', family: 'native' },
+  chainflip: { color: '#ea580c', label: 'Chainflip', family: 'native' },
+  wormhole: { color: '#7c3aed', label: 'Wormhole', family: 'lock' },
+  debridge: { color: '#2563eb', label: 'deBridge', family: 'solver' },
+  mayan: { color: '#0891b2', label: 'Mayan', family: 'solver' },
+  squid: { color: '#0284c7', label: 'Squid', family: 'solver' },
+  lifi: { color: '#db2777', label: 'LI.FI', family: 'solver' },
+  across: { color: '#0f766e', label: 'Across', family: 'liquidity' },
+  celer: { color: '#dc2626', label: 'Celer', family: 'burn' },
+  stargate: { color: '#7c2d12', label: 'Stargate', family: 'liquidity' },
+  synapse: { color: '#9333ea', label: 'Synapse', family: 'burn' },
+};
+
 type GlyphKind =
   | 'address'
   | 'entity'
@@ -54,6 +71,47 @@ type GlyphKind =
 export function getChainColor(chain?: string): string {
   if (!chain) return '#64748b';
   return CHAIN_COLORS[chain.toLowerCase()] ?? '#64748b';
+}
+
+export function getBridgeProtocolColor(protocolId?: string): string {
+  if (!protocolId) return '#7c3aed';
+  return BRIDGE_PROTOCOL_META[protocolId.toLowerCase()]?.color ?? '#7c3aed';
+}
+
+export function bridgeProtocolLabel(protocolId?: string): string {
+  if (!protocolId) return 'Unknown bridge';
+  return BRIDGE_PROTOCOL_META[protocolId.toLowerCase()]?.label ?? protocolId;
+}
+
+export function bridgeMechanismLabel(mechanism?: string): string {
+  switch ((mechanism ?? '').toLowerCase()) {
+    case 'native_amm':
+      return 'Native rail';
+    case 'lock_mint':
+      return 'Lock and mint';
+    case 'burn_release':
+      return 'Burn and release';
+    case 'solver':
+      return 'Solver filled';
+    case 'liquidity':
+      return 'Liquidity relay';
+    default:
+      return mechanism ? mechanism.replace(/_/g, ' ') : 'Unknown mechanism';
+  }
+}
+
+export function bridgeStatusTone(status?: string): string {
+  if (status === 'completed') return '#10b981';
+  if (status === 'failed') return '#ef4444';
+  return '#f59e0b';
+}
+
+export function bridgeRouteLabel(hop: Partial<BridgeHopData>): string {
+  return `${(hop.source_chain ?? '?').toUpperCase()} -> ${(hop.destination_chain ?? 'pending').toUpperCase()}`;
+}
+
+export function bridgeAssetRouteLabel(hop: Partial<BridgeHopData>): string {
+  return `${hop.source_asset ?? '?'} -> ${hop.destination_asset ?? (hop.destination_chain ? '?' : 'pending')}`;
 }
 
 export function shortHash(value: string, leading = 6, trailing = 4): string {

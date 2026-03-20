@@ -28,8 +28,15 @@ export type NodeType =
 export type EdgeType =
   | 'transfer'
   | 'bridge_hop'
+  | 'bridge_source'
+  | 'bridge_dest'
   | 'swap_edge'
+  | 'swap_input'
+  | 'swap_output'
   | 'entity_membership'
+  | 'cluster_member'
+  | 'service_deposit'
+  | 'service_receipt'
   | 'annotation';
 
 export type ActivityType =
@@ -88,9 +95,12 @@ export interface BridgeHopData {
   destination_chain?: string;
   source_asset?: string;
   destination_asset?: string;
+  source_amount?: number;
+  destination_amount?: number | null;
   correlation_confidence: number;
   status: 'pending' | 'completed' | 'failed';
   time_delta_seconds?: number;
+  is_same_asset?: boolean;
 }
 
 export interface SwapEventData {

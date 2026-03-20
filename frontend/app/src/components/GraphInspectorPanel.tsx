@@ -16,6 +16,11 @@ import type {
   AtomicSwapData,
 } from '../types/graph';
 import {
+  bridgeAssetRouteLabel,
+  bridgeMechanismLabel,
+  bridgeProtocolLabel,
+  bridgeRouteLabel,
+  bridgeStatusTone,
   formatNative,
   formatTimestamp,
   formatUsd,
@@ -286,18 +291,52 @@ function BridgeSection({ node }: { node: InvestigationNode }) {
     correlation_conf?: number;
   };
   const activity = node.activity_summary;
-  const destinationChain = hop.destination_chain ?? hop.dest_chain ?? '?';
-  const destinationAsset = hop.destination_asset ?? hop.dest_asset ?? '?';
+  const destinationChain = hop.destination_chain ?? hop.dest_chain;
+  const destinationAsset = hop.destination_asset ?? hop.dest_asset;
   const confidence = hop.correlation_confidence ?? hop.correlation_conf;
+  const protocolLabel = bridgeProtocolLabel(hop.protocol_id);
+  const statusTone = bridgeStatusTone(hop.status);
 
   return (
     <Section title="Bridge hop">
-      <KeyValue label="Protocol">{hop.protocol_id}</KeyValue>
-      <KeyValue label="Status">{hop.status}</KeyValue>
-      <KeyValue label="Mechanism">{hop.mechanism}</KeyValue>
-      <KeyValue label="Route">{`${hop.source_chain} -> ${destinationChain}`}</KeyValue>
-      <KeyValue label="Assets">{`${hop.source_asset ?? '?'} -> ${destinationAsset}`}</KeyValue>
+      <KeyValue label="Protocol">
+        <span style={{ color: statusTone, fontWeight: 700 }}>{protocolLabel}</span>
+      </KeyValue>
+      <KeyValue label="Status">
+        <span style={{ color: statusTone, fontWeight: 700, textTransform: 'uppercase' }}>
+          {hop.status}
+        </span>
+      </KeyValue>
+      <KeyValue label="Mechanism">{bridgeMechanismLabel(hop.mechanism)}</KeyValue>
+      <KeyValue label="Route">
+        {bridgeRouteLabel({
+          source_chain: hop.source_chain,
+          destination_chain: destinationChain,
+        })}
+      </KeyValue>
+      <KeyValue label="Assets">
+        {bridgeAssetRouteLabel({
+          source_asset: hop.source_asset,
+          destination_asset: destinationAsset,
+          destination_chain: destinationChain,
+        })}
+      </KeyValue>
+      <KeyValue label="Amounts">
+        {hop.source_amount !== undefined
+          ? formatNative(hop.source_amount, hop.source_asset) ?? 'Unknown'
+          : 'Unknown'}
+        {' -> '}
+        {hop.destination_amount !== undefined && hop.destination_amount !== null
+          ? formatNative(hop.destination_amount, destinationAsset) ?? 'Unknown'
+          : 'Pending resolution'}
+      </KeyValue>
       <KeyValue label="Confidence">{confidence !== undefined ? `${Math.round(confidence * 100)}%` : 'Unknown'}</KeyValue>
+      <KeyValue label="Same asset">
+        {hop.is_same_asset === undefined ? 'Unknown' : hop.is_same_asset ? 'Yes' : 'No'}
+      </KeyValue>
+      <KeyValue label="Time delta">
+        {hop.time_delta_seconds !== undefined ? `${hop.time_delta_seconds}s` : 'Pending resolution'}
+      </KeyValue>
       <KeyValue label="Hop ID"><code style={codeStyle}>{(hop as { hop_id?: string }).hop_id ?? node.node_id}</code></KeyValue>
       {activity?.source_tx_hash && (
         <KeyValue label="Source TX"><code style={codeStyle}>{activity.source_tx_hash}</code></KeyValue>
@@ -307,6 +346,9 @@ function BridgeSection({ node }: { node: InvestigationNode }) {
       )}
       {activity?.order_id && (
         <KeyValue label="Order ID"><code style={codeStyle}>{activity.order_id}</code></KeyValue>
+      )}
+      {activity?.route_summary && (
+        <KeyValue label="Summary">{activity.route_summary}</KeyValue>
       )}
     </Section>
   );
@@ -539,7 +581,7 @@ function nodeSubtitle(node: InvestigationNode): string | null {
     }
     case 'bridge_hop': {
       const hop = node.node_data as BridgeHopData;
-      return `${hop.source_chain} -> ${hop.destination_chain ?? '?'}`;
+      return `${bridgeProtocolLabel(hop.protocol_id)} · ${bridgeRouteLabel(hop)}`;
     }
     case 'swap_event': {
       const swap = node.node_data as SwapEventData;

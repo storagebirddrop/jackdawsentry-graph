@@ -50,7 +50,12 @@ import {
   DEFAULT_GRAPH_APPEARANCE,
   type GraphAppearanceState,
 } from './graphAppearance';
-import { isNodeVisibleInView } from './graphVisuals';
+import {
+  bridgeProtocolLabel,
+  bridgeRouteLabel,
+  getBridgeProtocolColor,
+  isNodeVisibleInView,
+} from './graphVisuals';
 
 const NODE_TYPES = {
   address: AddressNode,
@@ -287,6 +292,49 @@ export default function InvestigationGraph({ sessionId }: Props) {
     }
   }, [selectedNodeId, selectedEdgeId]);
 
+  const bridgeSummary = useMemo(() => {
+    const bridgeNodes = nodes
+      .map((node) => node.data as unknown as InvestigationNode)
+      .filter((node) => node.node_type === 'bridge_hop');
+
+    if (bridgeNodes.length === 0) return null;
+
+    const protocols = new Map<string, { label: string; count: number; color: string }>();
+    const routes = new Map<string, number>();
+    const statuses = { pending: 0, completed: 0, failed: 0 } as Record<string, number>;
+
+    for (const node of bridgeNodes) {
+      const hop = (node.bridge_hop_data ?? node.node_data) as InvestigationNode['bridge_hop_data'];
+      if (!hop) continue;
+
+      const protocolId = hop.protocol_id ?? 'unknown';
+      const currentProtocol = protocols.get(protocolId) ?? {
+        label: bridgeProtocolLabel(protocolId),
+        count: 0,
+        color: getBridgeProtocolColor(protocolId),
+      };
+      currentProtocol.count += 1;
+      protocols.set(protocolId, currentProtocol);
+
+      const route = bridgeRouteLabel({
+        source_chain: hop.source_chain,
+        destination_chain: hop.destination_chain,
+      });
+      routes.set(route, (routes.get(route) ?? 0) + 1);
+
+      statuses[hop.status] = (statuses[hop.status] ?? 0) + 1;
+    }
+
+    return {
+      total: bridgeNodes.length,
+      protocols: [...protocols.values()].sort((a, b) => b.count - a.count),
+      routes: [...routes.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 4),
+      statuses,
+    };
+  }, [nodes]);
+
   return (
     <div
       style={{
@@ -384,6 +432,83 @@ export default function InvestigationGraph({ sessionId }: Props) {
         </span>
       </div>
 
+      {bridgeSummary && (
+        <aside
+          style={{
+            position: 'absolute',
+            top: 72,
+            left: 16,
+            zIndex: 100,
+            width: 300,
+            padding: '14px 16px',
+            borderRadius: 20,
+            background: 'rgba(255,255,255,0.94)',
+            border: '1px solid rgba(124, 58, 237, 0.16)',
+            boxShadow: '0 18px 40px rgba(15, 23, 42, 0.12)',
+            backdropFilter: 'blur(14px)',
+            color: '#0f172a',
+          }}
+        >
+          <div style={{ color: '#7c3aed', fontSize: 10, fontWeight: 800, letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+            Bridge intelligence
+          </div>
+          <div style={{ marginTop: 6, fontSize: 22, fontWeight: 800 }}>
+            {bridgeSummary.total} visible hops
+          </div>
+          <div style={{ marginTop: 6, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <span style={summaryChipStyle('#f59e0b')}>
+              {bridgeSummary.statuses.pending ?? 0} pending
+            </span>
+            <span style={summaryChipStyle('#10b981')}>
+              {bridgeSummary.statuses.completed ?? 0} completed
+            </span>
+            {!!bridgeSummary.statuses.failed && (
+              <span style={summaryChipStyle('#ef4444')}>
+                {bridgeSummary.statuses.failed} failed
+              </span>
+            )}
+          </div>
+          <div style={{ marginTop: 12, display: 'grid', gap: 10 }}>
+            <div>
+              <div style={summaryHeadingStyle}>Protocols in view</div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 6 }}>
+                {bridgeSummary.protocols.slice(0, 6).map((protocol) => (
+                  <span
+                    key={protocol.label}
+                    style={{
+                      ...summaryChipStyle(protocol.color),
+                      fontWeight: 700,
+                    }}
+                  >
+                    {protocol.label} · {protocol.count}
+                  </span>
+                ))}
+              </div>
+            </div>
+            <div>
+              <div style={summaryHeadingStyle}>Dominant routes</div>
+              <div style={{ display: 'grid', gap: 6, marginTop: 6 }}>
+                {bridgeSummary.routes.map(([route, count]) => (
+                  <div
+                    key={route}
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      gap: 12,
+                      fontSize: 12,
+                      color: '#334155',
+                    }}
+                  >
+                    <span>{route}</span>
+                    <span style={{ color: '#7c3aed', fontWeight: 700 }}>{count}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </aside>
+      )}
+
       {/* Filter panel */}
       {filterVisible && (
         <FilterPanel
@@ -472,3 +597,23 @@ const toolbarPillStyle: React.CSSProperties = {
   fontWeight: 700,
   textTransform: 'capitalize',
 };
+
+const summaryHeadingStyle: React.CSSProperties = {
+  color: '#64748b',
+  fontSize: 10,
+  fontWeight: 800,
+  letterSpacing: '0.08em',
+  textTransform: 'uppercase',
+};
+
+function summaryChipStyle(tone: string): React.CSSProperties {
+  return {
+    padding: '4px 10px',
+    borderRadius: 999,
+    background: `${tone}14`,
+    border: `1px solid ${tone}24`,
+    color: tone,
+    fontSize: 11,
+    fontWeight: 700,
+  };
+}

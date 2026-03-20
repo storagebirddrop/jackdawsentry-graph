@@ -26,6 +26,12 @@ export default function InvestigationEdgeComponent(props: EdgeProps) {
   const data = (props.data ?? {}) as unknown as InvestigationEdgeComponentData;
   const appearance = data.appearance ?? DEFAULT_GRAPH_APPEARANCE;
   const accent = data.branch_color ?? '#3b82f6';
+  const isBridgeEdge = data.edge_type === 'bridge_source' || data.edge_type === 'bridge_dest';
+  const bridgeLabel = isBridgeEdge
+    ? data.edge_type === 'bridge_source'
+      ? 'Bridge ingress'
+      : 'Bridge egress'
+    : null;
 
   const valueLabel = appearance.showValues
     ? appearance.amountsInFiat
@@ -36,7 +42,7 @@ export default function InvestigationEdgeComponent(props: EdgeProps) {
     ? formatTimestamp(data.timestamp, appearance.showTxTime)
     : null;
   const changeLabel = data.is_suspected_change ? 'Change output' : null;
-  const labels = [valueLabel, dateLabel, changeLabel].filter(
+  const labels = [bridgeLabel, valueLabel, dateLabel, changeLabel].filter(
     (value): value is string => Boolean(value),
   );
 
@@ -48,7 +54,8 @@ export default function InvestigationEdgeComponent(props: EdgeProps) {
         style={{
           ...(props.style ?? {}),
           stroke: accent,
-          strokeWidth: props.selected ? 3.2 : data.edge_type === 'bridge_hop' ? 3 : 2.1,
+          strokeWidth: props.selected ? 3.2 : isBridgeEdge ? 3 : 2.1,
+          strokeDasharray: isBridgeEdge ? '7 5' : undefined,
           opacity: props.selected ? 1 : 0.94,
         }}
       />
