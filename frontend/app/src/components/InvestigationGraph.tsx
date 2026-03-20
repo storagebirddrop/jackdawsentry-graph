@@ -29,7 +29,7 @@ import '@xyflow/react/dist/style.css';
 import { useGraphStore } from '../store/graphStore';
 import { expandNode } from '../api/client';
 import { computeElkLayout } from '../layout/elkLayout';
-import type { ExpandRequest, InvestigationNode } from '../types/graph';
+import type { BridgeHopData, ExpandRequest, InvestigationNode } from '../types/graph';
 
 import AddressNode from './nodes/AddressNode';
 import EntityNode from './nodes/EntityNode';
@@ -139,6 +139,57 @@ function applyFilters(
     });
   }
 
+  const hasBridgeFilters =
+    filters.bridgeProtocols.length > 0 ||
+    filters.bridgeStatuses.length > 0 ||
+    Boolean(filters.bridgeRoute);
+
+  if (hasBridgeFilters) {
+    const matchingBridgeNodeIds = new Set(
+      visibleNodes
+        .filter((node) => {
+          const data = node.data as unknown as InvestigationNode;
+          if (data.node_type !== 'bridge_hop') return false;
+
+          const hop = (data.bridge_hop_data ?? data.node_data) as BridgeHopData | undefined;
+          if (!hop) return false;
+
+          const protocolId = hop.protocol_id?.toLowerCase();
+          const status = hop.status?.toLowerCase() as FilterState['bridgeStatuses'][number] | undefined;
+          const route = bridgeRouteLabel({
+            source_chain: hop.source_chain,
+            destination_chain: hop.destination_chain,
+          }).toLowerCase();
+
+          const protocolMatch =
+            filters.bridgeProtocols.length === 0 ||
+            (protocolId !== undefined && filters.bridgeProtocols.includes(protocolId));
+          const statusMatch =
+            filters.bridgeStatuses.length === 0 ||
+            (status !== undefined && filters.bridgeStatuses.includes(status));
+          const routeMatch =
+            !filters.bridgeRoute || route === filters.bridgeRoute.toLowerCase();
+
+          return protocolMatch && statusMatch && routeMatch;
+        })
+        .map((node) => node.id),
+    );
+
+    visibleEdges = visibleEdges.filter(
+      (edge) =>
+        matchingBridgeNodeIds.has(edge.source) ||
+        matchingBridgeNodeIds.has(edge.target),
+    );
+
+    const contextualNodeIds = new Set<string>(matchingBridgeNodeIds);
+    for (const edge of visibleEdges) {
+      contextualNodeIds.add(edge.source);
+      contextualNodeIds.add(edge.target);
+    }
+
+    visibleNodes = visibleNodes.filter((node) => contextualNodeIds.has(node.id));
+  }
+
   return { nodes: visibleNodes, edges: visibleEdges };
 }
 
@@ -164,6 +215,34 @@ export default function InvestigationGraph({ sessionId }: Props) {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [inspectorCollapsed, setInspectorCollapsed] = useState(false);
+
+  const bridgeFilterOptions = useMemo(() => {
+    const protocols = new Set<string>();
+    const routes = new Set<string>();
+
+    for (const node of rfNodes) {
+      const data = node.data as unknown as InvestigationNode;
+      if (data.node_type !== 'bridge_hop') continue;
+
+      const hop = (data.bridge_hop_data ?? data.node_data) as BridgeHopData | undefined;
+      if (!hop) continue;
+
+      if (hop.protocol_id) {
+        protocols.add(hop.protocol_id.toLowerCase());
+      }
+      routes.add(
+        bridgeRouteLabel({
+          source_chain: hop.source_chain,
+          destination_chain: hop.destination_chain,
+        }),
+      );
+    }
+
+    return {
+      protocols: [...protocols].sort(),
+      routes: [...routes].sort(),
+    };
+  }, [rfNodes]);
 
   // Keep local RF state in sync with store, applying current filters
   useEffect(() => {
@@ -299,7 +378,7 @@ export default function InvestigationGraph({ sessionId }: Props) {
 
     if (bridgeNodes.length === 0) return null;
 
-    const protocols = new Map<string, { label: string; count: number; color: string }>();
+    const protocols = new Map<string, { protocolId: string; label: string; count: number; color: string }>();
     const routes = new Map<string, number>();
     const statuses = { pending: 0, completed: 0, failed: 0 } as Record<string, number>;
 
@@ -309,6 +388,7 @@ export default function InvestigationGraph({ sessionId }: Props) {
 
       const protocolId = hop.protocol_id ?? 'unknown';
       const currentProtocol = protocols.get(protocolId) ?? {
+        protocolId,
         label: bridgeProtocolLabel(protocolId),
         count: 0,
         color: getBridgeProtocolColor(protocolId),
@@ -371,7 +451,10 @@ export default function InvestigationGraph({ sessionId }: Props) {
             filters.chainFilter.length > 0,
             filters.minFiatValue !== null && filters.minFiatValue > 0,
             filters.maxDepth !== undefined && filters.maxDepth < 20,
-            filters.assetFilter !== undefined && filters.assetFilter.length > 0
+            filters.assetFilter !== undefined && filters.assetFilter.length > 0,
+            filters.bridgeProtocols.length > 0,
+            filters.bridgeStatuses.length > 0,
+            Boolean(filters.bridgeRoute),
           ].filter(Boolean).length > 0 ? ' •' : ''}
         </button>
         <button
@@ -473,15 +556,28 @@ export default function InvestigationGraph({ sessionId }: Props) {
               <div style={summaryHeadingStyle}>Protocols in view</div>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 6 }}>
                 {bridgeSummary.protocols.slice(0, 6).map((protocol) => (
-                  <span
+                  <button
                     key={protocol.label}
+                    type="button"
+                    onClick={() => {
+                      setFilters((current) => ({
+                        ...current,
+                        bridgeProtocols: current.bridgeProtocols.includes(protocol.protocolId)
+                          ? current.bridgeProtocols.filter((value) => value !== protocol.protocolId)
+                          : [...current.bridgeProtocols, protocol.protocolId],
+                      }));
+                    }}
                     style={{
                       ...summaryChipStyle(protocol.color),
                       fontWeight: 700,
+                      cursor: 'pointer',
+                      background: filters.bridgeProtocols.includes(protocol.protocolId)
+                        ? `${protocol.color}24`
+                        : `${protocol.color}14`,
                     }}
                   >
                     {protocol.label} · {protocol.count}
-                  </span>
+                  </button>
                 ))}
               </div>
             </div>
@@ -489,19 +585,35 @@ export default function InvestigationGraph({ sessionId }: Props) {
               <div style={summaryHeadingStyle}>Dominant routes</div>
               <div style={{ display: 'grid', gap: 6, marginTop: 6 }}>
                 {bridgeSummary.routes.map(([route, count]) => (
-                  <div
+                  <button
                     key={route}
+                    type="button"
+                    onClick={() => {
+                      setFilters((current) => ({
+                        ...current,
+                        bridgeRoute: current.bridgeRoute === route ? null : route,
+                      }));
+                    }}
                     style={{
                       display: 'flex',
                       justifyContent: 'space-between',
                       gap: 12,
                       fontSize: 12,
                       color: '#334155',
+                      border: 'none',
+                      background:
+                        filters.bridgeRoute === route
+                          ? 'rgba(124, 58, 237, 0.12)'
+                          : 'transparent',
+                      borderRadius: 10,
+                      padding: '6px 8px',
+                      cursor: 'pointer',
+                      textAlign: 'left',
                     }}
                   >
                     <span>{route}</span>
                     <span style={{ color: '#7c3aed', fontWeight: 700 }}>{count}</span>
-                  </div>
+                  </button>
                 ))}
               </div>
             </div>
@@ -515,6 +627,8 @@ export default function InvestigationGraph({ sessionId }: Props) {
           filters={filters}
           onChange={setFilters}
           onClose={() => setFilterVisible(false)}
+          availableBridgeProtocols={bridgeFilterOptions.protocols}
+          availableBridgeRoutes={bridgeFilterOptions.routes}
         />
       )}
       <GraphAppearancePanel

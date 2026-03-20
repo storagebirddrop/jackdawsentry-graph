@@ -11,13 +11,17 @@
  * - Maximum depth
  */
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { bridgeProtocolLabel } from './graphVisuals';
 
 export interface FilterState {
   minFiatValue: number | null;
   assetFilter: string;
   chainFilter: string[];
   maxDepth: number;
+  bridgeProtocols: string[];
+  bridgeStatuses: Array<'pending' | 'completed' | 'failed'>;
+  bridgeRoute: string | null;
 }
 
 export const DEFAULT_FILTERS: FilterState = {
@@ -25,6 +29,9 @@ export const DEFAULT_FILTERS: FilterState = {
   assetFilter: '',
   chainFilter: [],
   maxDepth: 20,
+  bridgeProtocols: [],
+  bridgeStatuses: [],
+  bridgeRoute: null,
 };
 
 const KNOWN_CHAINS = [
@@ -36,10 +43,28 @@ interface Props {
   filters: FilterState;
   onChange: (f: FilterState) => void;
   onClose: () => void;
+  availableBridgeProtocols: string[];
+  availableBridgeRoutes: string[];
 }
 
-export default function FilterPanel({ filters, onChange, onClose }: Props) {
+const BRIDGE_STATUSES: Array<'pending' | 'completed' | 'failed'> = [
+  'pending',
+  'completed',
+  'failed',
+];
+
+export default function FilterPanel({
+  filters,
+  onChange,
+  onClose,
+  availableBridgeProtocols,
+  availableBridgeRoutes,
+}: Props) {
   const [local, setLocal] = useState<FilterState>(filters);
+
+  useEffect(() => {
+    setLocal(filters);
+  }, [filters]);
 
   function apply() {
     onChange(local);
@@ -58,6 +83,31 @@ export default function FilterPanel({ filters, onChange, onClose }: Props) {
       chainFilter: f.chainFilter.includes(chain)
         ? f.chainFilter.filter((c) => c !== chain)
         : [...f.chainFilter, chain],
+    }));
+  }
+
+  function toggleBridgeProtocol(protocol: string) {
+    setLocal((f) => ({
+      ...f,
+      bridgeProtocols: f.bridgeProtocols.includes(protocol)
+        ? f.bridgeProtocols.filter((value) => value !== protocol)
+        : [...f.bridgeProtocols, protocol],
+    }));
+  }
+
+  function toggleBridgeStatus(status: 'pending' | 'completed' | 'failed') {
+    setLocal((f) => ({
+      ...f,
+      bridgeStatuses: f.bridgeStatuses.includes(status)
+        ? f.bridgeStatuses.filter((value) => value !== status)
+        : [...f.bridgeStatuses, status],
+    }));
+  }
+
+  function toggleBridgeRoute(route: string) {
+    setLocal((f) => ({
+      ...f,
+      bridgeRoute: f.bridgeRoute === route ? null : route,
     }));
   }
 
@@ -153,6 +203,78 @@ export default function FilterPanel({ filters, onChange, onClose }: Props) {
         </div>
       </div>
 
+      {(availableBridgeProtocols.length > 0 || availableBridgeRoutes.length > 0) && (
+        <>
+          <div style={{ marginTop: 12 }}>
+            <div style={{ color: '#94a3b8', marginBottom: 4 }}>Bridge protocols</div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+              {availableBridgeProtocols.map((protocol) => (
+                <button
+                  key={protocol}
+                  onClick={() => toggleBridgeProtocol(protocol)}
+                  aria-pressed={local.bridgeProtocols.includes(protocol)}
+                  style={{
+                    ...tokenStyle,
+                    background: local.bridgeProtocols.includes(protocol) ? '#7c3aed' : '#0f172a',
+                    color: local.bridgeProtocols.includes(protocol) ? '#fff' : '#c4b5fd',
+                    borderColor: local.bridgeProtocols.includes(protocol) ? '#8b5cf6' : '#4c1d95',
+                  }}
+                >
+                  {bridgeProtocolLabel(protocol)}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div style={{ marginTop: 12 }}>
+            <div style={{ color: '#94a3b8', marginBottom: 4 }}>Bridge status</div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+              {BRIDGE_STATUSES.map((status) => (
+                <button
+                  key={status}
+                  onClick={() => toggleBridgeStatus(status)}
+                  aria-pressed={local.bridgeStatuses.includes(status)}
+                  style={{
+                    ...tokenStyle,
+                    background: local.bridgeStatuses.includes(status) ? '#2563eb' : '#0f172a',
+                    color: local.bridgeStatuses.includes(status) ? '#fff' : '#bfdbfe',
+                    borderColor: local.bridgeStatuses.includes(status) ? '#60a5fa' : '#1d4ed8',
+                    textTransform: 'capitalize',
+                  }}
+                >
+                  {status}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div style={{ marginTop: 12 }}>
+            <div style={{ color: '#94a3b8', marginBottom: 4 }}>Bridge route focus</div>
+            {availableBridgeRoutes.length === 0 ? (
+              <div style={{ color: '#64748b', fontSize: 11 }}>No bridge routes in the current graph.</div>
+            ) : (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                {availableBridgeRoutes.map((route) => (
+                  <button
+                    key={route}
+                    onClick={() => toggleBridgeRoute(route)}
+                    aria-pressed={local.bridgeRoute === route}
+                    style={{
+                      ...tokenStyle,
+                      background: local.bridgeRoute === route ? '#0f766e' : '#0f172a',
+                      color: local.bridgeRoute === route ? '#fff' : '#99f6e4',
+                      borderColor: local.bridgeRoute === route ? '#14b8a6' : '#115e59',
+                    }}
+                  >
+                    {route}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </>
+      )}
+
       {/* Actions */}
       <div style={{ display: 'flex', gap: 8, marginTop: 14 }}>
         <button onClick={apply} style={applyBtnStyle}>Apply</button>
@@ -208,5 +330,13 @@ const resetBtnStyle: React.CSSProperties = {
   borderRadius: 5,
   color: '#94a3b8',
   fontSize: 12,
+  cursor: 'pointer',
+};
+
+const tokenStyle: React.CSSProperties = {
+  padding: '3px 8px',
+  borderRadius: 999,
+  fontSize: 10,
+  border: '1px solid',
   cursor: 'pointer',
 };
