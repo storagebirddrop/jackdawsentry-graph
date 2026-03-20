@@ -11,7 +11,7 @@
  * - Maximum depth
  */
 
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 
 export interface FilterState {
   minFiatValue: number | null;
@@ -35,19 +35,11 @@ const KNOWN_CHAINS = [
 interface Props {
   filters: FilterState;
   onChange: (f: FilterState) => void;
-  visible: boolean;
   onClose: () => void;
 }
 
-export default function FilterPanel({ filters, onChange, visible, onClose }: Props) {
+export default function FilterPanel({ filters, onChange, onClose }: Props) {
   const [local, setLocal] = useState<FilterState>(filters);
-
-  // Sync local state when external filters change or panel becomes visible.
-  useEffect(() => {
-    setLocal(filters);
-  }, [filters, visible]);
-
-  if (!visible) return null;
 
   function apply() {
     onChange(local);

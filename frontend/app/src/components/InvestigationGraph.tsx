@@ -385,12 +385,13 @@ export default function InvestigationGraph({ sessionId }: Props) {
       </div>
 
       {/* Filter panel */}
-      <FilterPanel
-        filters={filters}
-        onChange={setFilters}
-        visible={filterVisible}
-        onClose={() => setFilterVisible(false)}
-      />
+      {filterVisible && (
+        <FilterPanel
+          filters={filters}
+          onChange={setFilters}
+          onClose={() => setFilterVisible(false)}
+        />
+      )}
       <GraphAppearancePanel
         appearance={appearance}
         visible={appearanceVisible}
