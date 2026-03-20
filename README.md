@@ -89,6 +89,7 @@ Repo verification helpers:
 python scripts/quality/boundary_audit.py
 python scripts/quality/public_readiness_audit.py
 python scripts/quality/live_abuse_probe.py --username analyst --password change-me-now
+python scripts/quality/live_perf_probe.py --username analyst --password change-me-now
 ```
 
 ## Support
