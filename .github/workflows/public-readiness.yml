@@ -14,6 +14,6 @@ jobs:
         with:
           python-version: "3.11"
       - name: Boundary audit
-        run: python scripts/split/boundary_audit.py
+        run: python scripts/quality/boundary_audit.py
       - name: Public readiness audit
-        run: python scripts/split/public_readiness_audit.py
+        run: python scripts/quality/public_readiness_audit.py
