@@ -26,6 +26,7 @@ from fastapi import Request
 from fastapi import Response
 from fastapi import status
 from fastapi.middleware import Middleware
+from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.base import RequestResponseEndpoint
 
@@ -105,8 +106,9 @@ class SecurityMiddleware(BaseHTTPMiddleware):
         # Check if IP is blocked
         if client_ip in self.blocked_ips:
             logger.warning(f"Blocked IP attempted access: {client_ip}")
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN, detail="Access denied"
+            return JSONResponse(
+                status_code=status.HTTP_403_FORBIDDEN,
+                content={"detail": "Access denied"},
             )
 
         # Validate request headers
@@ -114,8 +116,9 @@ class SecurityMiddleware(BaseHTTPMiddleware):
         if not validation_result["valid"]:
             logger.warning(f"Request validation failed: {validation_result['reason']}")
             self._handle_suspicious_request(client_ip)
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid request"
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={"detail": "Invalid request"},
             )
 
         # Add security headers
@@ -399,9 +402,9 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 limit,
                 window_seconds,
             )
-            raise HTTPException(
+            return JSONResponse(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail="Rate limit exceeded",
+                content={"detail": "Rate limit exceeded"},
                 headers={"Retry-After": str(window_seconds)},
             )
 

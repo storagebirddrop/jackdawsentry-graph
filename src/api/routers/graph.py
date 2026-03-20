@@ -1,8 +1,11 @@
 """
 Jackdaw Sentry graph router.
 
-This module serves both the session-based investigation graph APIs and the
-legacy flat graph endpoints that are still carried for compatibility.
+This module serves the session-based investigation graph APIs that make up the
+public graph product surface.
+
+Some legacy graph handlers remain in this module as code-level holdovers for
+private-repo compatibility work, but they are not routed in the public repo.
 """
 
 import asyncio
@@ -31,7 +34,6 @@ from pydantic import field_validator
 from src.api.auth import PERMISSIONS
 from src.api.auth import User
 from src.api.auth import check_permissions
-from src.api.config import settings
 from src.api.config import get_supported_blockchains
 from src.api.graph_dependencies import get_edge_price_oracle
 from src.api.graph_dependencies import get_known_bridge_addresses as load_known_bridge_addresses
@@ -54,27 +56,6 @@ router = APIRouter()
 
 MAX_GRAPH_NODES = 500
 MAX_DEPTH = 5
-
-
-def _legacy_graph_endpoints_enabled() -> bool:
-    return (
-        settings.ENABLE_LEGACY_GRAPH_ENDPOINTS
-        or settings.DEBUG
-        or settings.TESTING
-    )
-
-
-def _require_legacy_graph_endpoint_enabled() -> None:
-    if _legacy_graph_endpoints_enabled():
-        return
-
-    raise HTTPException(
-        status_code=410,
-        detail=(
-            "Legacy graph endpoints are disabled. "
-            "Use the investigation session APIs instead."
-        ),
-    )
 
 
 async def _get_owned_session_row(session_id: str, current_user: User) -> Dict[str, Any]:
@@ -291,7 +272,6 @@ class ExpansionResponse(BaseModel):
 # =============================================================================
 
 
-@router.post("/expand", response_model=GraphResponse)
 async def expand_address(
     request: GraphExpandRequest,
     response: Response,
@@ -307,7 +287,6 @@ async def expand_address(
     Uses Neo4j variable-length path queries bounded by depth.
     Falls back to live RPC if address is not in Neo4j.
     """
-    _require_legacy_graph_endpoint_enabled()
     response.headers["Deprecation"] = "true"
     sunset_date = datetime(2026, 6, 30, tzinfo=timezone.utc)
     response.headers["Sunset"] = format_datetime(sunset_date, usegmt=True)
@@ -534,7 +513,6 @@ async def expand_address(
     )
 
 
-@router.post("/trace", response_model=GraphResponse)
 async def trace_transaction(
     request: GraphTraceRequest,
     response: Response,
@@ -549,7 +527,6 @@ async def trace_transaction(
 
     Uses Neo4j variable-length paths to follow fund flow.
     """
-    _require_legacy_graph_endpoint_enabled()
     response.headers["Deprecation"] = "true"
     sunset_date = datetime(2026, 6, 30, tzinfo=timezone.utc)
     response.headers["Sunset"] = format_datetime(sunset_date, usegmt=True)
@@ -724,7 +701,6 @@ async def trace_transaction(
     )
 
 
-@router.post("/search", response_model=GraphResponse)
 async def graph_search(
     request: GraphSearchRequest,
     response: Response,
@@ -737,7 +713,6 @@ async def graph_search(
         This endpoint returns lineage-free flat data and will be removed after T1.15
         event-store cutover is complete (ADR-004).
     """
-    _require_legacy_graph_endpoint_enabled()
     response.headers["Deprecation"] = "true"
     sunset_date = datetime(2026, 6, 30, tzinfo=timezone.utc)
     response.headers["Sunset"] = format_datetime(sunset_date, usegmt=True)
@@ -1023,7 +998,6 @@ async def address_summary(
     return response
 
 
-@router.post("/cluster", response_model=GraphResponse)
 async def cluster_addresses(
     request: GraphClusterRequest,
     response: Response,
@@ -1036,7 +1010,6 @@ async def cluster_addresses(
         This endpoint returns lineage-free flat data and will be removed after T1.15
         event-store cutover is complete (ADR-004).
     """
-    _require_legacy_graph_endpoint_enabled()
     response.headers["Deprecation"] = "true"
     sunset_date = datetime(2026, 6, 30, tzinfo=timezone.utc)
     response.headers["Sunset"] = format_datetime(sunset_date, usegmt=True)
@@ -1176,7 +1149,6 @@ class ExpandSolanaTxRequest(BaseModel):
     parent_node_id: Optional[str] = None
 
 
-@router.post("/expand-solana-tx", response_model=ExpansionResponse)
 async def expand_solana_tx(
     request: ExpandSolanaTxRequest,
     current_user: User = Depends(check_permissions([PERMISSIONS["read_blockchain"]])),
@@ -1193,7 +1165,6 @@ async def expand_solana_tx(
     All returned nodes carry ``branch_id``, ``depth``, ``parent_id``, and
     ``path_id`` for correct frontend graph insertion.
     """
-    _require_legacy_graph_endpoint_enabled()
     from src.collectors.solana_instruction_parser import SolanaInstructionParser
     from src.collectors.rpc.solana_rpc import SolanaRpcClient
 
@@ -1355,7 +1326,6 @@ class ExpandBridgeRequest(BaseModel):
     parent_node_id: Optional[str] = None
 
 
-@router.post("/expand-bridge", response_model=ExpansionResponse)
 async def expand_bridge(
     request: ExpandBridgeRequest,
     current_user: User = Depends(check_permissions([PERMISSIONS["read_blockchain"]])),
@@ -1371,7 +1341,6 @@ async def expand_bridge(
     Both nodes carry ``branch_id``, ``depth``, and ``parent_id`` for
     correct frontend graph insertion.
     """
-    _require_legacy_graph_endpoint_enabled()
     from src.tracing.bridge_tracer import BridgeCorrelation, BridgeTracer
 
     tracer = BridgeTracer()
@@ -1557,7 +1526,6 @@ class ExpandUTXORequest(BaseModel):
         return v
 
 
-@router.post("/expand-utxo", response_model=ExpansionResponse)
 async def expand_utxo(
     request: ExpandUTXORequest,
     current_user: User = Depends(check_permissions([PERMISSIONS["read_blockchain"]])),
@@ -1576,7 +1544,6 @@ async def expand_utxo(
 
     Falls back to the live Bitcoin RPC client when no data exists in Neo4j.
     """
-    _require_legacy_graph_endpoint_enabled()
     branch_id = request.branch_id or str(uuid4())
     parent_node_id = request.parent_node_id or f"bitcoin:{request.address}"
     depth = request.insertion_depth

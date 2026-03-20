@@ -212,3 +212,81 @@ def test_bridge_hop_status_requires_session_allowlist():
 
     assert response.status_code == 404
     compiler.get_bridge_hop_status.assert_not_called()
+
+
+def test_expand_rejects_unsupported_continuation_token():
+    user = _user()
+    compiler = MagicMock()
+    compiler.expand = AsyncMock()
+    app.dependency_overrides[get_current_user] = lambda: user
+    try:
+        with (
+            patch("src.api.routers.graph.get_postgres_pool", return_value=_pg_pool(row=_session_row())),
+            patch("src.api.routers.graph._get_trace_compiler", new=AsyncMock(return_value=compiler)),
+            _graph_client() as client,
+        ):
+            response = client.post(
+                "/api/v1/graph/sessions/00000000-0000-0000-0000-000000000999/expand",
+                json={
+                    "operation_type": "expand_next",
+                    "seed_node_id": "ethereum:address:0xabc",
+                    "options": {"continuation_token": "cursor-1"},
+                },
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 400
+    compiler.expand.assert_not_called()
+
+
+def test_expand_rejects_max_results_over_limit():
+    user = _user()
+    compiler = MagicMock()
+    compiler.expand = AsyncMock()
+    app.dependency_overrides[get_current_user] = lambda: user
+    try:
+        with (
+            patch("src.api.routers.graph.get_postgres_pool", return_value=_pg_pool(row=_session_row())),
+            patch("src.api.routers.graph._get_trace_compiler", new=AsyncMock(return_value=compiler)),
+            _graph_client() as client,
+        ):
+            response = client.post(
+                "/api/v1/graph/sessions/00000000-0000-0000-0000-000000000999/expand",
+                json={
+                    "operation_type": "expand_next",
+                    "seed_node_id": "ethereum:address:0xabc",
+                    "options": {"max_results": 101},
+                },
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 422
+    compiler.expand.assert_not_called()
+
+
+def test_expand_rejects_depth_over_limit():
+    user = _user()
+    compiler = MagicMock()
+    compiler.expand = AsyncMock()
+    app.dependency_overrides[get_current_user] = lambda: user
+    try:
+        with (
+            patch("src.api.routers.graph.get_postgres_pool", return_value=_pg_pool(row=_session_row())),
+            patch("src.api.routers.graph._get_trace_compiler", new=AsyncMock(return_value=compiler)),
+            _graph_client() as client,
+        ):
+            response = client.post(
+                "/api/v1/graph/sessions/00000000-0000-0000-0000-000000000999/expand",
+                json={
+                    "operation_type": "expand_next",
+                    "seed_node_id": "ethereum:address:0xabc",
+                    "options": {"depth": 4},
+                },
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 422
+    compiler.expand.assert_not_called()

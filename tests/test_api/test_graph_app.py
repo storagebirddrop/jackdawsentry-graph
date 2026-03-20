@@ -76,8 +76,25 @@ def test_graph_app_openapi_can_be_enabled():
     assert "/api/v1/auth/login" in paths
     assert "/api/v1/graph/sessions" in paths
     assert "/api/v1/graph/sessions/{session_id}/expand" in paths
+    assert "/api/v1/graph/expand" not in paths
+    assert "/api/v1/graph/trace" not in paths
+    assert "/api/v1/graph/search" not in paths
+    assert "/api/v1/graph/cluster" not in paths
+    assert "/api/v1/graph/expand-bridge" not in paths
+    assert "/api/v1/graph/expand-utxo" not in paths
+    assert "/api/v1/graph/expand-solana-tx" not in paths
     assert "/api/v1/setup/status" not in paths
     assert "/api/v1/compliance/statistics" not in paths
+
+
+def test_graph_app_legacy_graph_routes_are_not_registered(graph_client):
+    assert graph_client.post("/api/v1/graph/expand", json={}).status_code == 404
+    assert graph_client.post("/api/v1/graph/trace", json={}).status_code == 404
+    assert graph_client.post("/api/v1/graph/search", json={}).status_code == 404
+    assert graph_client.post("/api/v1/graph/cluster", json={}).status_code == 404
+    assert graph_client.post("/api/v1/graph/expand-bridge", json={}).status_code == 404
+    assert graph_client.post("/api/v1/graph/expand-utxo", json={}).status_code == 404
+    assert graph_client.post("/api/v1/graph/expand-solana-tx", json={}).status_code == 404
 
 
 def test_graph_app_middleware_excludes_audit():
