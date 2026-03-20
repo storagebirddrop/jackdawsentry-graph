@@ -40,6 +40,11 @@ interface Props {
   collapsed: boolean;
   onClose: () => void;
   onToggleCollapsed: () => void;
+  onFocusBridgeRoute?: (route: string) => void;
+  onFocusBridgeProtocol?: (protocolId: string) => void;
+  onClearBridgeFocus?: () => void;
+  activeBridgeRoute?: string | null;
+  activeBridgeProtocols?: string[];
 }
 
 export default function GraphInspectorPanel({
@@ -48,6 +53,11 @@ export default function GraphInspectorPanel({
   collapsed,
   onClose,
   onToggleCollapsed,
+  onFocusBridgeRoute,
+  onFocusBridgeProtocol,
+  onClearBridgeFocus,
+  activeBridgeRoute,
+  activeBridgeProtocols = [],
 }: Props) {
   const selectedNode = useMemo(
     () => (node?.data as InvestigationNode | undefined) ?? null,
@@ -104,7 +114,14 @@ export default function GraphInspectorPanel({
       {!selectedNode && !selectedEdge ? (
         <EmptyState />
       ) : selectedNode ? (
-        <NodeInspectorContent node={selectedNode} />
+        <NodeInspectorContent
+          node={selectedNode}
+          onFocusBridgeRoute={onFocusBridgeRoute}
+          onFocusBridgeProtocol={onFocusBridgeProtocol}
+          onClearBridgeFocus={onClearBridgeFocus}
+          activeBridgeRoute={activeBridgeRoute}
+          activeBridgeProtocols={activeBridgeProtocols}
+        />
       ) : selectedEdge ? (
         <EdgeInspectorContent edge={selectedEdge} />
       ) : null}
@@ -135,8 +152,18 @@ function EmptyState() {
 
 function NodeInspectorContent({
   node,
+  onFocusBridgeRoute,
+  onFocusBridgeProtocol,
+  onClearBridgeFocus,
+  activeBridgeRoute,
+  activeBridgeProtocols,
 }: {
   node: InvestigationNode;
+  onFocusBridgeRoute?: (route: string) => void;
+  onFocusBridgeProtocol?: (protocolId: string) => void;
+  onClearBridgeFocus?: () => void;
+  activeBridgeRoute?: string | null;
+  activeBridgeProtocols: string[];
 }) {
   const accent = getChainColor(node.chain ?? (node.address_data as AddressNodeData | undefined)?.chain);
   const badges = semanticBadges(node);
@@ -181,7 +208,16 @@ function NodeInspectorContent({
       {node.node_type === 'address' && <AddressSection node={node} />}
       {(node.node_type === 'entity' || node.node_type === 'service') && <EntitySection node={node} />}
       {node.node_type === 'swap_event' && <SwapSection node={node} />}
-      {node.node_type === 'bridge_hop' && <BridgeSection node={node} />}
+      {node.node_type === 'bridge_hop' && (
+        <BridgeSection
+          node={node}
+          onFocusBridgeRoute={onFocusBridgeRoute}
+          onFocusBridgeProtocol={onFocusBridgeProtocol}
+          onClearBridgeFocus={onClearBridgeFocus}
+          activeBridgeRoute={activeBridgeRoute}
+          activeBridgeProtocols={activeBridgeProtocols}
+        />
+      )}
       {node.node_type === 'lightning_channel_open' && <LightningChannelOpenSection node={node} />}
       {node.node_type === 'lightning_channel_close' && <LightningChannelCloseSection node={node} />}
       {(node.node_type === 'btc_sidechain_peg_in' || node.node_type === 'btc_sidechain_peg_out') && (
@@ -284,7 +320,21 @@ function SwapSection({ node }: { node: InvestigationNode }) {
   );
 }
 
-function BridgeSection({ node }: { node: InvestigationNode }) {
+function BridgeSection({
+  node,
+  onFocusBridgeRoute,
+  onFocusBridgeProtocol,
+  onClearBridgeFocus,
+  activeBridgeRoute,
+  activeBridgeProtocols,
+}: {
+  node: InvestigationNode;
+  onFocusBridgeRoute?: (route: string) => void;
+  onFocusBridgeProtocol?: (protocolId: string) => void;
+  onClearBridgeFocus?: () => void;
+  activeBridgeRoute?: string | null;
+  activeBridgeProtocols: string[];
+}) {
   const hop = node.node_data as BridgeHopData & {
     dest_chain?: string;
     dest_asset?: string;
@@ -296,6 +346,13 @@ function BridgeSection({ node }: { node: InvestigationNode }) {
   const confidence = hop.correlation_confidence ?? hop.correlation_conf;
   const protocolLabel = bridgeProtocolLabel(hop.protocol_id);
   const statusTone = bridgeStatusTone(hop.status);
+  const routeLabel = bridgeRouteLabel({
+    source_chain: hop.source_chain,
+    destination_chain: destinationChain,
+  });
+  const protocolId = hop.protocol_id ?? 'unknown';
+  const routeActive = activeBridgeRoute === routeLabel;
+  const protocolActive = activeBridgeProtocols.includes(protocolId);
 
   return (
     <Section title="Bridge hop">
@@ -309,10 +366,7 @@ function BridgeSection({ node }: { node: InvestigationNode }) {
       </KeyValue>
       <KeyValue label="Mechanism">{bridgeMechanismLabel(hop.mechanism)}</KeyValue>
       <KeyValue label="Route">
-        {bridgeRouteLabel({
-          source_chain: hop.source_chain,
-          destination_chain: destinationChain,
-        })}
+        {routeLabel}
       </KeyValue>
       <KeyValue label="Assets">
         {bridgeAssetRouteLabel({
@@ -349,6 +403,50 @@ function BridgeSection({ node }: { node: InvestigationNode }) {
       )}
       {activity?.route_summary && (
         <KeyValue label="Summary">{activity.route_summary}</KeyValue>
+      )}
+      {(onFocusBridgeRoute || onFocusBridgeProtocol || onClearBridgeFocus) && (
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
+          {onFocusBridgeRoute && (
+            <button
+              type="button"
+              onClick={() => onFocusBridgeRoute(routeLabel)}
+              style={{
+                ...actionButtonStyle,
+                background: routeActive ? 'rgba(124,58,237,0.14)' : 'rgba(255,255,255,0.92)',
+                borderColor: routeActive ? 'rgba(124,58,237,0.4)' : 'rgba(148,163,184,0.3)',
+                color: routeActive ? '#7c3aed' : '#334155',
+              }}
+            >
+              {routeActive ? 'Route focused' : 'Focus route'}
+            </button>
+          )}
+          {onFocusBridgeProtocol && (
+            <button
+              type="button"
+              onClick={() => onFocusBridgeProtocol(protocolId)}
+              style={{
+                ...actionButtonStyle,
+                background: protocolActive ? 'rgba(37,99,235,0.14)' : 'rgba(255,255,255,0.92)',
+                borderColor: protocolActive ? 'rgba(37,99,235,0.36)' : 'rgba(148,163,184,0.3)',
+                color: protocolActive ? '#1d4ed8' : '#334155',
+              }}
+            >
+              {protocolActive ? 'Protocol focused' : 'Focus protocol'}
+            </button>
+          )}
+          {onClearBridgeFocus && (routeActive || protocolActive || activeBridgeRoute || activeBridgeProtocols.length > 0) && (
+            <button
+              type="button"
+              onClick={onClearBridgeFocus}
+              style={{
+                ...actionButtonStyle,
+                color: '#475569',
+              }}
+            >
+              Clear bridge focus
+            </button>
+          )}
+        </div>
       )}
     </Section>
   );
@@ -806,4 +904,14 @@ const emptyBodyStyle: React.CSSProperties = {
   fontSize: 13,
   lineHeight: 1.6,
   marginTop: 8,
+};
+
+const actionButtonStyle: React.CSSProperties = {
+  padding: '8px 12px',
+  borderRadius: 999,
+  border: '1px solid rgba(148, 163, 184, 0.3)',
+  background: 'rgba(255,255,255,0.92)',
+  fontSize: 12,
+  fontWeight: 700,
+  cursor: 'pointer',
 };

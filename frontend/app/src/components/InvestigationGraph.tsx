@@ -215,6 +215,7 @@ export default function InvestigationGraph({ sessionId }: Props) {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [inspectorCollapsed, setInspectorCollapsed] = useState(false);
+  const [bridgeRouteHistory, setBridgeRouteHistory] = useState<string[]>([]);
 
   const bridgeFilterOptions = useMemo(() => {
     const protocols = new Set<string>();
@@ -371,6 +372,40 @@ export default function InvestigationGraph({ sessionId }: Props) {
     }
   }, [selectedNodeId, selectedEdgeId]);
 
+  useEffect(() => {
+    if (!filters.bridgeRoute) return;
+    setBridgeRouteHistory((current) => [
+      filters.bridgeRoute as string,
+      ...current.filter((route) => route !== filters.bridgeRoute),
+    ].slice(0, 6));
+  }, [filters.bridgeRoute]);
+
+  const focusBridgeRoute = useCallback((route: string) => {
+    setFilters((current) => ({
+      ...current,
+      bridgeRoute: current.bridgeRoute === route ? null : route,
+    }));
+  }, []);
+
+  const focusBridgeProtocol = useCallback((protocolId: string) => {
+    setFilters((current) => ({
+      ...current,
+      bridgeProtocols:
+        current.bridgeProtocols.length === 1 && current.bridgeProtocols[0] === protocolId
+          ? []
+          : [protocolId],
+    }));
+  }, []);
+
+  const clearBridgeFocus = useCallback(() => {
+    setFilters((current) => ({
+      ...current,
+      bridgeProtocols: [],
+      bridgeStatuses: [],
+      bridgeRoute: null,
+    }));
+  }, []);
+
   const bridgeSummary = useMemo(() => {
     const bridgeNodes = nodes
       .map((node) => node.data as unknown as InvestigationNode)
@@ -515,6 +550,77 @@ export default function InvestigationGraph({ sessionId }: Props) {
         </span>
       </div>
 
+      {(filters.bridgeRoute || bridgeRouteHistory.length > 0 || filters.bridgeProtocols.length > 0) && (
+        <div
+          style={{
+            position: 'absolute',
+            top: 72,
+            left: bridgeSummary ? 332 : 16,
+            zIndex: 105,
+            maxWidth: 620,
+            display: 'flex',
+            flexWrap: 'wrap',
+            gap: 8,
+            alignItems: 'center',
+            padding: '10px 12px',
+            borderRadius: 18,
+            background: 'rgba(255,255,255,0.92)',
+            border: '1px solid rgba(148,163,184,0.26)',
+            boxShadow: '0 14px 36px rgba(15,23,42,0.10)',
+            backdropFilter: 'blur(12px)',
+          }}
+        >
+          <span style={routeFocusEyebrowStyle}>Route focus</span>
+          {filters.bridgeRoute && (
+            <button
+              type="button"
+              onClick={() => focusBridgeRoute(filters.bridgeRoute as string)}
+              style={{
+                ...routeChipStyle('#7c3aed'),
+                background: 'rgba(124,58,237,0.14)',
+              }}
+            >
+              {filters.bridgeRoute} · active
+            </button>
+          )}
+          {filters.bridgeProtocols.map((protocolId) => (
+            <button
+              key={protocolId}
+              type="button"
+              onClick={() => focusBridgeProtocol(protocolId)}
+              style={{
+                ...routeChipStyle('#1d4ed8'),
+                background: 'rgba(37,99,235,0.14)',
+              }}
+            >
+              {bridgeProtocolLabel(protocolId)} · protocol
+            </button>
+          ))}
+          {bridgeRouteHistory
+            .filter((route) => route !== filters.bridgeRoute)
+            .slice(0, 4)
+            .map((route) => (
+              <button
+                key={route}
+                type="button"
+                onClick={() => focusBridgeRoute(route)}
+                style={routeChipStyle('#475569')}
+              >
+                {route}
+              </button>
+            ))}
+          {(filters.bridgeRoute || filters.bridgeProtocols.length > 0 || filters.bridgeStatuses.length > 0) && (
+            <button
+              type="button"
+              onClick={clearBridgeFocus}
+              style={clearRouteButtonStyle}
+            >
+              Clear
+            </button>
+          )}
+        </div>
+      )}
+
       {bridgeSummary && (
         <aside
           style={{
@@ -559,14 +665,7 @@ export default function InvestigationGraph({ sessionId }: Props) {
                   <button
                     key={protocol.label}
                     type="button"
-                    onClick={() => {
-                      setFilters((current) => ({
-                        ...current,
-                        bridgeProtocols: current.bridgeProtocols.includes(protocol.protocolId)
-                          ? current.bridgeProtocols.filter((value) => value !== protocol.protocolId)
-                          : [...current.bridgeProtocols, protocol.protocolId],
-                      }));
-                    }}
+                    onClick={() => focusBridgeProtocol(protocol.protocolId)}
                     style={{
                       ...summaryChipStyle(protocol.color),
                       fontWeight: 700,
@@ -588,12 +687,7 @@ export default function InvestigationGraph({ sessionId }: Props) {
                   <button
                     key={route}
                     type="button"
-                    onClick={() => {
-                      setFilters((current) => ({
-                        ...current,
-                        bridgeRoute: current.bridgeRoute === route ? null : route,
-                      }));
-                    }}
+                    onClick={() => focusBridgeRoute(route)}
                     style={{
                       display: 'flex',
                       justifyContent: 'space-between',
@@ -678,10 +772,15 @@ export default function InvestigationGraph({ sessionId }: Props) {
         node={selectedNode}
         edge={selectedEdge}
         collapsed={inspectorCollapsed}
+        activeBridgeRoute={filters.bridgeRoute}
+        activeBridgeProtocols={filters.bridgeProtocols}
         onClose={() => {
           setSelectedNodeId(null);
           setSelectedEdgeId(null);
         }}
+        onFocusBridgeRoute={focusBridgeRoute}
+        onFocusBridgeProtocol={focusBridgeProtocol}
+        onClearBridgeFocus={clearBridgeFocus}
         onToggleCollapsed={() => setInspectorCollapsed((value) => !value)}
       />
     </div>
@@ -731,3 +830,36 @@ function summaryChipStyle(tone: string): React.CSSProperties {
     fontWeight: 700,
   };
 }
+
+const routeFocusEyebrowStyle: React.CSSProperties = {
+  color: '#64748b',
+  fontSize: 10,
+  fontWeight: 800,
+  letterSpacing: '0.08em',
+  textTransform: 'uppercase',
+  marginRight: 2,
+};
+
+function routeChipStyle(tone: string): React.CSSProperties {
+  return {
+    padding: '6px 10px',
+    borderRadius: 999,
+    border: `1px solid ${tone}24`,
+    background: 'rgba(255,255,255,0.88)',
+    color: tone,
+    fontSize: 11,
+    fontWeight: 700,
+    cursor: 'pointer',
+  };
+}
+
+const clearRouteButtonStyle: React.CSSProperties = {
+  padding: '6px 10px',
+  borderRadius: 999,
+  border: '1px solid rgba(148,163,184,0.26)',
+  background: 'rgba(255,255,255,0.88)',
+  color: '#475569',
+  fontSize: 11,
+  fontWeight: 700,
+  cursor: 'pointer',
+};
