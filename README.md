@@ -70,6 +70,46 @@ The standalone local graph stack is graph-only by default:
 - `AUTO_BACKFILL_RAW_EVENT_STORE` stays `false` unless you opt into a different runtime
 - `Prev` / `Next` only expand activity that already exists in the local event store / graph dataset
 
+### Optional Ingest Runtime
+
+When you want live collectors plus raw-event-store backfill, run the ingest
+sidecar overlay alongside the normal graph stack:
+
+```bash
+docker compose \
+  -f docker-compose.graph.yml \
+  -f docker-compose.graph.ingest.yml \
+  up -d --build
+```
+
+That overlay starts a dedicated `graph-ingest` service. The request-serving
+`graph-api` stays lean, while the sidecar owns:
+
+- blockchain collectors
+- raw event-store dual-write
+- bootstrap backfill into `raw_transactions` / `raw_token_transfers`
+
+The ingest overlay uses sidecar-specific env flags so it can default to live
+ingestion even when the base `.env` keeps the request-serving graph API in
+request-only mode:
+
+- `GRAPH_INGEST_DUAL_WRITE_RAW_EVENT_STORE`
+- `GRAPH_INGEST_AUTO_BACKFILL_RAW_EVENT_STORE`
+- `GRAPH_INGEST_BACKFILL_INTERVAL_SECONDS`
+- `GRAPH_INGEST_BACKFILL_BLOCK_BATCH_SIZE`
+- `GRAPH_INGEST_BACKFILL_CHAINS_PER_CYCLE`
+- `GRAPH_INGEST_BACKFILL_BLOCK_TIMEOUT_SECONDS`
+
+You can check whether the ingest sidecar is being observed through the
+authenticated status endpoint:
+
+```text
+GET /api/v1/status
+```
+
+`runtime.ingest.detected=true` means the graph API can currently see collector
+metrics in Redis. If it is `false`, you are still in request-only mode.
+
 For local graph exploration, load representative data first:
 
 ```bash

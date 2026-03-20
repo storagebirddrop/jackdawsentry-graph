@@ -10,6 +10,7 @@ import json
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime
+from typing import Any
 
 from fastapi import Depends
 from fastapi import FastAPI
@@ -58,6 +59,46 @@ class CustomJSONResponse(JSONResponse):
             ensure_ascii=False,
             allow_nan=False,
         ).encode("utf-8")
+
+
+async def get_ingest_runtime_status() -> dict[str, Any]:
+    """Summarize whether a dedicated ingest runtime appears to be active."""
+    status: dict[str, Any] = {
+        "detected": False,
+        "source": "redis:collector_metrics",
+    }
+
+    try:
+        from src.api.database import get_redis_connection
+
+        async with get_redis_connection() as redis:
+            payload = await redis.get("collector_metrics")
+    except Exception as exc:  # pragma: no cover - defensive status path
+        logger.warning("Unable to read ingest runtime status from Redis: %s", exc)
+        status["error"] = "collector metrics unavailable"
+        return status
+
+    if not payload:
+        status["message"] = "No collector metrics found. The request-serving graph API is running without a live ingest sidecar."
+        return status
+
+    try:
+        decoded = json.loads(payload)
+    except (TypeError, json.JSONDecodeError):
+        status["error"] = "collector metrics payload invalid"
+        return status
+
+    status.update(
+        {
+            "detected": True,
+            "running_collectors": decoded.get("running_collectors"),
+            "total_collectors": decoded.get("total_collectors"),
+            "total_transactions": decoded.get("total_transactions"),
+            "total_blocks": decoded.get("total_blocks"),
+            "last_update": decoded.get("last_update"),
+        }
+    )
+    return status
 
 
 @asynccontextmanager
@@ -198,6 +239,7 @@ def create_graph_app() -> FastAPI:
     @app.get("/api/v1/status", tags=["Status"])
     async def api_status(current_user: User = Depends(get_current_user)):
         """Status endpoint for authenticated graph users."""
+        ingest_status = await get_ingest_runtime_status()
         return {
             "status": "operational",
             "product": "graph",
@@ -206,6 +248,10 @@ def create_graph_app() -> FastAPI:
                 "graph_sessions": True,
                 "graph_expansion": True,
                 "bridge_status_polling": True,
+            },
+            "runtime": {
+                "mode": "request-serving",
+                "ingest": ingest_status,
             },
         }
 

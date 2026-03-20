@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+from contextlib import asynccontextmanager
+import json
 from unittest.mock import AsyncMock
 from unittest.mock import patch
 
@@ -140,3 +142,52 @@ async def test_graph_profile_only_includes_graph_bootstrap_migrations(tmp_path: 
         "007_graph_sessions.sql",
         "009_event_store_backfill.sql",
     ]
+
+
+@pytest.mark.asyncio
+async def test_graph_app_ingest_status_detects_collector_metrics():
+    from src.api import graph_app as graph_app_module
+
+    class FakeRedis:
+        async def get(self, key: str):
+            assert key == "collector_metrics"
+            return json.dumps(
+                {
+                    "running_collectors": 3,
+                    "total_collectors": 5,
+                    "total_transactions": 42,
+                    "total_blocks": 7,
+                    "last_update": "2026-03-21T00:00:00Z",
+                }
+            )
+
+    @asynccontextmanager
+    async def fake_redis_connection():
+        yield FakeRedis()
+
+    with patch("src.api.database.get_redis_connection", fake_redis_connection):
+        status = await graph_app_module.get_ingest_runtime_status()
+
+    assert status["detected"] is True
+    assert status["running_collectors"] == 3
+    assert status["total_collectors"] == 5
+
+
+@pytest.mark.asyncio
+async def test_graph_app_ingest_status_reports_request_only_mode():
+    from src.api import graph_app as graph_app_module
+
+    class FakeRedis:
+        async def get(self, key: str):
+            assert key == "collector_metrics"
+            return None
+
+    @asynccontextmanager
+    async def fake_redis_connection():
+        yield FakeRedis()
+
+    with patch("src.api.database.get_redis_connection", fake_redis_connection):
+        status = await graph_app_module.get_ingest_runtime_status()
+
+    assert status["detected"] is False
+    assert "request-serving graph API" in status["message"]

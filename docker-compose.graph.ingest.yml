@@ -1,0 +1,79 @@
+# Optional ingestion/runtime overlay for the standalone graph product.
+#
+# Usage:
+#   docker compose \
+#     -f docker-compose.graph.yml \
+#     -f docker-compose.graph.ingest.yml \
+#     up -d --build
+#
+# This adds a dedicated collector/backfill sidecar without changing the
+# lightweight request-serving graph API.
+
+services:
+  graph-ingest:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: jackdawsentry_graph_ingest
+    restart: unless-stopped
+    command:
+      - python
+      - -m
+      - src.api.graph_ingest_runtime
+    environment:
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-jackdawsentry_graph}
+      POSTGRES_USER: ${POSTGRES_USER:-jackdawsentry_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      REDIS_DB: ${REDIS_DB:-0}
+      API_SECRET_KEY: ${API_SECRET_KEY}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      DUAL_WRITE_RAW_EVENT_STORE: ${GRAPH_INGEST_DUAL_WRITE_RAW_EVENT_STORE:-true}
+      AUTO_BACKFILL_RAW_EVENT_STORE: ${GRAPH_INGEST_AUTO_BACKFILL_RAW_EVENT_STORE:-true}
+      BACKFILL_INTERVAL_SECONDS: ${GRAPH_INGEST_BACKFILL_INTERVAL_SECONDS:-30}
+      BACKFILL_BLOCK_BATCH_SIZE: ${GRAPH_INGEST_BACKFILL_BLOCK_BATCH_SIZE:-2}
+      BACKFILL_CHAINS_PER_CYCLE: ${GRAPH_INGEST_BACKFILL_CHAINS_PER_CYCLE:-4}
+      BACKFILL_BLOCK_TIMEOUT_SECONDS: ${GRAPH_INGEST_BACKFILL_BLOCK_TIMEOUT_SECONDS:-45}
+      BITCOIN_RPC_URL: ${BITCOIN_RPC_URL:-https://bitcoin-rpc.publicnode.com}
+      BITCOIN_RPC_USER: ${BITCOIN_RPC_USER:-}
+      BITCOIN_RPC_PASSWORD: ${BITCOIN_RPC_PASSWORD:-}
+      ETHEREUM_RPC_URL: ${ETHEREUM_RPC_URL:-https://ethereum-rpc.publicnode.com}
+      ETHEREUM_RPC_FALLBACK: ${ETHEREUM_RPC_FALLBACK:-https://ethereum-rpc.publicnode.com}
+      POLYGON_RPC_URL: ${POLYGON_RPC_URL:-https://polygon-rpc.com}
+      POLYGON_RPC_FALLBACK: ${POLYGON_RPC_FALLBACK:-https://polygon-rpc.com}
+      ARBITRUM_RPC_URL: ${ARBITRUM_RPC_URL:-https://arbitrum-one-rpc.publicnode.com}
+      ARBITRUM_RPC_FALLBACK: ${ARBITRUM_RPC_FALLBACK:-https://arbitrum-one-rpc.publicnode.com}
+      BASE_RPC_URL: ${BASE_RPC_URL:-https://base-rpc.publicnode.com}
+      BASE_RPC_FALLBACK: ${BASE_RPC_FALLBACK:-https://base-rpc.publicnode.com}
+      AVALANCHE_RPC_URL: ${AVALANCHE_RPC_URL:-https://avalanche-c-chain-rpc.publicnode.com}
+      AVALANCHE_RPC_FALLBACK: ${AVALANCHE_RPC_FALLBACK:-https://avalanche-c-chain-rpc.publicnode.com}
+      OPTIMISM_RPC_URL: ${OPTIMISM_RPC_URL:-https://optimism-rpc.publicnode.com}
+      OPTIMISM_RPC_FALLBACK: ${OPTIMISM_RPC_FALLBACK:-https://optimism-rpc.publicnode.com}
+      BSC_RPC_URL: ${BSC_RPC_URL:-https://bsc-dataseed.binance.org}
+      SOLANA_RPC_URL: ${SOLANA_RPC_URL:-https://solana-rpc.publicnode.com}
+      SOLANA_RPC_FALLBACK: ${SOLANA_RPC_FALLBACK:-https://solana-rpc.publicnode.com}
+      TRON_RPC_URL: ${TRON_RPC_URL:-https://api.trongrid.io}
+      XRPL_RPC_URL: ${XRPL_RPC_URL:-https://xrplcluster.com}
+      COSMOS_REST_URL: ${COSMOS_REST_URL:-https://cosmos-rest.publicnode.com}
+      COSMOS_RPC_URL: ${COSMOS_RPC_URL:-https://cosmos-rpc.publicnode.com:443}
+      INJECTIVE_REST_URL: ${INJECTIVE_REST_URL:-https://injective-rest.publicnode.com}
+      INJECTIVE_RPC_URL: ${INJECTIVE_RPC_URL:-https://injective-rpc.publicnode.com:443}
+      STARKNET_RPC_URL: ${STARKNET_RPC_URL:-https://starknet-rpc.publicnode.com}
+      STARKNET_RPC_FALLBACK: ${STARKNET_RPC_FALLBACK:-https://starknet-rpc.publicnode.com}
+      SUI_RPC_URL: ${SUI_RPC_URL:-https://sui-rpc.publicnode.com}
+      SUI_RPC_FALLBACK: ${SUI_RPC_FALLBACK:-https://sui-rpc.publicnode.com}
+    depends_on:
+      - neo4j
+      - postgres
+      - redis
+    networks:
+      - jackdawsentry_graph_network

@@ -70,6 +70,12 @@ Read this file before touching graph schema, graph API, trace compiler semantics
   fresh search without logging out. `New Investigation` resets the canvas back
   to `SessionStarter` while keeping the authenticated browser session alive.
 
+### ADR-016
+- Live collectors and raw-event-store backfill must run as a separate ingest
+  runtime, not inside the request-serving graph API. The default compose stack
+  stays request-only; `docker-compose.graph.ingest.yml` is the opt-in sidecar
+  overlay for ingestion.
+
 ## Guardrails
 
 - Do not widen this repo into the private compliance dashboard.
