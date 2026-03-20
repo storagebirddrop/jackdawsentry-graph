@@ -93,6 +93,10 @@ python scripts/dev/load_perf_fixture_dataset.py
 python scripts/quality/live_perf_probe.py --username analyst --password change-me-now
 ```
 
+`load_perf_fixture_dataset.py` seeds both a dense local hub and a bridge/cross-chain
+fixture slice so the live perf probe can exercise bridge-hop rendering and
+status polling instead of only same-chain address expansion.
+
 ## Support
 
 For usage questions, bug reports, and feature requests, open a

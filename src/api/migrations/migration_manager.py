@@ -25,6 +25,7 @@ CORE_BOOTSTRAP_MIGRATIONS = {
     "006_raw_event_store.sql",
     "007_graph_sessions.sql",
     "009_event_store_backfill.sql",
+    "010_bridge_correlations_alignment.sql",
 }
 
 GRAPH_BOOTSTRAP_MIGRATIONS = {
@@ -33,6 +34,7 @@ GRAPH_BOOTSTRAP_MIGRATIONS = {
     "006_raw_event_store.sql",
     "007_graph_sessions.sql",
     "009_event_store_backfill.sql",
+    "010_bridge_correlations_alignment.sql",
 }
 
 OPTIONAL_LEGACY_MIGRATIONS = {

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from collections import Counter
 import json
 import os
 import statistics
@@ -255,6 +256,9 @@ def _run_operation(
     statuses: list[int] = []
     node_counts: list[int] = []
     edge_counts: list[int] = []
+    sample_node_type_counts: dict[str, int] = {}
+    bridge_hop_ids: set[str] = set()
+    bridge_protocols: set[str] = set()
 
     for _ in range(iterations):
         response = _http_request(
@@ -273,8 +277,23 @@ def _run_operation(
         sizes.append(len(response.body.encode("utf-8")))
         if response.status == 200:
             payload = _json_body(response)
-            node_counts.append(len(payload.get("added_nodes", [])))
+            added_nodes = payload.get("added_nodes", [])
+            node_counts.append(len(added_nodes))
             edge_counts.append(len(payload.get("added_edges", [])))
+            if not sample_node_type_counts:
+                sample_counter: Counter[str] = Counter()
+                for node in added_nodes:
+                    node_type = node.get("node_type") or node.get("type") or "unknown"
+                    sample_counter[node_type] += 1
+                sample_node_type_counts = dict(sorted(sample_counter.items()))
+            for node in added_nodes:
+                bridge_data = node.get("bridge_hop_data") or {}
+                hop_id = bridge_data.get("hop_id")
+                protocol_id = bridge_data.get("protocol_id")
+                if hop_id:
+                    bridge_hop_ids.add(hop_id)
+                if protocol_id:
+                    bridge_protocols.add(protocol_id)
 
     return {
         "operation": operation_type,
@@ -286,6 +305,53 @@ def _run_operation(
         },
         "node_counts": node_counts,
         "edge_counts": edge_counts,
+        "node_type_counts": sample_node_type_counts,
+        "bridge_hop_ids": sorted(bridge_hop_ids),
+        "bridge_protocols": sorted(bridge_protocols),
+    }
+
+
+def _run_hop_status(
+    *,
+    base_url: str,
+    session_id: str,
+    hop_id: str,
+    token: str,
+    iterations: int,
+    timeout: float,
+) -> Dict[str, Any]:
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "User-Agent": "live-perf-probe/1.0",
+    }
+    url = _base(base_url, f"/api/v1/graph/sessions/{session_id}/hops/{hop_id}/status")
+    latencies: list[float] = []
+    statuses: list[int] = []
+    hop_states: list[str] = []
+    destination_chains: set[str] = set()
+    confidences: list[float] = []
+
+    for _ in range(iterations):
+        response = _http_request("GET", url, headers=headers, timeout=timeout)
+        statuses.append(response.status)
+        latencies.append(response.elapsed_ms)
+        if response.status == 200:
+            payload = _json_body(response)
+            hop_states.append(payload.get("status", "unknown"))
+            destination_chain = payload.get("destination_chain")
+            if destination_chain:
+                destination_chains.add(destination_chain)
+            confidence = payload.get("correlation_confidence")
+            if confidence is not None:
+                confidences.append(float(confidence))
+
+    return {
+        "statuses": statuses,
+        "latency": _latency_summary(latencies),
+        "hop_states": hop_states,
+        "destination_chains": sorted(destination_chains),
+        "confidence_min": min(confidences) if confidences else None,
+        "confidence_max": max(confidences) if confidences else None,
     }
 
 
@@ -386,8 +452,25 @@ def run_probe(args: argparse.Namespace) -> int:
         )
         print(
             f"[{operation}] statuses={result['statuses']} latency={result['latency']} "
-            f"size={result['body_size_bytes']} nodes={result['node_counts']} edges={result['edge_counts']}"
+            f"size={result['body_size_bytes']} nodes={result['node_counts']} edges={result['edge_counts']} "
+            f"types={result['node_type_counts']} bridge_protocols={result['bridge_protocols']}"
         )
+        if operation == "expand_next" and result["bridge_hop_ids"]:
+            hop_id = result["bridge_hop_ids"][0]
+            hop_status = _run_hop_status(
+                base_url=args.base_url,
+                session_id=session_id,
+                hop_id=hop_id,
+                token=token,
+                iterations=args.iterations,
+                timeout=args.timeout,
+            )
+            print(
+                f"[hop-status] hop_id={hop_id} statuses={hop_status['statuses']} "
+                f"latency={hop_status['latency']} states={hop_status['hop_states']} "
+                f"destination_chains={hop_status['destination_chains']} "
+                f"confidence=({hop_status['confidence_min']},{hop_status['confidence_max']})"
+            )
 
     print("Live perf probe completed.")
     return 0
