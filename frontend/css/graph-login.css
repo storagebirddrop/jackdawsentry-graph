@@ -47,6 +47,14 @@ body.graph-login-body {
     width: 100%;
     max-width: 420px;
     animation: fadeIn 0.4s ease-out;
+    transition: opacity 0.18s ease, transform 0.18s ease, filter 0.18s ease;
+}
+
+.graph-login-shell.is-authenticating {
+    opacity: 0.68;
+    transform: translateY(4px) scale(0.995);
+    filter: saturate(0.85);
+    pointer-events: none;
 }
 
 .graph-login-brand {
@@ -128,6 +136,11 @@ body.graph-login-body {
     transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
 
+.graph-login-input:disabled {
+    opacity: 0.75;
+    cursor: not-allowed;
+}
+
 .graph-login-input::placeholder {
     color: #64748b;
 }
@@ -143,6 +156,7 @@ body.graph-login-body {
     justify-content: center;
     gap: 10px;
     width: 100%;
+    min-height: 48px;
     padding: 12px 14px;
     border: 0;
     border-radius: 14px;
@@ -166,6 +180,7 @@ body.graph-login-body {
 .graph-login-spinner {
     width: 18px;
     height: 18px;
+    flex: 0 0 18px;
     animation: spin 1s linear infinite;
 }
 

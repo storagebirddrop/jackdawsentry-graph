@@ -9,6 +9,15 @@ const Auth = (function () {
     const LOGIN_PATH = '/login';
     const STORAGE = window.sessionStorage;
 
+    function redirect(path) {
+        window.location.replace(path);
+    }
+
+    function clearSession() {
+        STORAGE.removeItem(TOKEN_KEY);
+        STORAGE.removeItem(USER_KEY);
+    }
+
     function migrateLegacySession() {
         try {
             const legacyToken = window.localStorage.getItem(TOKEN_KEY);
@@ -39,10 +48,36 @@ const Auth = (function () {
         }
     }
 
+    function decodeJwtPayload(token) {
+        if (!token || token.split('.').length < 2) return null;
+
+        try {
+            var base64Url = token.split('.')[1];
+            var base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+            var padded = base64 + '='.repeat((4 - (base64.length % 4 || 4)) % 4);
+            var json = atob(padded);
+            return JSON.parse(json);
+        } catch (_) {
+            return null;
+        }
+    }
+
+    function isTokenExpired(token) {
+        var payload = decodeJwtPayload(token);
+        if (!payload || !payload.exp) return false;
+        return Date.now() >= payload.exp * 1000;
+    }
+
     /** Get stored JWT or null */
     function getToken() {
         try {
-            return STORAGE.getItem(TOKEN_KEY);
+            var token = STORAGE.getItem(TOKEN_KEY);
+            if (!token) return null;
+            if (isTokenExpired(token)) {
+                clearSession();
+                return null;
+            }
+            return token;
         } catch (_) {
             return null;
         }
@@ -65,15 +100,14 @@ const Auth = (function () {
 
     /** Clear session and redirect to login */
     function logout() {
-        STORAGE.removeItem(TOKEN_KEY);
-        STORAGE.removeItem(USER_KEY);
-        window.location.href = LOGIN_PATH;
+        clearSession();
+        redirect(LOGIN_PATH);
     }
 
     /** Redirect to login if not authenticated (call on every protected page) */
     function requireAuth() {
         if (!isAuthenticated()) {
-            window.location.href = LOGIN_PATH;
+            redirect(LOGIN_PATH);
         }
     }
 
@@ -152,6 +186,8 @@ const Auth = (function () {
         const response = await fetch('/api/v1/auth/login', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            cache: 'no-store',
             body: JSON.stringify({ username, password })
         });
 

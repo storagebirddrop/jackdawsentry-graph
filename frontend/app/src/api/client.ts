@@ -15,8 +15,38 @@ import type {
 
 const API_BASE = '/api/v1';
 
+function decodeJwtPayload(token: string): Record<string, unknown> | null {
+  const parts = token.split('.');
+  if (parts.length < 2) return null;
+
+  try {
+    const base64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    const padded = base64 + '='.repeat((4 - (base64.length % 4 || 4)) % 4);
+    return JSON.parse(window.atob(padded)) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function isExpiredToken(token: string): boolean {
+  const payload = decodeJwtPayload(token);
+  const exp = payload?.exp;
+  return typeof exp === 'number' && Date.now() >= exp * 1000;
+}
+
+function clearAuthToken(): void {
+  sessionStorage.removeItem('jds_token');
+  sessionStorage.removeItem('jds_user');
+}
+
 function getAuthToken(): string | null {
-  return sessionStorage.getItem('jds_token');
+  const token = sessionStorage.getItem('jds_token');
+  if (!token) return null;
+  if (isExpiredToken(token)) {
+    clearAuthToken();
+    return null;
+  }
+  return token;
 }
 
 export function isAuthenticated(): boolean {
@@ -24,7 +54,8 @@ export function isAuthenticated(): boolean {
 }
 
 export function redirectToLogin(): void {
-  window.location.href = '/login';
+  clearAuthToken();
+  window.location.replace('/login');
 }
 
 function authHeaders(): HeadersInit {
