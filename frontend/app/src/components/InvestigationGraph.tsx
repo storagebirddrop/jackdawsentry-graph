@@ -44,7 +44,7 @@ import BtcSidechainPegNode from './nodes/BtcSidechainPegNode';
 import AtomicSwapNode from './nodes/AtomicSwapNode';
 import FilterPanel, { type FilterState, DEFAULT_FILTERS } from './FilterPanel';
 import GraphAppearancePanel from './GraphAppearancePanel';
-import GraphInspectorPanel from './GraphInspectorPanel';
+import GraphInspectorPanel, { type PathStory } from './GraphInspectorPanel';
 import InvestigationEdgeComponent from './edges/InvestigationEdge';
 import {
   DEFAULT_GRAPH_APPEARANCE,
@@ -239,6 +239,7 @@ export default function InvestigationGraph({ sessionId }: Props) {
   const [bridgeRouteHistory, setBridgeRouteHistory] = useState<string[]>([]);
   const [activeBranchIds, setActiveBranchIds] = useState<string[]>([]);
   const [branchHistory, setBranchHistory] = useState<string[]>([]);
+  const [pinnedPathIds, setPinnedPathIds] = useState<string[]>([]);
 
   const branchEntries = useMemo(
     () =>
@@ -258,6 +259,69 @@ export default function InvestigationGraph({ sessionId }: Props) {
   const branchMetaById = useMemo(
     () => new Map(branchEntries.map((branch) => [branch.branchId, branch])),
     [branchEntries],
+  );
+
+  const pathStories = useMemo<PathStory[]>(() => {
+    const storyMap = new Map<
+      string,
+      {
+        pathId: string;
+        lineageId: string;
+        nodes: InvestigationNode[];
+        branches: Set<string>;
+        chains: Set<string>;
+      }
+    >();
+
+    for (const node of rfNodes) {
+      const data = node.data as unknown as InvestigationNode;
+      const existing = storyMap.get(data.path_id) ?? {
+        pathId: data.path_id,
+        lineageId: data.lineage_id,
+        nodes: [],
+        branches: new Set<string>(),
+        chains: new Set<string>(),
+      };
+      existing.nodes.push(data);
+      existing.branches.add(data.branch_id);
+      const chain = data.chain ?? data.address_data?.chain;
+      if (chain) existing.chains.add(chain);
+      storyMap.set(data.path_id, existing);
+    }
+
+    return Array.from(storyMap.values())
+      .map((story) => {
+        const orderedNodes = [...story.nodes].sort((a, b) => a.depth - b.depth);
+        const firstNode = orderedNodes[0];
+        const lastNode = orderedNodes[orderedNodes.length - 1];
+        const primaryBranch = branchMetaById.get(firstNode.branch_id);
+        const firstLabel = pathStoryNodeLabel(firstNode);
+        const lastLabel = pathStoryNodeLabel(lastNode);
+
+        return {
+          pathId: story.pathId,
+          lineageId: story.lineageId,
+          title: firstLabel,
+          summary: firstNode.node_id === lastNode.node_id
+            ? firstLabel
+            : `${firstLabel} -> ${lastLabel}`,
+          nodeCount: orderedNodes.length,
+          minDepth: firstNode.depth,
+          maxDepth: lastNode.depth,
+          branchCount: story.branches.size,
+          chains: Array.from(story.chains),
+          color: primaryBranch?.color ?? '#2563eb',
+        };
+      })
+      .sort((a, b) => {
+        if (b.nodeCount !== a.nodeCount) return b.nodeCount - a.nodeCount;
+        return a.minDepth - b.minDepth;
+      });
+  }, [rfNodes, branchMetaById]);
+
+  const pathStoryById = useMemo(
+    () => new Map(pathStories.map((story) => [story.pathId, story])),
+    [pathStories],
   );
 
   const bridgeFilterOptions = useMemo(() => {
@@ -383,23 +447,62 @@ export default function InvestigationGraph({ sessionId }: Props) {
     setSelectedNodeId(null);
   }, []);
 
+  const pinnedPathSet = useMemo(() => new Set(pinnedPathIds), [pinnedPathIds]);
+  const visibleNodePathById = useMemo(
+    () =>
+      new Map(
+        nodes.map((node) => [node.id, ((node.data as unknown) as InvestigationNode).path_id]),
+      ),
+    [nodes],
+  );
+
   // Inject expand handlers into node data
   const enrichedNodes = nodes.map((n) => {
     const invNode = n.data as unknown as InvestigationNode;
+    const pinned = pinnedPathSet.has(invNode.path_id);
+    const dimmed = pinnedPathIds.length > 0 && !pinned;
     return {
       ...n,
+      style: {
+        ...(n.style ?? {}),
+        opacity: dimmed ? 0.22 : 1,
+        filter: pinned ? 'drop-shadow(0 0 0.35rem rgba(245,158,11,0.45))' : 'none',
+        transition: 'opacity 120ms ease, filter 120ms ease',
+      },
       data: {
         ...n.data,
         onExpandNext: () => handleExpand(invNode, 'expand_next'),
         onExpandPrev: () => handleExpand(invNode, 'expand_prev'),
         isExpanding: expandingNodeIds.has(n.id),
         appearance,
+        isPathPinned: pinned,
+        hasPinnedPaths: pinnedPathIds.length > 0,
       },
     };
   });
 
   const enrichedEdges = edges.map((edge) => ({
     ...edge,
+    style: (() => {
+      const baseStyle = (edge.style ?? {}) as React.CSSProperties;
+      const sourcePathId = visibleNodePathById.get(edge.source);
+      const targetPathId = visibleNodePathById.get(edge.target);
+      const onPinnedPath =
+        Boolean(sourcePathId)
+        && sourcePathId === targetPathId
+        && pinnedPathSet.has(sourcePathId as string);
+      const touchesPinnedPath =
+        (Boolean(sourcePathId) && pinnedPathSet.has(sourcePathId as string))
+        || (Boolean(targetPathId) && pinnedPathSet.has(targetPathId as string));
+      const strokeWidth = typeof baseStyle.strokeWidth === 'number' ? baseStyle.strokeWidth : 2;
+      return {
+        ...baseStyle,
+        opacity: pinnedPathIds.length === 0 ? 1 : onPinnedPath ? 1 : touchesPinnedPath ? 0.56 : 0.12,
+        strokeWidth: onPinnedPath ? strokeWidth + 0.8 : strokeWidth,
+        filter: onPinnedPath ? 'drop-shadow(0 0 0.28rem rgba(245,158,11,0.42))' : 'none',
+        transition: 'opacity 120ms ease, filter 120ms ease',
+      };
+    })(),
     data: {
       ...(edge.data as Record<string, unknown>),
       appearance,
@@ -413,6 +516,20 @@ export default function InvestigationGraph({ sessionId }: Props) {
   const selectedEdge = useMemo(
     () => enrichedEdges.find((edge) => edge.id === selectedEdgeId) ?? null,
     [enrichedEdges, selectedEdgeId],
+  );
+
+  const selectedPathStory = useMemo(() => {
+    if (!selectedNode) return null;
+    const data = selectedNode.data as unknown as InvestigationNode;
+    return pathStoryById.get(data.path_id) ?? null;
+  }, [selectedNode, pathStoryById]);
+
+  const pinnedPathStories = useMemo(
+    () =>
+      pinnedPathIds
+        .map((pathId) => pathStoryById.get(pathId) ?? null)
+        .filter((story): story is PathStory => story !== null),
+    [pinnedPathIds, pathStoryById],
   );
 
   useEffect(() => {
@@ -436,6 +553,11 @@ export default function InvestigationGraph({ sessionId }: Props) {
       ...current.filter((branchId) => !activeBranchIds.includes(branchId)),
     ].slice(0, 8));
   }, [activeBranchIds]);
+
+  useEffect(() => {
+    const availablePathIds = new Set(pathStories.map((story) => story.pathId));
+    setPinnedPathIds((current) => current.filter((pathId) => availablePathIds.has(pathId)));
+  }, [pathStories]);
 
   const focusBridgeRoute = useCallback((route: string) => {
     setFilters((current) => ({
@@ -482,6 +604,19 @@ export default function InvestigationGraph({ sessionId }: Props) {
 
   const clearBranchFocus = useCallback(() => {
     setActiveBranchIds([]);
+  }, []);
+
+  const togglePinnedPath = useCallback((pathId: string) => {
+    setPinnedPathIds((current) => {
+      if (current.includes(pathId)) {
+        return current.filter((value) => value !== pathId);
+      }
+      return [pathId, ...current.filter((value) => value !== pathId)].slice(0, 4);
+    });
+  }, []);
+
+  const clearPinnedPaths = useCallback(() => {
+    setPinnedPathIds([]);
   }, []);
 
   const bridgeSummary = useMemo(() => {
@@ -982,6 +1117,9 @@ export default function InvestigationGraph({ sessionId }: Props) {
         activeBridgeProtocols={filters.bridgeProtocols}
         activeBranchIds={activeBranchIds}
         branchMeta={selectedNode ? branchMetaById.get((selectedNode.data as unknown as InvestigationNode).branch_id) ?? null : null}
+        pinnedPathIds={pinnedPathIds}
+        pinnedPaths={pinnedPathStories}
+        pathStory={selectedPathStory}
         onClose={() => {
           setSelectedNodeId(null);
           setSelectedEdgeId(null);
@@ -989,6 +1127,8 @@ export default function InvestigationGraph({ sessionId }: Props) {
         onFocusBranch={focusBranch}
         onCompareBranch={compareBranch}
         onClearBranchFocus={clearBranchFocus}
+        onTogglePinnedPath={togglePinnedPath}
+        onClearPinnedPaths={clearPinnedPaths}
         onFocusBridgeRoute={focusBridgeRoute}
         onFocusBridgeProtocol={focusBridgeProtocol}
         onClearBridgeFocus={clearBridgeFocus}
@@ -1067,6 +1207,23 @@ function routeChipStyle(tone: string): React.CSSProperties {
 function branchLabel(branch: BranchMeta | undefined | null): string {
   if (!branch) return 'Unknown branch';
   return branch.minDepth === 0 ? 'Root branch' : `Branch ${branch.branchId.slice(0, 6)}`;
+}
+
+function pathStoryNodeLabel(node: InvestigationNode): string {
+  if (node.display_label) return node.display_label;
+  if (node.entity_name) return node.entity_name;
+
+  switch (node.node_type) {
+    case 'address':
+      return node.address_data?.entity_name ?? node.address_data?.address ?? `Address ${node.node_id.slice(0, 6)}`;
+    case 'bridge_hop':
+      return bridgeProtocolLabel(node.bridge_hop_data?.protocol_id);
+    case 'service':
+    case 'entity':
+      return node.display_sublabel ?? node.node_type.replace(/_/g, ' ');
+    default:
+      return node.node_type.replace(/_/g, ' ');
+  }
 }
 
 function branchChipStyle(tone: string): React.CSSProperties {

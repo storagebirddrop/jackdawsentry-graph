@@ -42,6 +42,10 @@ Read this file before touching graph schema, graph API, trace compiler semantics
 - Analyst storytelling should be derived from backend `path_id` and
   `lineage_id` metadata, not invented as separate client-only identifiers.
 
+### ADR-010
+- Pinned path storytelling is an analyst-memory aid. Keep it lightweight,
+  derived from current graph state, and explainable from the selected node.
+
 ## Guardrails
 
 - Do not widen this repo into the private compliance dashboard.

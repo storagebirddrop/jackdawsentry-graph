@@ -35,6 +35,19 @@ import {
   shortHash,
 } from './graphVisuals';
 
+export interface PathStory {
+  pathId: string;
+  lineageId: string;
+  title: string;
+  summary: string;
+  nodeCount: number;
+  minDepth: number;
+  maxDepth: number;
+  branchCount: number;
+  chains: string[];
+  color: string;
+}
+
 interface Props {
   node: Node | null;
   edge: Edge | null;
@@ -51,6 +64,11 @@ interface Props {
   onClearBranchFocus?: () => void;
   activeBranchIds?: string[];
   branchMeta?: BranchMeta | null;
+  onTogglePinnedPath?: (pathId: string) => void;
+  onClearPinnedPaths?: () => void;
+  pinnedPathIds?: string[];
+  pinnedPaths?: PathStory[];
+  pathStory?: PathStory | null;
 }
 
 export default function GraphInspectorPanel({
@@ -69,6 +87,11 @@ export default function GraphInspectorPanel({
   onClearBranchFocus,
   activeBranchIds = [],
   branchMeta = null,
+  onTogglePinnedPath,
+  onClearPinnedPaths,
+  pinnedPathIds = [],
+  pinnedPaths = [],
+  pathStory = null,
 }: Props) {
   const selectedNode = useMemo(
     () => (node?.data as InvestigationNode | undefined) ?? null,
@@ -137,6 +160,11 @@ export default function GraphInspectorPanel({
           onClearBranchFocus={onClearBranchFocus}
           activeBranchIds={activeBranchIds}
           branchMeta={branchMeta}
+          onTogglePinnedPath={onTogglePinnedPath}
+          onClearPinnedPaths={onClearPinnedPaths}
+          pinnedPathIds={pinnedPathIds}
+          pinnedPaths={pinnedPaths}
+          pathStory={pathStory}
         />
       ) : selectedEdge ? (
         <EdgeInspectorContent edge={selectedEdge} />
@@ -178,6 +206,11 @@ function NodeInspectorContent({
   onClearBranchFocus,
   activeBranchIds,
   branchMeta,
+  onTogglePinnedPath,
+  onClearPinnedPaths,
+  pinnedPathIds,
+  pinnedPaths,
+  pathStory,
 }: {
   node: InvestigationNode;
   onFocusBridgeRoute?: (route: string) => void;
@@ -190,6 +223,11 @@ function NodeInspectorContent({
   onClearBranchFocus?: () => void;
   activeBranchIds: string[];
   branchMeta: BranchMeta | null;
+  onTogglePinnedPath?: (pathId: string) => void;
+  onClearPinnedPaths?: () => void;
+  pinnedPathIds: string[];
+  pinnedPaths: PathStory[];
+  pathStory: PathStory | null;
 }) {
   const accent = getChainColor(node.chain ?? (node.address_data as AddressNodeData | undefined)?.chain);
   const badges = semanticBadges(node);
@@ -323,6 +361,101 @@ function NodeInspectorContent({
                 Clear branch focus
               </button>
             )}
+          </div>
+        )}
+      </Section>
+
+      <Section title="Pinned path story">
+        <KeyValue label="Path">{shortHash(node.path_id, 10, 6)}</KeyValue>
+        <KeyValue label="Lineage">{shortHash(node.lineage_id, 10, 6)}</KeyValue>
+        {pathStory && (
+          <>
+            <KeyValue label="Story arc">{pathStory.summary}</KeyValue>
+            <KeyValue label="Coverage">
+              {pathStory.nodeCount} nodes
+              {' · depth '}
+              {pathStory.minDepth}
+              {'-'}
+              {pathStory.maxDepth}
+            </KeyValue>
+            <KeyValue label="Branches">{pathStory.branchCount}</KeyValue>
+            <KeyValue label="Chains">{pathStory.chains.join(' -> ') || 'mixed'}</KeyValue>
+          </>
+        )}
+        {(onTogglePinnedPath || onClearPinnedPaths) && (
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
+            {onTogglePinnedPath && (
+              <button
+                type="button"
+                onClick={() => onTogglePinnedPath(node.path_id)}
+                style={{
+                  ...actionButtonStyle,
+                  color: pinnedPathIds.includes(node.path_id) ? '#b45309' : '#334155',
+                  borderColor: pinnedPathIds.includes(node.path_id)
+                    ? 'rgba(180,83,9,0.34)'
+                    : 'rgba(148,163,184,0.3)',
+                }}
+              >
+                {pinnedPathIds.includes(node.path_id) ? 'Unpin path' : 'Pin path'}
+              </button>
+            )}
+            {onClearPinnedPaths && pinnedPathIds.length > 0 && (
+              <button
+                type="button"
+                onClick={onClearPinnedPaths}
+                style={actionButtonStyle}
+              >
+                Clear pinned paths
+              </button>
+            )}
+          </div>
+        )}
+        {pinnedPaths.length > 0 && (
+          <div style={{ display: 'grid', gap: 10, marginTop: 12 }}>
+            {pinnedPaths.map((story) => {
+              const current = story.pathId === node.path_id;
+              return (
+                <div
+                  key={story.pathId}
+                  style={pathStoryCardStyle(story.color, current)}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'flex-start' }}>
+                    <div>
+                      <div style={pathStoryEyebrowStyle(story.color)}>
+                        {current ? 'Current pinned path' : 'Pinned path'}
+                      </div>
+                      <div style={pathStoryTitleStyle}>{story.title}</div>
+                      <div style={pathStorySubtitleStyle}>{story.summary}</div>
+                    </div>
+                    {onTogglePinnedPath && (
+                      <button
+                        type="button"
+                        onClick={() => onTogglePinnedPath(story.pathId)}
+                        style={{
+                          ...actionButtonStyle,
+                          padding: '6px 10px',
+                          fontSize: 11,
+                        }}
+                      >
+                        Unpin
+                      </button>
+                    )}
+                  </div>
+                  <div style={pathStoryMetaStyle}>
+                    {story.nodeCount} nodes
+                    {' · depth '}
+                    {story.minDepth}
+                    {'-'}
+                    {story.maxDepth}
+                    {' · '}
+                    {story.branchCount} branches
+                  </div>
+                  <div style={pathStoryMetaStyle}>
+                    {story.chains.join(' -> ') || 'mixed chains'}
+                  </div>
+                </div>
+              );
+            })}
           </div>
         )}
       </Section>
@@ -1003,4 +1136,44 @@ const actionButtonStyle: React.CSSProperties = {
   fontSize: 12,
   fontWeight: 700,
   cursor: 'pointer',
+};
+
+function pathStoryCardStyle(tone: string, active: boolean): React.CSSProperties {
+  return {
+    borderRadius: 16,
+    border: `1px solid ${tone}26`,
+    background: active ? `${tone}10` : 'rgba(248,250,252,0.94)',
+    padding: 12,
+  };
+}
+
+function pathStoryEyebrowStyle(tone: string): React.CSSProperties {
+  return {
+    color: tone,
+    fontSize: 10,
+    fontWeight: 800,
+    letterSpacing: '0.08em',
+    textTransform: 'uppercase',
+  };
+}
+
+const pathStoryTitleStyle: React.CSSProperties = {
+  color: '#0f172a',
+  fontSize: 13,
+  fontWeight: 800,
+  marginTop: 6,
+};
+
+const pathStorySubtitleStyle: React.CSSProperties = {
+  color: '#475569',
+  fontSize: 12,
+  lineHeight: 1.5,
+  marginTop: 4,
+};
+
+const pathStoryMetaStyle: React.CSSProperties = {
+  color: '#64748b',
+  fontSize: 11,
+  lineHeight: 1.5,
+  marginTop: 8,
 };

@@ -37,5 +37,5 @@ Acceptance criteria:
 - [x] bridge route and protocol focus are investigator actions, not passive
       labels
 - [x] branch workspace supports focus and compare flows
-- [ ] inspector supports pinned path storytelling
+- [x] inspector supports pinned path storytelling
 - [ ] protocol-specific styling and legends cover more than bridge hops

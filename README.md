@@ -79,8 +79,10 @@ workflows:
   without losing surrounding context
 - branch workspace supports single-branch focus and two-branch compare using the
   backend branch metadata tracked in session state
+- pinned path stories let investigators keep a few narrative arcs visible while
+  comparing branches or bridge routes
 - the inspector is the narrative surface for node detail, lineage, branch
-  actions, and active investigation context
+  actions, pinned paths, and active investigation context
 
 When you add new graph UX, prefer actions that help an analyst answer
 "what happened here?" or "how does this branch differ?" over generic dashboard
