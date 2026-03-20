@@ -50,24 +50,36 @@ _HOP_ALLOWLIST_TTL_SECONDS = 24 * 60 * 60
 
 
 def _expansion_cache_key(
-    seed_node_id: str,
-    operation_type: str,
-    max_results: Optional[int],
+    session_id: str,
+    request: ExpandRequest,
 ) -> str:
     """Deterministic Redis cache key for an expansion result.
 
-    Intentionally excludes ``session_id`` and ``branch_id`` so that the same
-    expansion (same seed, direction, result-size) is shared across all
-    investigation sessions.  Lineage IDs on individual nodes reference the
-    session that originally computed the result; callers that need current-
-    session lineage must re-stamp at serve time (deferred).
-
-    SHA-256 keeps the key short and collision-safe for Redis.
-
-    Per PHASE3 spec Section 11: "The cache key does NOT include session_id or
-    branch_id."
+    The key is scoped to the session and to the effective expansion options
+    so cached responses cannot bleed across investigators or across requests
+    that ask for materially different result sets.
     """
-    raw = f"expand:{seed_node_id}:{operation_type}:{max_results}"
+    normalized_asset_filter = sorted(
+        {
+            asset.strip().lower()
+            for asset in request.options.asset_filter
+            if isinstance(asset, str) and asset.strip()
+        }
+    )
+    fingerprint = {
+        "version": 2,
+        "session_id": session_id,
+        "seed_node_id": request.seed_node_id,
+        "operation_type": request.operation_type,
+        "depth": request.options.depth,
+        "page_size": request.options.page_size,
+        "max_results": request.options.max_results,
+        "asset_filter": normalized_asset_filter,
+        "min_value_fiat": request.options.min_value_fiat,
+        "include_services": request.options.include_services,
+        "follow_bridges": request.options.follow_bridges,
+    }
+    raw = json.dumps(fingerprint, sort_keys=True, separators=(",", ":"))
     return "tc:" + hashlib.sha256(raw.encode()).hexdigest()
 
 
@@ -285,8 +297,8 @@ class TraceCompiler:
         if self._redis is not None:
             try:
                 cache_key = _expansion_cache_key(
-                    request.seed_node_id, request.operation_type,
-                    request.options.max_results,
+                    session_id,
+                    request,
                 )
                 cached = await self._redis.get(cache_key)
                 if cached:
@@ -484,8 +496,8 @@ class TraceCompiler:
         if added_nodes and self._redis is not None:
             try:
                 cache_key = _expansion_cache_key(
-                    request.seed_node_id, request.operation_type,
-                    request.options.max_results,
+                    session_id,
+                    request,
                 )
                 payload = json.dumps({
                     "operation_id": response.operation_id,

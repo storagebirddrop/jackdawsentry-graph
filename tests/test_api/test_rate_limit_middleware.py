@@ -89,3 +89,83 @@ def test_client_ip_uses_forwarded_for_when_trust_is_enabled():
     )
 
     assert get_client_ip(request, trust_proxy_headers=True) == "203.0.113.20"
+
+
+def test_rate_limit_blocks_repeated_graph_expand_requests_per_user(monkeypatch):
+    from src.api import middleware as middleware_module
+
+    app = FastAPI()
+    app.add_middleware(RateLimitMiddleware)
+
+    @app.post("/api/v1/graph/sessions/demo/expand")
+    async def expand() -> dict[str, str]:
+        return {"status": "ok"}
+
+    monkeypatch.delenv("TESTING", raising=False)
+    monkeypatch.setattr(middleware_module.settings, "RATE_LIMIT_ENABLED", True)
+    monkeypatch.setattr(
+        middleware_module,
+        "get_redis_connection",
+        _failing_redis_connection,
+    )
+    monkeypatch.setattr(
+        "src.api.auth.verify_token",
+        lambda _token: SimpleNamespace(user_id="user-123", username="analyst"),
+    )
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        for _ in range(30):
+            response = client.post(
+                "/api/v1/graph/sessions/demo/expand",
+                headers={"Authorization": "Bearer token"},
+            )
+            assert response.status_code == 200
+            assert response.headers["X-RateLimit-Endpoint"] == "graph_expand"
+
+        blocked = client.post(
+            "/api/v1/graph/sessions/demo/expand",
+            headers={"Authorization": "Bearer token"},
+        )
+
+    assert blocked.status_code == 429
+    assert blocked.json()["detail"] == "Rate limit exceeded"
+
+
+def test_rate_limit_blocks_repeated_hop_status_requests_per_user(monkeypatch):
+    from src.api import middleware as middleware_module
+
+    app = FastAPI()
+    app.add_middleware(RateLimitMiddleware)
+
+    @app.get("/api/v1/graph/sessions/demo/hops/hop-1/status")
+    async def hop_status() -> dict[str, str]:
+        return {"status": "ok"}
+
+    monkeypatch.delenv("TESTING", raising=False)
+    monkeypatch.setattr(middleware_module.settings, "RATE_LIMIT_ENABLED", True)
+    monkeypatch.setattr(
+        middleware_module,
+        "get_redis_connection",
+        _failing_redis_connection,
+    )
+    monkeypatch.setattr(
+        "src.api.auth.verify_token",
+        lambda _token: SimpleNamespace(user_id="user-123", username="analyst"),
+    )
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        for _ in range(60):
+            response = client.get(
+                "/api/v1/graph/sessions/demo/hops/hop-1/status",
+                headers={"Authorization": "Bearer token"},
+            )
+            assert response.status_code == 200
+            assert response.headers["X-RateLimit-Endpoint"] == "graph_hop_status"
+
+        blocked = client.get(
+            "/api/v1/graph/sessions/demo/hops/hop-1/status",
+            headers={"Authorization": "Bearer token"},
+        )
+
+    assert blocked.status_code == 429
+    assert blocked.json()["detail"] == "Rate limit exceeded"

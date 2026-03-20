@@ -13,6 +13,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from src.trace_compiler.compiler import _expansion_cache_key
 from src.trace_compiler.compiler import TraceCompiler
 from src.trace_compiler.lineage import branch_id as mk_branch_id
 from src.trace_compiler.lineage import edge_id as mk_edge_id
@@ -225,6 +226,162 @@ async def test_expand_cache_hit_restamps_session_lineage():
         expected_branch_id,
         resp.added_edges[0].tx_hash,
     )
+
+
+def test_expansion_cache_key_is_session_scoped_and_option_sensitive():
+    base_request = ExpandRequest(
+        operation_type="expand_next",
+        seed_node_id="ethereum:address:0xabc",
+        options=ExpandOptions(
+            depth=1,
+            max_results=25,
+            page_size=25,
+            asset_filter=["USDC", "eth"],
+            min_value_fiat=100.0,
+            include_services=True,
+            follow_bridges=True,
+        ),
+    )
+    reordered_assets_request = ExpandRequest(
+        operation_type="expand_next",
+        seed_node_id="ethereum:address:0xabc",
+        options=ExpandOptions(
+            depth=1,
+            max_results=25,
+            page_size=25,
+            asset_filter=["ETH", "usdc"],
+            min_value_fiat=100.0,
+            include_services=True,
+            follow_bridges=True,
+        ),
+    )
+    deeper_request = ExpandRequest(
+        operation_type="expand_next",
+        seed_node_id="ethereum:address:0xabc",
+        options=ExpandOptions(depth=2, max_results=25, page_size=25),
+    )
+
+    key_a = _expansion_cache_key("session-a", base_request)
+    key_b = _expansion_cache_key("session-b", base_request)
+    key_reordered = _expansion_cache_key("session-a", reordered_assets_request)
+    key_deeper = _expansion_cache_key("session-a", deeper_request)
+
+    assert key_a != key_b
+    assert key_a == key_reordered
+    assert key_a != key_deeper
+
+
+@pytest.mark.asyncio
+async def test_expand_neighbors_splits_max_results_across_directions():
+    compiler = TraceCompiler()
+    request = ExpandRequest(
+        operation_type="expand_neighbors",
+        seed_node_id="ethereum:address:0xabc",
+        options=ExpandOptions(max_results=5, page_size=25, depth=1),
+    )
+
+    class FakeCompiler:
+        def __init__(self):
+            self.forward_limits = []
+            self.backward_limits = []
+
+        async def expand_next(self, **kwargs):
+            self.forward_limits.append(kwargs["options"].max_results)
+            branch_id = kwargs["branch_id"]
+            path_id = mk_path_id(branch_id, kwargs["path_sequence"])
+            nodes = []
+            edges = []
+            for index in range(kwargs["options"].max_results):
+                node_id = f"ethereum:address:0xfwd{index}"
+                nodes.append(
+                    InvestigationNode(
+                        node_id=node_id,
+                        lineage_id=mk_lineage_id(
+                            kwargs["session_id"],
+                            branch_id,
+                            path_id,
+                            1,
+                        ),
+                        node_type="address",
+                        branch_id=branch_id,
+                        path_id=path_id,
+                        depth=1,
+                        display_label=node_id,
+                        chain="ethereum",
+                        expandable_directions=["next"],
+                    )
+                )
+                edges.append(
+                    InvestigationEdge(
+                        edge_id=mk_edge_id(
+                            request.seed_node_id,
+                            node_id,
+                            branch_id,
+                            f"0xfwd{index}",
+                        ),
+                        source_node_id=request.seed_node_id,
+                        target_node_id=node_id,
+                        branch_id=branch_id,
+                        path_id=path_id,
+                        edge_type="transfer",
+                        tx_hash=f"0xfwd{index}",
+                    )
+                )
+            return nodes, edges
+
+        async def expand_prev(self, **kwargs):
+            self.backward_limits.append(kwargs["options"].max_results)
+            branch_id = kwargs["branch_id"]
+            path_id = mk_path_id(branch_id, kwargs["path_sequence"])
+            nodes = []
+            edges = []
+            for index in range(kwargs["options"].max_results):
+                node_id = f"ethereum:address:0xbwd{index}"
+                nodes.append(
+                    InvestigationNode(
+                        node_id=node_id,
+                        lineage_id=mk_lineage_id(
+                            kwargs["session_id"],
+                            branch_id,
+                            path_id,
+                            1,
+                        ),
+                        node_type="address",
+                        branch_id=branch_id,
+                        path_id=path_id,
+                        depth=1,
+                        display_label=node_id,
+                        chain="ethereum",
+                        expandable_directions=["prev"],
+                    )
+                )
+                edges.append(
+                    InvestigationEdge(
+                        edge_id=mk_edge_id(
+                            node_id,
+                            request.seed_node_id,
+                            branch_id,
+                            f"0xbwd{index}",
+                        ),
+                        source_node_id=node_id,
+                        target_node_id=request.seed_node_id,
+                        branch_id=branch_id,
+                        path_id=path_id,
+                        edge_type="transfer",
+                        tx_hash=f"0xbwd{index}",
+                    )
+                )
+            return nodes, edges
+
+    fake = FakeCompiler()
+    compiler._chain_compilers = {"ethereum": fake}
+
+    response = await compiler.expand("session-neighbors", request)
+
+    assert fake.forward_limits == [3]
+    assert fake.backward_limits == [2]
+    assert len(response.added_nodes) == 5
+    assert len(response.added_edges) == 5
 
 
 # ---------------------------------------------------------------------------
