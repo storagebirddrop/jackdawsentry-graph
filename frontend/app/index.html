@@ -22,7 +22,17 @@
     <meta property="og:type" content="website" />
     <title>Jackdaw Sentry Graph</title>
   </head>
-  <body>
+  <body class="graph-app-body">
+    <div id="app-boot-screen" class="app-boot-screen" aria-hidden="true">
+      <div class="app-boot-card">
+        <div class="app-boot-spinner"></div>
+        <div class="app-boot-copy">
+          <p class="app-boot-eyebrow">Jackdaw Sentry Graph</p>
+          <h1 class="app-boot-title">Opening investigation graph</h1>
+          <p class="app-boot-message">Restoring your analyst workspace and loading the graph canvas.</p>
+        </div>
+      </div>
+    </div>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

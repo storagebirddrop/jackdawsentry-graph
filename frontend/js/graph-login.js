@@ -3,6 +3,17 @@
     var APP_PATH = '/app/';
     var body = document.body;
 
+    function updateStatus(title, message) {
+        var titleEl = document.getElementById('login-status-title');
+        var messageEl = document.getElementById('login-status-message');
+        if (titleEl && title) {
+            titleEl.textContent = title;
+        }
+        if (messageEl && message) {
+            messageEl.textContent = message;
+        }
+    }
+
     function markReady() {
         if (!body) {
             return;
@@ -38,6 +49,10 @@
             shell.classList.toggle('is-authenticating', isSubmitting);
         }
         if (isSubmitting) {
+            updateStatus(
+                'Signing in',
+                'Validating your credentials and preparing the investigation graph.',
+            );
             markTransitioning();
         } else {
             markReady();
@@ -60,6 +75,10 @@
 
     function redirectToApp() {
         var shell = getShell();
+        updateStatus(
+            'Opening investigation graph',
+            'Restoring your analyst workspace and moving into the graph canvas.',
+        );
         markTransitioning();
         if (shell) {
             shell.classList.add('is-authenticating');
@@ -72,6 +91,10 @@
         return;
     }
 
+    updateStatus(
+        'Restoring session',
+        'Checking your analyst session before opening the investigation graph.',
+    );
     markReady();
 
     var form = document.getElementById('login-form');

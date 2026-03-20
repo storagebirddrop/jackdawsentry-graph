@@ -49,27 +49,21 @@ body.graph-login-body {
     transition: opacity 0.18s ease, transform 0.18s ease, filter 0.18s ease;
 }
 
-.graph-login-body.is-auth-pending .graph-login-shell {
-    opacity: 0;
-    transform: translateY(10px) scale(0.992);
-    pointer-events: none;
-}
-
 .graph-login-body.is-auth-ready .graph-login-shell {
     animation: fadeIn 0.28s ease-out;
 }
 
 .graph-login-shell.is-authenticating {
-    opacity: 0.68;
+    opacity: 0.92;
     transform: translateY(4px) scale(0.995);
     filter: saturate(0.85);
     pointer-events: none;
 }
 
 .graph-login-body.is-transitioning .graph-login-shell {
-    opacity: 0;
-    transform: translateY(8px) scale(0.99);
-    filter: blur(1px);
+    opacity: 0.96;
+    transform: translateY(2px) scale(0.996);
+    filter: saturate(0.9);
     pointer-events: none;
 }
 
@@ -106,6 +100,52 @@ body.graph-login-body {
     background: rgba(15, 23, 42, 0.92);
     box-shadow: 0 24px 80px rgba(2, 6, 23, 0.55);
     backdrop-filter: blur(16px);
+}
+
+.graph-login-status,
+.graph-login-form-shell {
+    transition: opacity 0.18s ease, transform 0.18s ease;
+}
+
+.graph-login-status {
+    display: grid;
+    gap: 18px;
+    justify-items: center;
+    text-align: center;
+}
+
+.graph-login-status-spinner {
+    width: 42px;
+    height: 42px;
+    border-radius: 999px;
+    border: 3px solid rgba(148, 163, 184, 0.18);
+    border-top-color: #60a5fa;
+    animation: spin 0.9s linear infinite;
+}
+
+.graph-login-status-copy {
+    display: grid;
+    gap: 8px;
+}
+
+.graph-login-status-message {
+    margin: 0;
+    color: #94a3b8;
+    font-size: 0.95rem;
+    line-height: 1.55;
+}
+
+.graph-login-body.is-auth-ready .graph-login-status {
+    display: none;
+}
+
+.graph-login-body.is-auth-pending .graph-login-form-shell,
+.graph-login-body.is-transitioning .graph-login-form-shell {
+    display: none;
+}
+
+.graph-login-body.is-auth-ready .graph-login-form-shell {
+    display: block;
 }
 
 .graph-login-card-title {

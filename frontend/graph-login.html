@@ -28,49 +28,61 @@
         </div>
 
         <div class="graph-login-card">
-            <h2 class="graph-login-card-title">Sign in to continue</h2>
-            <div id="login-error" class="graph-login-error hidden" role="alert" aria-live="polite"></div>
-
-            <form id="login-form" class="graph-login-form">
-                <div class="graph-login-field">
-                    <label for="username" class="graph-login-label">Username</label>
-                    <input
-                        id="username"
-                        name="username"
-                        type="text"
-                        required
-                        autocomplete="username"
-                        autofocus
-                        class="graph-login-input"
-                        placeholder="analyst"
-                    >
+            <div id="login-status" class="graph-login-status" role="status" aria-live="polite">
+                <div class="graph-login-status-spinner" aria-hidden="true"></div>
+                <div class="graph-login-status-copy">
+                    <h2 id="login-status-title" class="graph-login-card-title">Restoring session</h2>
+                    <p id="login-status-message" class="graph-login-status-message">
+                        Checking your analyst session before opening the investigation graph.
+                    </p>
                 </div>
+            </div>
 
-                <div class="graph-login-field">
-                    <label for="password" class="graph-login-label">Password</label>
-                    <input
-                        id="password"
-                        name="password"
-                        type="password"
-                        required
-                        autocomplete="current-password"
-                        class="graph-login-input"
-                        placeholder="Enter your password"
+            <div id="login-form-shell" class="graph-login-form-shell">
+                <h2 class="graph-login-card-title">Sign in to continue</h2>
+                <div id="login-error" class="graph-login-error hidden" role="alert" aria-live="polite"></div>
+
+                <form id="login-form" class="graph-login-form">
+                    <div class="graph-login-field">
+                        <label for="username" class="graph-login-label">Username</label>
+                        <input
+                            id="username"
+                            name="username"
+                            type="text"
+                            required
+                            autocomplete="username"
+                            autofocus
+                            class="graph-login-input"
+                            placeholder="analyst"
+                        >
+                    </div>
+
+                    <div class="graph-login-field">
+                        <label for="password" class="graph-login-label">Password</label>
+                        <input
+                            id="password"
+                            name="password"
+                            type="password"
+                            required
+                            autocomplete="current-password"
+                            class="graph-login-input"
+                            placeholder="Enter your password"
+                        >
+                    </div>
+
+                    <button
+                        type="submit"
+                        id="login-btn"
+                        class="graph-login-button"
                     >
-                </div>
-
-                <button
-                    type="submit"
-                    id="login-btn"
-                    class="graph-login-button"
-                >
-                    <span id="login-btn-text">Sign in</span>
-                    <svg id="login-spinner" class="graph-login-spinner hidden" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                        <circle class="graph-login-spinner-track" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                        <path class="graph-login-spinner-head" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
-                    </svg>
-                </button>
-            </form>
+                        <span id="login-btn-text">Sign in</span>
+                        <svg id="login-spinner" class="graph-login-spinner hidden" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <circle class="graph-login-spinner-track" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                            <path class="graph-login-spinner-head" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                        </svg>
+                    </button>
+                </form>
+            </div>
         </div>
     </div>
     <script src="/js/auth.js" defer></script>
