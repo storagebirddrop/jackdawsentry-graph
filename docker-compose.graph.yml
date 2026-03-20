@@ -6,8 +6,8 @@ services:
     container_name: jackdawsentry_graph_neo4j
     restart: unless-stopped
     ports:
-      - "7475:7474"
-      - "7688:7687"
+      - "127.0.0.1:7475:7474"
+      - "127.0.0.1:7688:7687"
     environment:
       NEO4J_AUTH: neo4j/${NEO4J_PASSWORD}
     volumes:
@@ -20,7 +20,7 @@ services:
     container_name: jackdawsentry_graph_postgres
     restart: unless-stopped
     ports:
-      - "5433:5432"
+      - "127.0.0.1:5433:5432"
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-jackdawsentry_graph}
       POSTGRES_USER: ${POSTGRES_USER:-jackdawsentry_user}
@@ -36,7 +36,7 @@ services:
     container_name: jackdawsentry_graph_redis
     restart: unless-stopped
     ports:
-      - "6380:6379"
+      - "127.0.0.1:6380:6379"
     command: >
       sh -c 'redis-server /usr/local/etc/redis/redis.conf
       --requirepass "$REDIS_PASSWORD"'
@@ -84,6 +84,12 @@ services:
       JWT_SECRET_KEY: ${JWT_SECRET_KEY}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      JWT_EXPIRE_MINUTES: ${JWT_EXPIRE_MINUTES:-30}
+      TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-false}
+      EXPOSE_API_DOCS: ${EXPOSE_API_DOCS:-false}
+      ENABLE_LEGACY_GRAPH_ENDPOINTS: ${ENABLE_LEGACY_GRAPH_ENDPOINTS:-false}
+      EXPOSE_METRICS: ${EXPOSE_METRICS:-false}
+      RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED:-true}
       DUAL_WRITE_RAW_EVENT_STORE: ${DUAL_WRITE_RAW_EVENT_STORE:-false}
       AUTO_BACKFILL_RAW_EVENT_STORE: ${AUTO_BACKFILL_RAW_EVENT_STORE:-false}
       BITCOIN_RPC_URL: ${BITCOIN_RPC_URL:-https://bitcoin-rpc.publicnode.com}

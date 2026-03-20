@@ -59,8 +59,10 @@ Browse:
 ```text
 http://localhost:8081/login
 http://localhost:8081/app/
-http://localhost:8081/docs
 ```
+
+API docs stay disabled by default. Set `EXPOSE_API_DOCS=true` only when you
+explicitly need them in a trusted environment.
 
 ## Development
 
@@ -86,6 +88,7 @@ Repo verification helpers:
 ```bash
 python scripts/quality/boundary_audit.py
 python scripts/quality/public_readiness_audit.py
+python scripts/quality/live_abuse_probe.py --username analyst --password change-me-now
 ```
 
 ## Support

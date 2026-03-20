@@ -52,3 +52,4 @@ Read this file before touching graph schema, graph API, trace compiler semantics
 - Browser bearer tokens may only live in `sessionStorage` during the current wave. Do not reintroduce `localStorage`.
 - Expansion guardrails are mandatory: depth <= `3`, `max_results` <= `100`, `page_size` <= `50`.
 - Unsupported expansion controls must fail fast rather than silently no-op.
+- Security-sensitive backend or nginx changes are not complete until the live stack is rebuilt and `python scripts/quality/live_abuse_probe.py ...` passes against the running deployment.
