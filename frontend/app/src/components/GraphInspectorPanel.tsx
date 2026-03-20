@@ -28,10 +28,12 @@ import {
   getChainColor,
   GraphGlyph,
   glyphSurfaceStyle,
+  type NodeSemanticMeta,
   nodeGlyphKind,
   riskColor,
   riskLabel,
   semanticBadges,
+  semanticMetaForNode,
   shortHash,
 } from './graphVisuals';
 
@@ -69,6 +71,11 @@ interface Props {
   pinnedPathIds?: string[];
   pinnedPaths?: PathStory[];
   pathStory?: PathStory | null;
+  semanticMeta?: NodeSemanticMeta | null;
+  semanticVisibleCount?: number;
+  activeSemanticKey?: string | null;
+  onFocusSemanticKey?: (key: string) => void;
+  onClearSemanticFocus?: () => void;
 }
 
 export default function GraphInspectorPanel({
@@ -92,6 +99,11 @@ export default function GraphInspectorPanel({
   pinnedPathIds = [],
   pinnedPaths = [],
   pathStory = null,
+  semanticMeta = null,
+  semanticVisibleCount = 0,
+  activeSemanticKey = null,
+  onFocusSemanticKey,
+  onClearSemanticFocus,
 }: Props) {
   const selectedNode = useMemo(
     () => (node?.data as InvestigationNode | undefined) ?? null,
@@ -165,6 +177,11 @@ export default function GraphInspectorPanel({
           pinnedPathIds={pinnedPathIds}
           pinnedPaths={pinnedPaths}
           pathStory={pathStory}
+          semanticMeta={semanticMeta}
+          semanticVisibleCount={semanticVisibleCount}
+          activeSemanticKey={activeSemanticKey}
+          onFocusSemanticKey={onFocusSemanticKey}
+          onClearSemanticFocus={onClearSemanticFocus}
         />
       ) : selectedEdge ? (
         <EdgeInspectorContent edge={selectedEdge} />
@@ -211,6 +228,11 @@ function NodeInspectorContent({
   pinnedPathIds,
   pinnedPaths,
   pathStory,
+  semanticMeta,
+  semanticVisibleCount,
+  activeSemanticKey,
+  onFocusSemanticKey,
+  onClearSemanticFocus,
 }: {
   node: InvestigationNode;
   onFocusBridgeRoute?: (route: string) => void;
@@ -228,12 +250,18 @@ function NodeInspectorContent({
   pinnedPathIds: string[];
   pinnedPaths: PathStory[];
   pathStory: PathStory | null;
+  semanticMeta: NodeSemanticMeta | null;
+  semanticVisibleCount: number;
+  activeSemanticKey: string | null;
+  onFocusSemanticKey?: (key: string) => void;
+  onClearSemanticFocus?: () => void;
 }) {
   const accent = getChainColor(node.chain ?? (node.address_data as AddressNodeData | undefined)?.chain);
   const badges = semanticBadges(node);
   const title = nodeTitle(node);
   const subtitle = nodeSubtitle(node);
   const activity = node.activity_summary;
+  const nodeSemantic = semanticMeta ?? semanticMetaForNode(node);
 
   return (
     <div style={{ display: 'grid', gap: 18, marginTop: 18 }}>
@@ -289,6 +317,38 @@ function NodeInspectorContent({
       )}
       {node.node_type === 'atomic_swap' && <AtomicSwapSection node={node} />}
       {node.node_type === 'utxo' && <UtxoSection node={node} />}
+
+      {nodeSemantic && (
+        <Section title="Protocol context">
+          <KeyValue label="Semantic rail">{nodeSemantic.label}</KeyValue>
+          <KeyValue label="Family">{nodeSemantic.family}</KeyValue>
+          <KeyValue label="Visible count">{semanticVisibleCount}</KeyValue>
+          {(onFocusSemanticKey || onClearSemanticFocus) && (
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
+              {onFocusSemanticKey && (
+                <button
+                  type="button"
+                  onClick={() => onFocusSemanticKey(nodeSemantic.key)}
+                  style={{
+                    ...actionButtonStyle,
+                    color: activeSemanticKey === nodeSemantic.key ? nodeSemantic.color : '#334155',
+                    borderColor: activeSemanticKey === nodeSemantic.key
+                      ? `${nodeSemantic.color}55`
+                      : 'rgba(148, 163, 184, 0.3)',
+                  }}
+                >
+                  {activeSemanticKey === nodeSemantic.key ? 'Protocol focused' : 'Focus protocol'}
+                </button>
+              )}
+              {onClearSemanticFocus && activeSemanticKey && (
+                <button type="button" onClick={onClearSemanticFocus} style={actionButtonStyle}>
+                  Clear protocol focus
+                </button>
+              )}
+            </div>
+          )}
+        </Section>
+      )}
 
       <Section title="Graph lineage">
         <KeyValue label="Branch">{shortHash(node.branch_id, 10, 6)}</KeyValue>

@@ -46,6 +46,11 @@ Read this file before touching graph schema, graph API, trace compiler semantics
 - Pinned path storytelling is an analyst-memory aid. Keep it lightweight,
   derived from current graph state, and explainable from the selected node.
 
+### ADR-011
+- Protocol and primitive legends should be derived from shared frontend semantic
+  metadata so node accents, legend counts, and inspector focus actions stay in
+  sync.
+
 ## Guardrails
 
 - Do not widen this repo into the private compliance dashboard.

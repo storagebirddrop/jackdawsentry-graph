@@ -38,4 +38,4 @@ Acceptance criteria:
       labels
 - [x] branch workspace supports focus and compare flows
 - [x] inspector supports pinned path storytelling
-- [ ] protocol-specific styling and legends cover more than bridge hops
+- [x] protocol-specific styling and legends cover more than bridge hops

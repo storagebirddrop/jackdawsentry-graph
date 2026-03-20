@@ -55,6 +55,7 @@ import {
   bridgeRouteLabel,
   getBridgeProtocolColor,
   isNodeVisibleInView,
+  semanticMetaForNode,
 } from './graphVisuals';
 
 const NODE_TYPES = {
@@ -240,6 +241,7 @@ export default function InvestigationGraph({ sessionId }: Props) {
   const [activeBranchIds, setActiveBranchIds] = useState<string[]>([]);
   const [branchHistory, setBranchHistory] = useState<string[]>([]);
   const [pinnedPathIds, setPinnedPathIds] = useState<string[]>([]);
+  const [activeSemanticKey, setActiveSemanticKey] = useState<string | null>(null);
 
   const branchEntries = useMemo(
     () =>
@@ -352,6 +354,45 @@ export default function InvestigationGraph({ sessionId }: Props) {
     };
   }, [rfNodes]);
 
+  const semanticLegend = useMemo(() => {
+    const entries = new Map<
+      string,
+      { key: string; label: string; family: string; color: string; count: number }
+    >();
+    const families = new Map<string, { family: string; color: string; count: number }>();
+
+    for (const node of nodes) {
+      const meta = semanticMetaForNode(node.data as unknown as InvestigationNode);
+      if (!meta) continue;
+
+      const entry = entries.get(meta.key) ?? {
+        key: meta.key,
+        label: meta.label,
+        family: meta.family,
+        color: meta.color,
+        count: 0,
+      };
+      entry.count += 1;
+      entries.set(meta.key, entry);
+
+      const family = families.get(meta.family) ?? {
+        family: meta.family,
+        color: meta.color,
+        count: 0,
+      };
+      family.count += 1;
+      families.set(meta.family, family);
+    }
+
+    return {
+      entries: [...entries.values()].sort((a, b) => {
+        if (b.count !== a.count) return b.count - a.count;
+        return a.label.localeCompare(b.label);
+      }),
+      families: [...families.values()].sort((a, b) => b.count - a.count),
+    };
+  }, [nodes]);
+
   // Keep local RF state in sync with store, applying current filters
   useEffect(() => {
     const { nodes: fn, edges: fe } = applyFilters(
@@ -448,6 +489,16 @@ export default function InvestigationGraph({ sessionId }: Props) {
   }, []);
 
   const pinnedPathSet = useMemo(() => new Set(pinnedPathIds), [pinnedPathIds]);
+  const visibleNodeSemanticById = useMemo(
+    () =>
+      new Map(
+        nodes.map((node) => [
+          node.id,
+          semanticMetaForNode((node.data as unknown) as InvestigationNode)?.key ?? null,
+        ]),
+      ),
+    [nodes],
+  );
   const visibleNodePathById = useMemo(
     () =>
       new Map(
@@ -459,14 +510,23 @@ export default function InvestigationGraph({ sessionId }: Props) {
   // Inject expand handlers into node data
   const enrichedNodes = nodes.map((n) => {
     const invNode = n.data as unknown as InvestigationNode;
+    const semanticMeta = semanticMetaForNode(invNode);
     const pinned = pinnedPathSet.has(invNode.path_id);
-    const dimmed = pinnedPathIds.length > 0 && !pinned;
+    const semanticMatch = !activeSemanticKey || semanticMeta?.key === activeSemanticKey;
+    const dimmed = (pinnedPathIds.length > 0 && !pinned) || !semanticMatch;
     return {
       ...n,
       style: {
         ...(n.style ?? {}),
         opacity: dimmed ? 0.22 : 1,
-        filter: pinned ? 'drop-shadow(0 0 0.35rem rgba(245,158,11,0.45))' : 'none',
+        filter:
+          pinned
+            ? 'drop-shadow(0 0 0.35rem rgba(245,158,11,0.45))'
+            : !semanticMatch && activeSemanticKey
+              ? 'saturate(0.65)'
+              : semanticMeta?.key === activeSemanticKey
+                ? `drop-shadow(0 0 0.28rem ${semanticMeta.color}55)`
+                : 'none',
         transition: 'opacity 120ms ease, filter 120ms ease',
       },
       data: {
@@ -487,6 +547,8 @@ export default function InvestigationGraph({ sessionId }: Props) {
       const baseStyle = (edge.style ?? {}) as React.CSSProperties;
       const sourcePathId = visibleNodePathById.get(edge.source);
       const targetPathId = visibleNodePathById.get(edge.target);
+      const sourceSemanticKey = visibleNodeSemanticById.get(edge.source);
+      const targetSemanticKey = visibleNodeSemanticById.get(edge.target);
       const onPinnedPath =
         Boolean(sourcePathId)
         && sourcePathId === targetPathId
@@ -494,12 +556,31 @@ export default function InvestigationGraph({ sessionId }: Props) {
       const touchesPinnedPath =
         (Boolean(sourcePathId) && pinnedPathSet.has(sourcePathId as string))
         || (Boolean(targetPathId) && pinnedPathSet.has(targetPathId as string));
+      const onSemanticFocus =
+        activeSemanticKey !== null
+        && (sourceSemanticKey === activeSemanticKey || targetSemanticKey === activeSemanticKey);
       const strokeWidth = typeof baseStyle.strokeWidth === 'number' ? baseStyle.strokeWidth : 2;
       return {
         ...baseStyle,
-        opacity: pinnedPathIds.length === 0 ? 1 : onPinnedPath ? 1 : touchesPinnedPath ? 0.56 : 0.12,
-        strokeWidth: onPinnedPath ? strokeWidth + 0.8 : strokeWidth,
-        filter: onPinnedPath ? 'drop-shadow(0 0 0.28rem rgba(245,158,11,0.42))' : 'none',
+        opacity:
+          pinnedPathIds.length > 0
+            ? onPinnedPath
+              ? 1
+              : touchesPinnedPath
+                ? 0.56
+                : 0.12
+            : activeSemanticKey
+              ? onSemanticFocus
+                ? 1
+                : 0.14
+              : 1,
+        strokeWidth: onPinnedPath || onSemanticFocus ? strokeWidth + 0.8 : strokeWidth,
+        filter:
+          onPinnedPath
+            ? 'drop-shadow(0 0 0.28rem rgba(245,158,11,0.42))'
+            : onSemanticFocus && activeSemanticKey
+              ? 'drop-shadow(0 0 0.26rem rgba(37,99,235,0.28))'
+              : 'none',
         transition: 'opacity 120ms ease, filter 120ms ease',
       };
     })(),
@@ -523,6 +604,16 @@ export default function InvestigationGraph({ sessionId }: Props) {
     const data = selectedNode.data as unknown as InvestigationNode;
     return pathStoryById.get(data.path_id) ?? null;
   }, [selectedNode, pathStoryById]);
+
+  const selectedSemanticMeta = useMemo(() => {
+    if (!selectedNode) return null;
+    return semanticMetaForNode((selectedNode.data as unknown) as InvestigationNode);
+  }, [selectedNode]);
+
+  const selectedSemanticCount = useMemo(() => {
+    if (!selectedSemanticMeta) return 0;
+    return semanticLegend.entries.find((entry) => entry.key === selectedSemanticMeta.key)?.count ?? 0;
+  }, [selectedSemanticMeta, semanticLegend.entries]);
 
   const pinnedPathStories = useMemo(
     () =>
@@ -558,6 +649,13 @@ export default function InvestigationGraph({ sessionId }: Props) {
     const availablePathIds = new Set(pathStories.map((story) => story.pathId));
     setPinnedPathIds((current) => current.filter((pathId) => availablePathIds.has(pathId)));
   }, [pathStories]);
+
+  useEffect(() => {
+    if (!activeSemanticKey) return;
+    if (!semanticLegend.entries.some((entry) => entry.key === activeSemanticKey)) {
+      setActiveSemanticKey(null);
+    }
+  }, [activeSemanticKey, semanticLegend.entries]);
 
   const focusBridgeRoute = useCallback((route: string) => {
     setFilters((current) => ({
@@ -617,6 +715,14 @@ export default function InvestigationGraph({ sessionId }: Props) {
 
   const clearPinnedPaths = useCallback(() => {
     setPinnedPathIds([]);
+  }, []);
+
+  const focusSemanticKey = useCallback((key: string) => {
+    setActiveSemanticKey((current) => (current === key ? null : key));
+  }, []);
+
+  const clearSemanticFocus = useCallback(() => {
+    setActiveSemanticKey(null);
   }, []);
 
   const bridgeSummary = useMemo(() => {
@@ -1056,6 +1162,103 @@ export default function InvestigationGraph({ sessionId }: Props) {
         </aside>
       )}
 
+      {semanticLegend.entries.length > 0 && (
+        <aside
+          style={{
+            position: 'absolute',
+            top: bridgeSummary ? 72 : 72,
+            right: inspectorCollapsed ? 92 : 376,
+            zIndex: 101,
+            width: 320,
+            padding: '14px 16px',
+            borderRadius: 20,
+            background: 'rgba(255,255,255,0.94)',
+            border: '1px solid rgba(15, 118, 110, 0.16)',
+            boxShadow: '0 18px 40px rgba(15, 23, 42, 0.10)',
+            backdropFilter: 'blur(14px)',
+            color: '#0f172a',
+          }}
+        >
+          <div style={{ color: '#0f766e', fontSize: 10, fontWeight: 800, letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+            Protocol legend
+          </div>
+          <div style={{ marginTop: 6, fontSize: 21, fontWeight: 800 }}>
+            Semantic surfaces in view
+          </div>
+          <div style={{ color: '#475569', fontSize: 12, marginTop: 6, lineHeight: 1.5 }}>
+            Focus a protocol or primitive family to quiet the graph and compare the same kind
+            of flow across routes and branches.
+          </div>
+
+          <div style={{ marginTop: 12 }}>
+            <div style={summaryHeadingStyle}>Primitive families</div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
+              {semanticLegend.families.slice(0, 6).map((family) => (
+                <span
+                  key={family.family}
+                  style={{
+                    ...summaryChipStyle(family.color),
+                    cursor: 'default',
+                  }}
+                >
+                  {family.family} · {family.count}
+                </span>
+              ))}
+            </div>
+          </div>
+
+          <div style={{ marginTop: 14 }}>
+            <div style={summaryHeadingStyle}>Protocols and semantic rails</div>
+            <div style={{ display: 'grid', gap: 8, marginTop: 8 }}>
+              {semanticLegend.entries.slice(0, 8).map((entry) => {
+                const active = activeSemanticKey === entry.key;
+                return (
+                  <button
+                    key={entry.key}
+                    type="button"
+                    onClick={() => focusSemanticKey(entry.key)}
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      gap: 12,
+                      alignItems: 'center',
+                      border: `1px solid ${entry.color}${active ? '44' : '20'}`,
+                      background: active ? `${entry.color}16` : 'rgba(255,255,255,0.88)',
+                      borderRadius: 14,
+                      padding: '8px 10px',
+                      cursor: 'pointer',
+                      textAlign: 'left',
+                    }}
+                  >
+                    <div>
+                      <div style={{ color: entry.color, fontSize: 12, fontWeight: 800 }}>
+                        {entry.label}
+                      </div>
+                      <div style={{ color: '#64748b', fontSize: 11, marginTop: 3 }}>
+                        {entry.family}
+                      </div>
+                    </div>
+                    <span style={summaryChipStyle(entry.color)}>
+                      {entry.count}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {activeSemanticKey && (
+            <button
+              type="button"
+              onClick={clearSemanticFocus}
+              style={{ ...clearRouteButtonStyle, marginTop: 12 }}
+            >
+              Clear protocol focus
+            </button>
+          )}
+        </aside>
+      )}
+
       {/* Filter panel */}
       {filterVisible && (
         <FilterPanel
@@ -1120,6 +1323,9 @@ export default function InvestigationGraph({ sessionId }: Props) {
         pinnedPathIds={pinnedPathIds}
         pinnedPaths={pinnedPathStories}
         pathStory={selectedPathStory}
+        semanticMeta={selectedSemanticMeta}
+        semanticVisibleCount={selectedSemanticCount}
+        activeSemanticKey={activeSemanticKey}
         onClose={() => {
           setSelectedNodeId(null);
           setSelectedEdgeId(null);
@@ -1129,6 +1335,8 @@ export default function InvestigationGraph({ sessionId }: Props) {
         onClearBranchFocus={clearBranchFocus}
         onTogglePinnedPath={togglePinnedPath}
         onClearPinnedPaths={clearPinnedPaths}
+        onFocusSemanticKey={focusSemanticKey}
+        onClearSemanticFocus={clearSemanticFocus}
         onFocusBridgeRoute={focusBridgeRoute}
         onFocusBridgeProtocol={focusBridgeProtocol}
         onClearBridgeFocus={clearBridgeFocus}

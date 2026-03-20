@@ -10,10 +10,12 @@ import {
   GraphGlyph,
   glyphSurfaceStyle,
   nodeAccentColor,
+  nodeSemanticAccentColor,
   nodeGlyphKind,
   riskColor,
   riskLabel,
   semanticBadges,
+  serviceProtocolLabel,
 } from '../graphVisuals';
 
 interface EntityNodeComponentData extends InvestigationNode {
@@ -52,12 +54,18 @@ export default function EntityNode({ data }: NodeProps) {
     );
   }
 
-  const catColor = nodeAccentColor(
+  const fallbackColor = nodeAccentColor(
     d,
     appearance,
     CATEGORY_COLORS[entity.category] ?? CATEGORY_COLORS.unknown,
   );
+  const catColor = isServiceInteraction
+    ? nodeSemanticAccentColor(d, appearance, fallbackColor)
+    : fallbackColor;
   const badges = semanticBadges(d);
+  const serviceLabel = isServiceInteraction
+    ? serviceProtocolLabel(activity.protocol_id, activity.protocol_type ?? entity.service_type)
+    : null;
 
   return (
     <div
@@ -110,6 +118,7 @@ export default function EntityNode({ data }: NodeProps) {
             ))}
             {isServiceInteraction ? (
               <>
+                {serviceLabel && <span style={badgeStyle(catColor)}>{serviceLabel}</span>}
                 {activity.asset_symbol && (
                   <span style={{ ...badgeStyle('#2563eb'), textTransform: 'uppercase' }}>
                     {activity.asset_symbol}

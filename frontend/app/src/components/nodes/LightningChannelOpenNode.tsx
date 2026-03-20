@@ -10,7 +10,7 @@ import {
   formatNative,
   GraphGlyph,
   glyphSurfaceStyle,
-  nodeAccentColor,
+  nodeSemanticAccentColor,
   nodeGlyphKind,
 } from '../graphVisuals';
 
@@ -25,7 +25,7 @@ export default function LightningChannelOpenNode({ data }: NodeProps) {
     | LightningChannelOpenData
     | undefined;
   const appearance = d.appearance ?? DEFAULT_GRAPH_APPEARANCE;
-  const accent = nodeAccentColor(d, appearance, '#f2a900');
+  const accent = nodeSemanticAccentColor(d, appearance, '#f2a900');
 
   if (!channel?.channel_id) {
     return (
@@ -102,6 +102,7 @@ export default function LightningChannelOpenNode({ data }: NodeProps) {
           )}
 
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 10 }}>
+            <span style={badgeStyle(accent)}>Lightning</span>
             {channel.short_channel_id && (
               <span style={badgeStyle('#475569')}>{channel.short_channel_id}</span>
             )}

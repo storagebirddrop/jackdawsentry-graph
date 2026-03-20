@@ -17,8 +17,9 @@ import {
   formatNative,
   GraphGlyph,
   glyphSurfaceStyle,
-  nodeAccentColor,
+  nodeSemanticAccentColor,
   nodeGlyphKind,
+  swapProtocolLabel,
 } from '../graphVisuals';
 
 interface SwapNodeData extends InvestigationNode {
@@ -32,7 +33,8 @@ export default function SwapEventNode({ data }: NodeProps) {
   const swapData = data as unknown as SwapNodeData;
   const swap = swapData.node_data as SwapEventData;
   const appearance = swapData.appearance ?? DEFAULT_GRAPH_APPEARANCE;
-  const accent = nodeAccentColor(swapData, appearance, '#0f766e');
+  const accent = nodeSemanticAccentColor(swapData, appearance, '#0f766e');
+  const protocolLabel = swapProtocolLabel(swap.protocol_id);
 
   return (
     <div
@@ -60,7 +62,10 @@ export default function SwapEventNode({ data }: NodeProps) {
             Swap
           </div>
           <div style={{ color: accent, fontWeight: 700, fontSize: 14, marginTop: 4 }}>
-            {(swap.protocol_id ?? 'UNKNOWN').toUpperCase()}
+            {protocolLabel}
+          </div>
+          <div style={{ color: '#64748b', fontSize: 11, marginTop: 4 }}>
+            {swap.chain?.toUpperCase() ?? 'multi-chain'} liquidity route
           </div>
 
           <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
@@ -83,6 +88,11 @@ export default function SwapEventNode({ data }: NodeProps) {
               rate {swap.exchange_rate.toFixed(6)}
             </div>
           )}
+
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 10 }}>
+            <span style={badgeStyle(accent)}>{protocolLabel}</span>
+            {swap.chain && <span style={badgeStyle('#334155')}>{swap.chain}</span>}
+          </div>
         </div>
       </div>
 

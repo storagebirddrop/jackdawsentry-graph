@@ -10,7 +10,9 @@ import {
   formatNative,
   GraphGlyph,
   glyphSurfaceStyle,
+  nodeSemanticAccentColor,
   nodeGlyphKind,
+  titleCaseIdentifier,
 } from '../graphVisuals';
 
 interface AtomicSwapNodeData extends InvestigationNode {
@@ -22,7 +24,8 @@ export default function AtomicSwapNode({ data }: NodeProps) {
   const d = data as unknown as AtomicSwapNodeData;
   const swap = (d.atomic_swap_data ?? d.node_data) as AtomicSwapData | undefined;
   const appearance = d.appearance ?? DEFAULT_GRAPH_APPEARANCE;
-  const accent = '#2563eb';
+  const accent = nodeSemanticAccentColor(d, appearance, '#2563eb');
+  const protocolLabel = swap?.protocol_id ? titleCaseIdentifier(swap.protocol_id) : 'HTLC';
 
   if (!swap?.swap_id) {
     return (
@@ -72,7 +75,7 @@ export default function AtomicSwapNode({ data }: NodeProps) {
                 Cross-chain HTLC
               </div>
               <div style={{ color: accent, fontWeight: 700, fontSize: 15, marginTop: 4 }}>
-                Atomic Swap
+                {protocolLabel}
               </div>
             </div>
             <span style={{ ...badgeStyle('#7c3aed'), textTransform: 'uppercase' }}>
@@ -102,7 +105,7 @@ export default function AtomicSwapNode({ data }: NodeProps) {
           </div>
 
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 10 }}>
-            {swap.protocol_id && <span style={badgeStyle('#475569')}>{swap.protocol_id}</span>}
+            <span style={badgeStyle(accent)}>{protocolLabel}</span>
             {swap.hashlock && <span style={badgeStyle(accent)}>hashlock</span>}
             {swap.timelock !== undefined && <span style={badgeStyle('#b45309')}>t+{swap.timelock}</span>}
           </div>

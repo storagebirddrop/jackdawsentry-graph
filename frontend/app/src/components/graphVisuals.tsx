@@ -8,6 +8,8 @@ import type {
   InvestigationNode,
   LightningChannelCloseData,
   LightningChannelOpenData,
+  ServiceNodeData,
+  SolanaInstructionData,
   SwapEventData,
   UTXONodeData,
 } from '../types/graph';
@@ -52,6 +54,53 @@ const BRIDGE_PROTOCOL_META: Record<
   synapse: { color: '#9333ea', label: 'Synapse', family: 'burn' },
 };
 
+const SWAP_PROTOCOL_META: Record<string, { color: string; label: string }> = {
+  uniswap: { color: '#ff007a', label: 'Uniswap' },
+  sushiswap: { color: '#7c3aed', label: 'SushiSwap' },
+  jupiter: { color: '#14f195', label: 'Jupiter' },
+  raydium: { color: '#38bdf8', label: 'Raydium' },
+  orca: { color: '#0ea5e9', label: 'Orca' },
+  curve: { color: '#2563eb', label: 'Curve' },
+  balancer: { color: '#475569', label: 'Balancer' },
+  oneinch: { color: '#1d4ed8', label: '1inch' },
+  paraswap: { color: '#0f766e', label: 'ParaSwap' },
+  kyberswap: { color: '#10b981', label: 'KyberSwap' },
+  pancakeswap: { color: '#f59e0b', label: 'PancakeSwap' },
+};
+
+const SOLANA_PROGRAM_META: Record<string, { color: string; label: string }> = {
+  ['tokenkegqfezyinwajbnbgkpfxcwubvf9ss623vq5da']: { color: '#14f195', label: 'SPL Token' },
+  ['jup6lkbzbjs1jkkwapdhny74zcz3tluzoi5qnyvtav4']: { color: '#14f195', label: 'Jupiter v6' },
+  ['675kpx9mhtjs2zt1qfr1nyhuzelxfqm9h24wfsut1mp8']: { color: '#38bdf8', label: 'Raydium AMM' },
+  ['whirlbmiicvdio4qvufm5kag6ct8vwpyzgff3sfkdw6']: { color: '#0ea5e9', label: 'Orca Whirlpool' },
+  ['worm2zog2kud4vfxhvjh93uuh596ayrfgq2mgjnmtth']: { color: '#7c3aed', label: 'Wormhole' },
+  ['mayanu2ys5r3fuboprkmhtcm9e4mnr7txbmvzs2kn3k']: { color: '#0891b2', label: 'Mayan' },
+};
+
+const SIDECHAIN_META: Record<string, { color: string; label: string }> = {
+  liquid: { color: '#12b3a8', label: 'Liquid' },
+  rootstock: { color: '#f97316', label: 'Rootstock' },
+  stacks: { color: '#5546ff', label: 'Stacks' },
+};
+
+const SEMANTIC_PALETTE = [
+  '#2563eb',
+  '#7c3aed',
+  '#0f766e',
+  '#ea580c',
+  '#db2777',
+  '#0891b2',
+  '#b45309',
+  '#475569',
+] as const;
+
+export interface NodeSemanticMeta {
+  key: string;
+  label: string;
+  family: string;
+  color: string;
+}
+
 type GlyphKind =
   | 'address'
   | 'entity'
@@ -81,6 +130,76 @@ export function getBridgeProtocolColor(protocolId?: string): string {
 export function bridgeProtocolLabel(protocolId?: string): string {
   if (!protocolId) return 'Unknown bridge';
   return BRIDGE_PROTOCOL_META[protocolId.toLowerCase()]?.label ?? protocolId;
+}
+
+function normalizeSemanticKey(value?: string): string {
+  return (value ?? 'unknown').trim().toLowerCase();
+}
+
+function semanticColorFromKey(key: string): string {
+  let hash = 0;
+  for (let i = 0; i < key.length; i += 1) {
+    hash = (hash * 33 + key.charCodeAt(i)) >>> 0;
+  }
+  return SEMANTIC_PALETTE[hash % SEMANTIC_PALETTE.length];
+}
+
+export function titleCaseIdentifier(value?: string): string {
+  if (!value) return 'Unknown';
+  return value
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .split(' ')
+    .map((part) => (part.length <= 4 ? part.toUpperCase() : `${part[0].toUpperCase()}${part.slice(1)}`))
+    .join(' ');
+}
+
+export function swapProtocolLabel(protocolId?: string): string {
+  if (!protocolId) return 'Unknown swap';
+  return SWAP_PROTOCOL_META[normalizeSemanticKey(protocolId)]?.label ?? titleCaseIdentifier(protocolId);
+}
+
+export function getSwapProtocolColor(protocolId?: string): string {
+  if (!protocolId) return '#0f766e';
+  const key = normalizeSemanticKey(protocolId);
+  return SWAP_PROTOCOL_META[key]?.color ?? semanticColorFromKey(`swap:${key}`);
+}
+
+export function sidechainLabel(sidechain?: string): string {
+  if (!sidechain) return 'Bitcoin sidechain';
+  return SIDECHAIN_META[normalizeSemanticKey(sidechain)]?.label ?? titleCaseIdentifier(sidechain);
+}
+
+export function sidechainColor(sidechain?: string): string {
+  if (!sidechain) return '#0f766e';
+  const key = normalizeSemanticKey(sidechain);
+  return SIDECHAIN_META[key]?.color ?? getChainColor(sidechain);
+}
+
+export function solanaProgramLabel(programId?: string, programName?: string): string {
+  if (programName) return programName;
+  if (!programId) return 'Unknown program';
+  return SOLANA_PROGRAM_META[normalizeSemanticKey(programId)]?.label
+    ?? `${programId.slice(0, 6)}…${programId.slice(-4)}`;
+}
+
+export function solanaProgramColor(programId?: string): string {
+  if (!programId) return '#9945ff';
+  const key = normalizeSemanticKey(programId);
+  return SOLANA_PROGRAM_META[key]?.color ?? semanticColorFromKey(`solana:${key}`);
+}
+
+export function serviceProtocolLabel(protocolId?: string, serviceType?: string): string {
+  if (protocolId) return titleCaseIdentifier(protocolId);
+  if (serviceType) return titleCaseIdentifier(serviceType);
+  return 'Service activity';
+}
+
+export function serviceProtocolColor(protocolId?: string, serviceType?: string): string {
+  const key = normalizeSemanticKey(protocolId ?? serviceType);
+  if (key === 'unknown') return '#2563eb';
+  return semanticColorFromKey(`service:${key}`);
 }
 
 export function bridgeMechanismLabel(mechanism?: string): string {
@@ -207,6 +326,111 @@ export function nodeAccentColor(
 ): string {
   if (!appearance.useChainColors) return fallback;
   return getChainColor(inferNodeChain(node)) ?? fallback;
+}
+
+export function semanticMetaForNode(node: InvestigationNode): NodeSemanticMeta | null {
+  if (node.node_type === 'bridge_hop') {
+    const hop = (node.bridge_hop_data ?? node.node_data) as BridgeHopData;
+    return {
+      key: `bridge:${normalizeSemanticKey(hop.protocol_id)}`,
+      label: bridgeProtocolLabel(hop.protocol_id),
+      family: 'Bridge',
+      color: getBridgeProtocolColor(hop.protocol_id),
+    };
+  }
+
+  if (node.node_type === 'swap_event') {
+    const swap = (node.swap_event_data ?? node.node_data) as SwapEventData;
+    return {
+      key: `swap:${normalizeSemanticKey(swap.protocol_id)}`,
+      label: swapProtocolLabel(swap.protocol_id),
+      family: 'Swap',
+      color: getSwapProtocolColor(swap.protocol_id),
+    };
+  }
+
+  if (node.node_type === 'atomic_swap') {
+    const swap = (node.atomic_swap_data ?? node.node_data) as AtomicSwapData | undefined;
+    return {
+      key: `atomic:${normalizeSemanticKey(swap?.protocol_id ?? 'htlc')}`,
+      label: swap?.protocol_id ? titleCaseIdentifier(swap.protocol_id) : 'HTLC',
+      family: 'Atomic swap',
+      color: swap?.protocol_id
+        ? semanticColorFromKey(`atomic:${normalizeSemanticKey(swap.protocol_id)}`)
+        : '#2563eb',
+    };
+  }
+
+  if (node.node_type === 'lightning_channel_open' || node.node_type === 'lightning_channel_close') {
+    return {
+      key: 'lightning:network',
+      label: 'Lightning',
+      family: 'Lightning',
+      color: getChainColor('lightning'),
+    };
+  }
+
+  if (node.node_type === 'btc_sidechain_peg_in' || node.node_type === 'btc_sidechain_peg_out') {
+    const peg = (node.btc_sidechain_peg_data ?? node.node_data) as BtcSidechainPegData | undefined;
+    return {
+      key: `peg:${normalizeSemanticKey(peg?.sidechain)}`,
+      label: sidechainLabel(peg?.sidechain),
+      family: 'Sidechain peg',
+      color: sidechainColor(peg?.sidechain),
+    };
+  }
+
+  if (node.node_type === 'solana_instruction') {
+    const ix = (node.instruction_data ?? node.node_data) as SolanaInstructionData | undefined;
+    return {
+      key: `solana:${normalizeSemanticKey(ix?.program_id ?? ix?.program_name)}`,
+      label: solanaProgramLabel(ix?.program_id, ix?.program_name),
+      family: 'Solana program',
+      color: solanaProgramColor(ix?.program_id),
+    };
+  }
+
+  if (node.node_type === 'service') {
+    const service = (node.service_data ?? node.node_data) as ServiceNodeData | undefined;
+    const protocolId = node.activity_summary?.protocol_id ?? service?.protocol_id;
+    const serviceType = service?.service_type ?? node.activity_summary?.activity_type;
+    return {
+      key: `service:${normalizeSemanticKey(protocolId ?? serviceType)}`,
+      label: serviceProtocolLabel(protocolId, serviceType),
+      family: 'Service',
+      color: serviceProtocolColor(protocolId, serviceType),
+    };
+  }
+
+  if (node.node_type === 'address') {
+    const address = (node.address_data ?? node.node_data) as AddressNodeData;
+    if (address.is_mixer) {
+      return { key: 'exposure:mixer', label: 'Mixer', family: 'Exposure', color: '#7c3aed' };
+    }
+    if (address.is_coinjoin_halt) {
+      return { key: 'bitcoin:coinjoin', label: 'CoinJoin', family: 'Bitcoin', color: '#b45309' };
+    }
+    if (address.is_sanctioned) {
+      return { key: 'exposure:sanctioned', label: 'Sanctioned', family: 'Exposure', color: '#dc2626' };
+    }
+  }
+
+  if (node.node_type === 'utxo') {
+    const utxo = (node.utxo_data ?? node.node_data) as UTXONodeData | undefined;
+    if (utxo?.is_coinjoin_halt) {
+      return { key: 'bitcoin:coinjoin', label: 'CoinJoin', family: 'Bitcoin', color: '#b45309' };
+    }
+  }
+
+  return null;
+}
+
+export function nodeSemanticAccentColor(
+  node: InvestigationNode,
+  appearance: GraphAppearanceState,
+  fallback: string,
+): string {
+  return semanticMetaForNode(node)?.color ?? nodeAccentColor(node, appearance, fallback);
 }
 
 export function nodeGlyphKind(node: InvestigationNode): GlyphKind {

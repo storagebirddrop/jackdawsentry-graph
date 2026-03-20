@@ -81,6 +81,8 @@ workflows:
   backend branch metadata tracked in session state
 - pinned path stories let investigators keep a few narrative arcs visible while
   comparing branches or bridge routes
+- protocol legend cards now summarize visible swap, bridge, lightning, sidechain,
+  service, and Solana rails directly on the canvas
 - the inspector is the narrative surface for node detail, lineage, branch
   actions, pinned paths, and active investigation context
 

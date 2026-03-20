@@ -16,8 +16,9 @@ import {
   badgeStyle,
   GraphGlyph,
   glyphSurfaceStyle,
-  nodeAccentColor,
+  nodeSemanticAccentColor,
   nodeGlyphKind,
+  solanaProgramLabel,
 } from '../graphVisuals';
 
 interface SolanaNodeData extends InvestigationNode {
@@ -31,29 +32,14 @@ const DECODE_COLORS: Record<string, string> = {
   unknown: '#ef4444',
 };
 
-const PROGRAM_DISPLAY: Record<string, string> = {
-  'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA': 'SPL Token',
-  'JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4': 'Jupiter v6',
-  '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8': 'Raydium AMM',
-  whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3sFKDW6: 'Orca Whirlpool',
-  worm2ZoG2kUd4vFXhvjh93UUH596ayRfgQ2MgjNMTth: 'Wormhole',
-  MayanU2yS5r3fUBoPRKmHtCm9e4mNR7TXbmvZs2KN3k: 'Mayan',
-};
-
-function displayProgram(data: SolanaInstructionData): string {
-  if (data.program_name) return data.program_name;
-  const known = PROGRAM_DISPLAY[data.program_id];
-  if (known) return known;
-  return `${data.program_id.slice(0, 6)}…${data.program_id.slice(-4)}`;
-}
-
 export default function SolanaInstructionNode({ data: rawData }: NodeProps) {
   const data = rawData as unknown as SolanaNodeData;
   const ix = data.node_data as SolanaInstructionData;
   const decodeStatus = ix.decode_status ?? 'unknown';
   const decodeColor = DECODE_COLORS[decodeStatus] ?? DECODE_COLORS.unknown;
   const appearance = data.appearance ?? DEFAULT_GRAPH_APPEARANCE;
-  const accent = nodeAccentColor(data, appearance, '#9945ff');
+  const accent = nodeSemanticAccentColor(data, appearance, '#9945ff');
+  const programLabel = solanaProgramLabel(ix.program_id, ix.program_name);
 
   return (
     <div
@@ -86,7 +72,7 @@ export default function SolanaInstructionNode({ data: rawData }: NodeProps) {
             </span>
           </div>
           <div style={{ color: accent, fontWeight: 700, fontSize: 15, marginTop: 6 }}>
-            {displayProgram(ix)}
+            {programLabel}
           </div>
 
           {ix.instruction_type && (
@@ -101,6 +87,9 @@ export default function SolanaInstructionNode({ data: rawData }: NodeProps) {
               {Object.keys(ix.decoded_args).length > 3 && ' ...'}
             </div>
           )}
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 10 }}>
+            <span style={badgeStyle(accent)}>{programLabel}</span>
+          </div>
         </div>
       </div>
 

@@ -11,18 +11,14 @@ import {
   GraphGlyph,
   glyphSurfaceStyle,
   nodeGlyphKind,
+  sidechainColor,
+  sidechainLabel,
 } from '../graphVisuals';
 
 interface PegNodeData extends InvestigationNode {
   branch_color: string;
   appearance?: GraphAppearanceState;
 }
-
-const SIDECHAIN_COLORS: Record<string, string> = {
-  liquid: '#12b3a8',
-  rootstock: '#f97316',
-  stacks: '#5546ff',
-};
 
 export default function BtcSidechainPegNode({ data }: NodeProps) {
   const d = data as unknown as PegNodeData;
@@ -52,7 +48,7 @@ export default function BtcSidechainPegNode({ data }: NodeProps) {
   }
 
   const sidechain = peg.sidechain.toLowerCase();
-  const accent = SIDECHAIN_COLORS[sidechain] ?? '#0f766e';
+  const accent = sidechainColor(sidechain);
   const title = d.node_type === 'btc_sidechain_peg_in' ? 'Peg In' : 'Peg Out';
   const route = `${peg.asset_in} -> ${peg.asset_out}`;
 
@@ -88,7 +84,7 @@ export default function BtcSidechainPegNode({ data }: NodeProps) {
               </div>
             </div>
             <span style={{ ...badgeStyle(accent), textTransform: 'uppercase' }}>
-              {peg.sidechain}
+              {sidechainLabel(peg.sidechain)}
             </span>
           </div>
 
@@ -103,6 +99,7 @@ export default function BtcSidechainPegNode({ data }: NodeProps) {
           )}
 
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 10 }}>
+            <span style={badgeStyle(accent)}>{sidechainLabel(peg.sidechain)}</span>
             {peg.mechanism && <span style={badgeStyle('#475569')}>{peg.mechanism}</span>}
             {peg.status && <span style={badgeStyle('#2563eb')}>{peg.status}</span>}
           </div>
