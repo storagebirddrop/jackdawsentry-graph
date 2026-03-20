@@ -6,13 +6,24 @@ ExpansionResponseV2 / SessionCreateResponse payloads and that all
 required fields are present.
 """
 
+from datetime import datetime
+from datetime import timezone
+from unittest.mock import AsyncMock
+from unittest.mock import MagicMock
+
 import pytest
 
 from src.trace_compiler.compiler import TraceCompiler
+from src.trace_compiler.lineage import branch_id as mk_branch_id
+from src.trace_compiler.lineage import edge_id as mk_edge_id
+from src.trace_compiler.lineage import lineage_id as mk_lineage_id
+from src.trace_compiler.lineage import path_id as mk_path_id
 from src.trace_compiler.models import (
     ExpandOptions,
     ExpandRequest,
     ExpansionResponseV2,
+    InvestigationEdge,
+    InvestigationNode,
     SessionCreateRequest,
     SessionCreateResponse,
 )
@@ -21,6 +32,17 @@ from src.trace_compiler.models import (
 @pytest.fixture
 def compiler():
     return TraceCompiler()
+
+
+class _AcquireCtx:
+    def __init__(self, conn):
+        self._conn = conn
+
+    async def __aenter__(self):
+        return self._conn
+
+    async def __aexit__(self, *_):
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -142,6 +164,69 @@ async def test_expand_has_required_timestamp(compiler):
     assert resp.timestamp is not None
 
 
+@pytest.mark.asyncio
+async def test_expand_cache_hit_restamps_session_lineage():
+    old_session_id = "session-old"
+    new_session_id = "session-new"
+    seed_node_id = "ethereum:address:0xabc"
+    old_branch_id = mk_branch_id(old_session_id, seed_node_id, 0)
+    old_path_id = mk_path_id(old_branch_id, 0)
+    old_node = InvestigationNode(
+        node_id="ethereum:address:0xdef",
+        lineage_id=mk_lineage_id(old_session_id, old_branch_id, old_path_id, 1),
+        node_type="address",
+        branch_id=old_branch_id,
+        path_id=old_path_id,
+        depth=1,
+        display_label="0xdef",
+        chain="ethereum",
+        expandable_directions=["next"],
+    )
+    old_edge = InvestigationEdge(
+        edge_id=mk_edge_id(seed_node_id, old_node.node_id, old_branch_id, "0xfeed"),
+        source_node_id=seed_node_id,
+        target_node_id=old_node.node_id,
+        branch_id=old_branch_id,
+        path_id=old_path_id,
+        edge_type="transfer",
+        tx_hash="0xfeed",
+    )
+    redis = MagicMock()
+    redis.get = AsyncMock(return_value='{"operation_type":"expand_next","seed_node_id":"ethereum:address:0xabc","seed_lineage_id":"seed-lineage-old","branch_id":"ignored","expansion_depth":1,"nodes":[%s],"edges":[%s],"has_more":false,"pagination":{"page_size":50,"max_results":50,"has_more":false,"next_token":null},"layout_hints":{"suggested_layout":"layered","anchor_node_ids":["ethereum:address:0xabc"],"new_branch_root_id":"ethereum:address:0xdef","collapse_candidates":[]},"chain_context":{"primary_chain":"ethereum","chains_present":["ethereum"]},"asset_context":{"assets_present":[],"total_value_fiat":null},"timestamp":"2026-01-01T00:00:00+00:00"}' % (
+            old_node.model_dump_json(),
+            old_edge.model_dump_json(),
+        ))
+    compiler = TraceCompiler(redis_client=redis)
+
+    req = ExpandRequest(
+        operation_type="expand_next",
+        seed_node_id=seed_node_id,
+        seed_lineage_id="seed-lineage-new",
+    )
+    resp = await compiler.expand(new_session_id, req)
+
+    expected_branch_id = mk_branch_id(new_session_id, seed_node_id, 0)
+    expected_path_id = mk_path_id(expected_branch_id, 0)
+    assert resp.seed_lineage_id == "seed-lineage-new"
+    assert resp.branch_id == expected_branch_id
+    assert resp.added_nodes[0].branch_id == expected_branch_id
+    assert resp.added_nodes[0].path_id == expected_path_id
+    assert resp.added_nodes[0].lineage_id == mk_lineage_id(
+        new_session_id,
+        expected_branch_id,
+        expected_path_id,
+        resp.added_nodes[0].depth,
+    )
+    assert resp.added_edges[0].branch_id == expected_branch_id
+    assert resp.added_edges[0].path_id == expected_path_id
+    assert resp.added_edges[0].edge_id == mk_edge_id(
+        resp.added_edges[0].source_node_id,
+        resp.added_edges[0].target_node_id,
+        expected_branch_id,
+        resp.added_edges[0].tx_hash,
+    )
+
+
 # ---------------------------------------------------------------------------
 # get_bridge_hop_status
 # ---------------------------------------------------------------------------
@@ -152,3 +237,29 @@ async def test_bridge_hop_status_returns_pending(compiler):
     resp = await compiler.get_bridge_hop_status("session-1", "hop-123")
     assert resp.status == "pending"
     assert resp.hop_id == "hop-123"
+
+
+@pytest.mark.asyncio
+async def test_bridge_hop_status_returns_destination_fields_from_db():
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(
+        return_value={
+            "status": "completed",
+            "destination_tx_hash": "0xabc123",
+            "destination_chain": "bitcoin",
+            "destination_address": "bc1qexample",
+            "correlation_confidence": 0.99,
+            "updated_at": datetime(2026, 1, 1, tzinfo=timezone.utc),
+        }
+    )
+    pg = MagicMock()
+    pg.acquire = MagicMock(return_value=_AcquireCtx(conn))
+    compiler = TraceCompiler(postgres_pool=pg)
+
+    resp = await compiler.get_bridge_hop_status("session-1", "hop-123")
+
+    assert resp.status == "completed"
+    assert resp.destination_tx_hash == "0xabc123"
+    assert resp.destination_chain == "bitcoin"
+    assert resp.destination_address == "bc1qexample"
+    assert resp.correlation_confidence == 0.99

@@ -2067,7 +2067,7 @@ async def get_bridge_hop_status(
     """Poll the resolution status of a pending bridge hop.
 
     The frontend should call this every 30 seconds for any BridgeHop node
-    with status="pending".  When status changes to "confirmed", the frontend
+    with status="pending".  When status changes to "completed", the frontend
     can call expand on the BridgeHop node to follow funds to the destination
     chain.
 

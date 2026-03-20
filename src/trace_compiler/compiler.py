@@ -27,7 +27,10 @@ from typing import Optional
 from src.trace_compiler.chains.bitcoin import UTXOChainCompiler
 from src.trace_compiler.chains.evm import EVMChainCompiler
 from src.trace_compiler.chains.solana import SolanaChainCompiler
+from src.trace_compiler.lineage import edge_id as mk_edge_id
+from src.trace_compiler.lineage import lineage_id as mk_lineage_id
 from src.trace_compiler.lineage import new_operation_id
+from src.trace_compiler.lineage import path_id as mk_path_id
 from src.trace_compiler.models import AssetContext
 from src.trace_compiler.models import BridgeHopStatusResponse
 from src.trace_compiler.models import ChainContext
@@ -65,6 +68,64 @@ def _expansion_cache_key(
     """
     raw = f"expand:{seed_node_id}:{operation_type}:{max_results}"
     return "tc:" + hashlib.sha256(raw.encode()).hexdigest()
+
+
+def _restamp_cached_path_ids(old_path_ids: List[str], branch_id: str) -> Dict[str, str]:
+    """Map cached path IDs onto deterministic path IDs for the current branch."""
+    path_map: Dict[str, str] = {}
+    for sequence, old_path_id in enumerate(old_path_ids):
+        path_map.setdefault(old_path_id, mk_path_id(branch_id, sequence))
+    return path_map
+
+
+def _restamp_cached_entities(
+    session_id: str,
+    branch_id: str,
+    nodes: List[InvestigationNode],
+    edges: List[InvestigationEdge],
+) -> tuple[List[InvestigationNode], List[InvestigationEdge]]:
+    """Recompute session-local lineage metadata for cache-hit entities."""
+    old_path_ids: List[str] = []
+    for node in nodes:
+        if node.path_id not in old_path_ids:
+            old_path_ids.append(node.path_id)
+    for edge in edges:
+        if edge.path_id not in old_path_ids:
+            old_path_ids.append(edge.path_id)
+
+    path_map = _restamp_cached_path_ids(old_path_ids, branch_id)
+
+    restamped_nodes = [
+        node.model_copy(
+            update={
+                "branch_id": branch_id,
+                "path_id": path_map[node.path_id],
+                "lineage_id": mk_lineage_id(
+                    session_id,
+                    branch_id,
+                    path_map[node.path_id],
+                    node.depth,
+                ),
+            }
+        )
+        for node in nodes
+    ]
+    restamped_edges = [
+        edge.model_copy(
+            update={
+                "branch_id": branch_id,
+                "path_id": path_map[edge.path_id],
+                "edge_id": mk_edge_id(
+                    edge.source_node_id,
+                    edge.target_node_id,
+                    branch_id,
+                    edge.tx_hash,
+                ),
+            }
+        )
+        for edge in edges
+    ]
+    return restamped_nodes, restamped_edges
 
 
 class TraceCompiler:
@@ -218,6 +279,14 @@ class TraceCompiler:
                 cached = await self._redis.get(cache_key)
                 if cached:
                     data = json.loads(cached)
+                    cached_nodes = [InvestigationNode(**n) for n in data["nodes"]]
+                    cached_edges = [InvestigationEdge(**e) for e in data["edges"]]
+                    added_nodes, added_edges = _restamp_cached_entities(
+                        session_id=session_id,
+                        branch_id=_branch,
+                        nodes=cached_nodes,
+                        edges=cached_edges,
+                    )
                     # Override session-scoped fields so the caller receives
                     # IDs that match their current session, not the session
                     # that originally populated the cache.
@@ -226,11 +295,11 @@ class TraceCompiler:
                         operation_type=data["operation_type"],
                         session_id=session_id,
                         seed_node_id=data["seed_node_id"],
-                        seed_lineage_id=data["seed_lineage_id"],
+                        seed_lineage_id=request.seed_lineage_id,
                         branch_id=_branch,
                         expansion_depth=data["expansion_depth"],
-                        added_nodes=[InvestigationNode(**n) for n in data["nodes"]],
-                        added_edges=[InvestigationEdge(**e) for e in data["edges"]],
+                        added_nodes=added_nodes,
+                        added_edges=added_edges,
                         has_more=data["has_more"],
                         pagination=PaginationMeta(**data["pagination"]),
                         layout_hints=LayoutHints(**data["layout_hints"]),
@@ -492,6 +561,7 @@ class TraceCompiler:
             try:
                 query = """
                 SELECT status, destination_tx_hash, destination_chain,
+                       correlation_confidence,
                        destination_address, updated_at
                 FROM bridge_correlations
                 WHERE source_tx_hash = $1
@@ -506,6 +576,7 @@ class TraceCompiler:
                         destination_tx_hash=row.get("destination_tx_hash"),
                         destination_chain=row.get("destination_chain"),
                         destination_address=row.get("destination_address"),
+                        correlation_confidence=row.get("correlation_confidence"),
                         updated_at=row.get("updated_at") or datetime.now(timezone.utc),
                     )
             except Exception as exc:

@@ -357,8 +357,9 @@ export interface ExpandRequest {
 
 export interface BridgeHopStatusResponse {
   hop_id: string;
-  status: 'pending' | 'completed' | 'failed';
+  status: 'pending' | 'completed' | 'failed' | 'expired';
   destination_tx_hash?: string;
   destination_chain?: string;
   destination_address?: string;
+  correlation_confidence?: number;
 }

@@ -127,10 +127,10 @@ def test_build_hop_node_completed():
         depth=2,
     )
     assert node.bridge_hop_data.status == "completed"
-    assert node.bridge_hop_data.dest_chain == "bitcoin"
+    assert node.bridge_hop_data.destination_chain == "bitcoin"
     assert node.bridge_hop_data.source_amount == 1.5
-    assert node.bridge_hop_data.dest_amount == 0.05
-    assert node.bridge_hop_data.correlation_conf == 0.99
+    assert node.bridge_hop_data.destination_amount == 0.05
+    assert node.bridge_hop_data.correlation_confidence == 0.99
     assert node.activity_summary is not None
     assert node.activity_summary.destination_tx_hash == "0x" + "cd" * 32
     assert node.activity_summary.order_id == "ord-123"

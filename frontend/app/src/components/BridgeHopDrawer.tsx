@@ -21,6 +21,14 @@ const POLL_INTERVAL_MS = 30_000;
 
 export default function BridgeHopDrawer({ sessionId, nodeId, hopData, onClose, onRefreshHop }: Props) {
   const hopId = hopData.hop_id;
+  const bridgeHop = hopData as BridgeHopData & {
+    dest_chain?: string;
+    dest_asset?: string;
+    correlation_conf?: number;
+  };
+  const destinationChain = bridgeHop.destination_chain ?? bridgeHop.dest_chain ?? '—';
+  const destinationAsset = bridgeHop.destination_asset ?? bridgeHop.dest_asset ?? '—';
+  const confidence = bridgeHop.correlation_confidence ?? bridgeHop.correlation_conf;
 
   // Poll while pending
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -96,22 +104,22 @@ export default function BridgeHopDrawer({ sessionId, nodeId, hopData, onClose, o
       <Row label="Protocol">{hopData.protocol_id}</Row>
       <Row label="Mechanism">{hopData.mechanism}</Row>
       <Row label="Source chain">{hopData.source_chain}</Row>
-      <Row label="Destination chain">{hopData.destination_chain ?? '—'}</Row>
-      <Row label="Source asset">{hopData.source_asset ?? '—'}</Row>
-      <Row label="Destination asset">{hopData.destination_asset ?? '—'}</Row>
+      <Row label="Destination chain">{destinationChain}</Row>
+      <Row label="Source asset">{bridgeHop.source_asset ?? '—'}</Row>
+      <Row label="Destination asset">{destinationAsset}</Row>
       <Row label="Confidence">
-        {Number.isFinite(hopData.correlation_confidence) 
-          ? (hopData.correlation_confidence * 100).toFixed(0) + '%'
+        {Number.isFinite(confidence)
+          ? (confidence * 100).toFixed(0) + '%'
           : '—'
         }
       </Row>
-      {hopData.time_delta_seconds !== undefined && (
+      {bridgeHop.time_delta_seconds !== undefined && (
         <Row label="Time delta">
-          {hopData.time_delta_seconds}s
+          {bridgeHop.time_delta_seconds}s
         </Row>
       )}
       <Row label="Hop ID">
-        <span style={{ fontFamily: 'monospace', fontSize: 10 }}>{hopData.hop_id}</span>
+        <span style={{ fontFamily: 'monospace', fontSize: 10 }}>{bridgeHop.hop_id}</span>
       </Row>
       <Row label="Node ID">
         <span style={{ fontFamily: 'monospace', fontSize: 10 }}>{nodeId}</span>

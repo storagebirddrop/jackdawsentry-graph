@@ -29,7 +29,7 @@ export default function SessionStarter({ onSessionCreated }: Props) {
     setLoading(true);
     setError(null);
     try {
-      const resp = await createSession({ seed_address: address.trim(), chain });
+      const resp = await createSession({ seed_address: address.trim(), seed_chain: chain });
       initSession(resp.session_id, resp.root_node);
       onSessionCreated(resp.session_id);
     } catch (err) {

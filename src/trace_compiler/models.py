@@ -19,7 +19,9 @@ from typing import Literal
 from typing import Optional
 from typing import Union
 
+from pydantic import AliasChoices
 from pydantic import BaseModel
+from pydantic import ConfigDict
 from pydantic import Field
 
 
@@ -116,17 +118,29 @@ class ServiceNodeData(BaseModel):
 class BridgeHopData(BaseModel):
     """Cross-chain bridge hop correlation data."""
 
+    model_config = ConfigDict(populate_by_name=True)
+
     protocol_id: str
     mechanism: str   # "lock_mint" | "burn_release" | "native_amm" | "solver" | "liquidity"
     source_chain: str
-    dest_chain: Optional[str] = None
+    destination_chain: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("destination_chain", "dest_chain"),
+    )
     source_asset: str
-    dest_asset: str
+    destination_asset: str = Field(
+        validation_alias=AliasChoices("destination_asset", "dest_asset"),
+    )
     source_amount: float
-    dest_amount: Optional[float] = None
+    destination_amount: Optional[float] = Field(
+        default=None,
+        validation_alias=AliasChoices("destination_amount", "dest_amount"),
+    )
     time_delta_seconds: Optional[float] = None
-    correlation_conf: float
-    status: str  # "pending" | "confirmed" | "failed"
+    correlation_confidence: float = Field(
+        validation_alias=AliasChoices("correlation_confidence", "correlation_conf"),
+    )
+    status: str  # "pending" | "completed" | "failed"
     is_same_asset: bool
 
 
@@ -578,10 +592,24 @@ class ExpandRequest(BaseModel):
 class BridgeHopStatusResponse(BaseModel):
     """Response for GET /api/v1/graph/sessions/{session_id}/hops/{hop_id}/status."""
 
+    model_config = ConfigDict(populate_by_name=True)
+
     hop_id: str
-    status: str  # "pending" | "confirmed" | "failed" | "expired"
-    dest_chain: Optional[str] = None
-    dest_tx_hash: Optional[str] = None
-    dest_address: Optional[str] = None
-    correlation_conf: Optional[float] = None
+    status: str  # "pending" | "completed" | "failed" | "expired"
+    destination_chain: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("destination_chain", "dest_chain"),
+    )
+    destination_tx_hash: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("destination_tx_hash", "dest_tx_hash"),
+    )
+    destination_address: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("destination_address", "dest_address"),
+    )
+    correlation_confidence: Optional[float] = Field(
+        default=None,
+        validation_alias=AliasChoices("correlation_confidence", "correlation_conf"),
+    )
     updated_at: datetime
