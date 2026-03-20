@@ -46,14 +46,30 @@ body.graph-login-body {
 .graph-login-shell {
     width: 100%;
     max-width: 420px;
-    animation: fadeIn 0.4s ease-out;
     transition: opacity 0.18s ease, transform 0.18s ease, filter 0.18s ease;
+}
+
+.graph-login-body.is-auth-pending .graph-login-shell {
+    opacity: 0;
+    transform: translateY(10px) scale(0.992);
+    pointer-events: none;
+}
+
+.graph-login-body.is-auth-ready .graph-login-shell {
+    animation: fadeIn 0.28s ease-out;
 }
 
 .graph-login-shell.is-authenticating {
     opacity: 0.68;
     transform: translateY(4px) scale(0.995);
     filter: saturate(0.85);
+    pointer-events: none;
+}
+
+.graph-login-body.is-transitioning .graph-login-shell {
+    opacity: 0;
+    transform: translateY(8px) scale(0.99);
+    filter: blur(1px);
     pointer-events: none;
 }
 

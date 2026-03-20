@@ -1,6 +1,25 @@
 (function () {
     var submitting = false;
     var APP_PATH = '/app/';
+    var body = document.body;
+
+    function markReady() {
+        if (!body) {
+            return;
+        }
+        body.classList.remove('is-auth-pending');
+        body.classList.remove('is-transitioning');
+        body.classList.add('is-auth-ready');
+    }
+
+    function markTransitioning() {
+        if (!body) {
+            return;
+        }
+        body.classList.remove('is-auth-pending');
+        body.classList.remove('is-auth-ready');
+        body.classList.add('is-transitioning');
+    }
 
     function getShell() {
         return document.querySelector('.graph-login-shell');
@@ -17,6 +36,11 @@
         submitting = isSubmitting;
         if (shell) {
             shell.classList.toggle('is-authenticating', isSubmitting);
+        }
+        if (isSubmitting) {
+            markTransitioning();
+        } else {
+            markReady();
         }
         if (btn) {
             btn.disabled = isSubmitting;
@@ -36,6 +60,7 @@
 
     function redirectToApp() {
         var shell = getShell();
+        markTransitioning();
         if (shell) {
             shell.classList.add('is-authenticating');
         }
@@ -46,6 +71,8 @@
         redirectToApp();
         return;
     }
+
+    markReady();
 
     var form = document.getElementById('login-form');
     if (!form) {
