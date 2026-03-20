@@ -29,7 +29,6 @@ from typing import List
 from typing import Optional
 from typing import Tuple
 
-from src.intelligence.price_oracle import price_oracle
 from src.trace_compiler.chains.base import BaseChainCompiler
 from src.trace_compiler.lineage import edge_id as mk_edge_id
 from src.trace_compiler.lineage import lineage_id as mk_lineage
@@ -39,6 +38,7 @@ from src.trace_compiler.models import AddressNodeData
 from src.trace_compiler.models import ExpandOptions
 from src.trace_compiler.models import InvestigationEdge
 from src.trace_compiler.models import InvestigationNode
+from src.trace_compiler.price_oracle import price_oracle
 
 logger = logging.getLogger(__name__)
 

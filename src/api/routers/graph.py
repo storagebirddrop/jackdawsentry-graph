@@ -24,13 +24,17 @@ from fastapi import Response
 from pydantic import BaseModel
 from pydantic import field_validator
 
-from src.analysis.bridge_tracker import BridgeTracker
-from src.analysis.mixer_detection import MixerDetector
 from src.api.auth import PERMISSIONS
 from src.api.auth import User
 from src.api.auth import check_permissions
-from src.api.middleware import get_graph_latency_stats
 from src.api.config import get_supported_blockchains
+from src.api.graph_dependencies import get_edge_price_oracle
+from src.api.graph_dependencies import get_known_bridge_addresses as load_known_bridge_addresses
+from src.api.graph_dependencies import get_known_dex_addresses as load_known_dex_addresses
+from src.api.graph_dependencies import get_known_mixer_addresses as load_known_mixer_addresses
+from src.api.graph_dependencies import lookup_addresses_bulk
+from src.api.graph_dependencies import screen_address
+from src.api.middleware import get_graph_latency_stats
 import hashlib
 import json
 
@@ -40,9 +44,6 @@ from src.api.database import get_neo4j_read_session
 from src.api.database import get_neo4j_session
 from src.api.database import get_postgres_pool
 from src.collectors.rpc.factory import get_rpc_client
-from src.services.entity_attribution import lookup_addresses_bulk as _entity_lookup_bulk
-from src.services.price_oracle import get_price_oracle
-from src.services.sanctions import screen_address as _sanctions_screen
 
 logger = logging.getLogger(__name__)
 
@@ -417,7 +418,7 @@ async def expand_address(
 
     # Enrich with fiat values using edge timestamps
     try:
-        oracle = get_price_oracle()
+        oracle = get_edge_price_oracle()
         # Use each edge's timestamp for historical pricing
         await oracle.enrich_edge_fiat_values(
             edges_list, request.blockchain, None  # Use edge timestamps
@@ -1213,7 +1214,7 @@ async def expand_solana_tx(
 
     # Enrich with fiat values
     try:
-        oracle = get_price_oracle()
+        oracle = get_edge_price_oracle()
         tx_ts = (
             datetime.fromtimestamp(block_time, tz=timezone.utc)
             if block_time
@@ -1752,7 +1753,7 @@ async def expand_utxo(
     except (ValueError, TypeError):
         tx_timestamp = datetime.now(timezone.utc)
     try:
-        oracle = get_price_oracle()
+        oracle = get_edge_price_oracle()
         await oracle.enrich_edge_fiat_values(
             new_edges, "bitcoin", tx_timestamp
         )
@@ -1814,7 +1815,7 @@ async def _enrich_entities(
     if not addresses:
         return
     try:
-        results = await _entity_lookup_bulk(addresses, blockchain)
+        results = await lookup_addresses_bulk(addresses, blockchain)
         entity_risk = {"low": 0.2, "medium": 0.4, "high": 0.7, "critical": 0.9}
         for addr, info in results.items():
             if info and addr in nodes_map:
@@ -1837,7 +1838,7 @@ async def _enrich_sanctions(
     """Best-effort: tag nodes that appear in the sanctions database."""
     for addr, node in nodes_map.items():
         try:
-            result = await _sanctions_screen(addr, blockchain)
+            result = await screen_address(addr, blockchain)
             if result and result.get("matched"):
                 node["sanctioned"] = True
                 node["label"] = node.get("label") or "sanctioned"
@@ -1858,28 +1859,28 @@ def _safe_float(val: Any) -> float:
 # Lazily-initialised address sets for edge classification
 _bridge_addresses: Optional[set] = None
 _mixer_addresses: Optional[set] = None
+_dex_addresses: Optional[set] = None
 
 
 def _get_known_bridge_addresses() -> set:
     global _bridge_addresses
     if _bridge_addresses is None:
-        from src.analysis.protocol_registry import (
-            get_known_bridge_addresses as _reg_bridges,
-        )
-
-        _bridge_addresses = _reg_bridges()
+        _bridge_addresses = load_known_bridge_addresses()
     return _bridge_addresses
 
 
 def _get_known_mixer_addresses() -> set:
     global _mixer_addresses
     if _mixer_addresses is None:
-        from src.analysis.protocol_registry import (
-            get_known_mixer_addresses as _reg_mixers,
-        )
-
-        _mixer_addresses = _reg_mixers()
+        _mixer_addresses = load_known_mixer_addresses()
     return _mixer_addresses
+
+
+def _get_known_dex_addresses() -> set:
+    global _dex_addresses
+    if _dex_addresses is None:
+        _dex_addresses = load_known_dex_addresses()
+    return _dex_addresses
 
 
 def _classify_edge(source: str, target: str) -> str:
@@ -1896,10 +1897,7 @@ def _classify_edge(source: str, target: str) -> str:
         return "bridge"
     if src in mixer_addrs or tgt in mixer_addrs:
         return "mixer"
-    # DEX check via protocol registry
-    from src.analysis.protocol_registry import get_known_dex_addresses
-
-    dex_addrs = get_known_dex_addresses()
+    dex_addrs = _get_known_dex_addresses()
     if src in dex_addrs or tgt in dex_addrs:
         return "dex"
     return "transfer"

@@ -1,15 +1,13 @@
-"""Jackdaw Sentry — Tracing package.
+"""Jackdaw Sentry tracing package.
 
-Provides fund-tracing and exposure computation logic that operates on
-pre-fetched transaction graphs. Import the public API from this package:
-
-    from src.tracing.exposure import compute_exposure, TaintMethodology, ExposureResult
+The heavy exposure helpers are imported lazily so submodules such as
+``src.tracing.bridge_registry`` can be used without pulling the entire tracing
+stack into lightweight environments like the standalone graph repo.
 """
 
-from src.tracing.exposure import ExposureResult
-from src.tracing.exposure import TaintHalt
-from src.tracing.exposure import TaintMethodology
-from src.tracing.exposure import compute_exposure
+from __future__ import annotations
+
+from typing import Any
 
 __all__ = [
     "compute_exposure",
@@ -17,3 +15,20 @@ __all__ = [
     "TaintHalt",
     "TaintMethodology",
 ]
+
+
+def __getattr__(name: str) -> Any:
+    if name in __all__:
+        from src.tracing.exposure import ExposureResult
+        from src.tracing.exposure import TaintHalt
+        from src.tracing.exposure import TaintMethodology
+        from src.tracing.exposure import compute_exposure
+
+        exports = {
+            "compute_exposure": compute_exposure,
+            "ExposureResult": ExposureResult,
+            "TaintHalt": TaintHalt,
+            "TaintMethodology": TaintMethodology,
+        }
+        return exports[name]
+    raise AttributeError(f"module 'src.tracing' has no attribute {name!r}")
