@@ -139,6 +139,10 @@ export default function SessionStarter({ onSessionCreated }: Props) {
             {error}
           </div>
         )}
+        <div style={{ color: '#94a3b8', fontSize: 11, lineHeight: 1.5, textAlign: 'center' }}>
+          Local standalone graph stacks only expand activity that is already loaded into
+          the current event-store dataset.
+        </div>
       </form>
     </div>
   );

@@ -2,10 +2,11 @@
  * App root — toggles between SessionStarter and InvestigationGraph.
  */
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import SessionStarter from './components/SessionStarter';
 import InvestigationGraph from './components/InvestigationGraph';
 import { isAuthenticated, redirectToLogin } from './api/client';
+import { useGraphStore } from './store/graphStore';
 
 type AuthState = 'redirecting' | 'ready';
 
@@ -14,6 +15,12 @@ export default function App() {
     isAuthenticated() ? 'ready' : 'redirecting'
   ));
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const resetGraph = useGraphStore((state) => state.reset);
+
+  const handleStartNewInvestigation = useCallback(() => {
+    resetGraph();
+    setSessionId(null);
+  }, [resetGraph]);
 
   useEffect(() => {
     if (authState === 'redirecting') {
@@ -60,5 +67,11 @@ export default function App() {
     return <SessionStarter onSessionCreated={setSessionId} />;
   }
 
-  return <InvestigationGraph sessionId={sessionId} />;
+  return (
+    <InvestigationGraph
+      key={sessionId}
+      sessionId={sessionId}
+      onStartNewInvestigation={handleStartNewInvestigation}
+    />
+  );
 }

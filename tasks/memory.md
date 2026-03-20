@@ -60,6 +60,16 @@ Read this file before touching graph schema, graph API, trace compiler semantics
 - Session briefings should export the visible graph lens as human-readable
   markdown and stay paired with JSON snapshots rather than replacing them.
 
+### ADR-014
+- The standalone local graph compose profile is graph-only. It does not imply
+  live collectors or backfill are running, so empty `Prev` / `Next` expansions
+  must be surfaced honestly as "no indexed activity in the current dataset."
+
+### ADR-015
+- Investigators need a first-class way to abandon the current graph and start a
+  fresh search without logging out. `New Investigation` resets the canvas back
+  to `SessionStarter` while keeping the authenticated browser session alive.
+
 ## Guardrails
 
 - Do not widen this repo into the private compliance dashboard.

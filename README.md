@@ -64,6 +64,18 @@ http://localhost:8081/app/
 API docs stay disabled by default. Set `EXPOSE_API_DOCS=true` only when you
 explicitly need them in a trusted environment.
 
+The standalone local graph stack is graph-only by default:
+
+- it does not start live collector/backfill workers
+- `AUTO_BACKFILL_RAW_EVENT_STORE` stays `false` unless you opt into a different runtime
+- `Prev` / `Next` only expand activity that already exists in the local event store / graph dataset
+
+For local graph exploration, load representative data first:
+
+```bash
+python scripts/dev/load_perf_fixture_dataset.py
+```
+
 ## Development
 
 This repo is the default place for active sprint work on the graph product.
@@ -79,6 +91,8 @@ workflows:
   without losing surrounding context
 - branch workspace supports single-branch focus and two-branch compare using the
   backend branch metadata tracked in session state
+- `New Investigation` clears the current graph and returns to the seed-search
+  screen without forcing a logout or full browser refresh
 - pinned path stories let investigators keep a few narrative arcs visible while
   comparing branches or bridge routes
 - compare briefing turns active branch focus into a side-by-side summary of
@@ -89,6 +103,8 @@ workflows:
   artifact you can copy or export alongside the raw session snapshot
 - the inspector is the narrative surface for node detail, lineage, branch
   actions, pinned paths, and active investigation context
+- empty `Prev` / `Next` expansions now explain that no indexed activity was
+  found in the current dataset instead of silently doing nothing
 
 When you add new graph UX, prefer actions that help an analyst answer
 "what happened here?" or "how does this branch differ?" over generic dashboard

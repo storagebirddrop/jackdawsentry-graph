@@ -82,6 +82,7 @@ const NODE_OVERLOAD_THRESHOLD = 500;
 
 interface Props {
   sessionId: string;
+  onStartNewInvestigation: () => void;
 }
 
 interface SessionBriefing {
@@ -220,7 +221,7 @@ function applyFilters(
   return { nodes: visibleNodes, edges: visibleEdges };
 }
 
-export default function InvestigationGraph({ sessionId }: Props) {
+export default function InvestigationGraph({ sessionId, onStartNewInvestigation }: Props) {
   const {
     rfNodes,
     rfEdges,
@@ -244,11 +245,16 @@ export default function InvestigationGraph({ sessionId }: Props) {
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [inspectorCollapsed, setInspectorCollapsed] = useState(false);
   const [briefingVisible, setBriefingVisible] = useState(false);
+  const [notice, setNotice] = useState<{ tone: 'info' | 'error'; message: string } | null>(null);
   const [bridgeRouteHistory, setBridgeRouteHistory] = useState<string[]>([]);
   const [activeBranchIds, setActiveBranchIds] = useState<string[]>([]);
   const [branchHistory, setBranchHistory] = useState<string[]>([]);
   const [pinnedPathIds, setPinnedPathIds] = useState<string[]>([]);
   const [activeSemanticKey, setActiveSemanticKey] = useState<string | null>(null);
+
+  const showNotice = useCallback((message: string, tone: 'info' | 'error' = 'info') => {
+    setNotice({ tone, message });
+  }, []);
 
   const branchEntries = useMemo(
     () =>
@@ -465,7 +471,9 @@ export default function InvestigationGraph({ sessionId }: Props) {
     ) => {
       if (expandingNodeIds.has(node.node_id)) return;
       if (rfNodes.length >= NODE_OVERLOAD_THRESHOLD) {
-        alert(`Graph has ${rfNodes.length} nodes. Collapse some branches before expanding further.`);
+        showNotice(
+          `Graph already has ${rfNodes.length} nodes. Start a new investigation or reduce the current lens before expanding further.`,
+        );
         return;
       }
       setExpandingNode(node.node_id, true);
@@ -475,14 +483,39 @@ export default function InvestigationGraph({ sessionId }: Props) {
           seed_lineage_id: node.lineage_id,
           operation_type: operation,
         });
+        const deltaNodes = response.nodes ?? response.added_nodes ?? [];
+        const deltaEdges = response.edges ?? response.added_edges ?? [];
+
+        if (deltaNodes.length === 0 && deltaEdges.length === 0) {
+          showNotice(
+            `No indexed ${expandOperationLabel(operation)} activity was found for this node in the current graph dataset.`,
+          );
+          return;
+        }
+
+        const existingNodeIds = new Set(rfNodes.map((existingNode) => existingNode.id));
+        const existingEdgeIds = new Set(rfEdges.map((existingEdge) => existingEdge.id));
+        const hasFreshDelta =
+          deltaNodes.some((deltaNode) => !existingNodeIds.has(deltaNode.node_id))
+          || deltaEdges.some((deltaEdge) => !existingEdgeIds.has(deltaEdge.edge_id));
+
+        if (!hasFreshDelta) {
+          showNotice(
+            `This ${expandOperationLabel(operation)} path is already visible on the canvas.`,
+          );
+          return;
+        }
+
         applyExpansionDelta(response);
       } catch (err) {
         console.error('Expand failed:', err);
+        const message = err instanceof Error ? err.message : 'Unable to expand this node right now.';
+        showNotice(message, 'error');
       } finally {
         setExpandingNode(node.node_id, false);
       }
     },
-    [sessionId, rfNodes.length, expandingNodeIds, setExpandingNode, applyExpansionDelta],
+    [sessionId, rfNodes, rfEdges, expandingNodeIds, setExpandingNode, applyExpansionDelta, showNotice],
   );
 
   const handleNodeClick: NodeMouseHandler = useCallback((_evt, node) => {
@@ -663,6 +696,14 @@ export default function InvestigationGraph({ sessionId }: Props) {
       setActiveSemanticKey(null);
     }
   }, [activeSemanticKey, semanticLegend.entries]);
+
+  useEffect(() => {
+    if (!notice) return;
+    const timeoutId = window.setTimeout(() => {
+      setNotice((current) => (current?.message === notice.message ? null : current));
+    }, 4200);
+    return () => window.clearTimeout(timeoutId);
+  }, [notice]);
 
   const focusBridgeRoute = useCallback((route: string) => {
     setFilters((current) => ({
@@ -1107,6 +1148,24 @@ export default function InvestigationGraph({ sessionId }: Props) {
             Boolean(activeSemanticKey),
           ].some(Boolean) ? ' •' : ''}
         </button>
+        <button
+          type="button"
+          onClick={() => {
+            const confirmed = window.confirm(
+              'Start a new investigation? This clears the current graph from the canvas but keeps you signed in.',
+            );
+            if (!confirmed) return;
+            onStartNewInvestigation();
+          }}
+          style={{
+            ...toolbarBtnStyle,
+            borderColor: 'rgba(37,99,235,0.28)',
+            color: '#1d4ed8',
+          }}
+          title="Clear the current graph and return to a fresh search"
+        >
+          New Investigation
+        </button>
         <span style={toolbarPillStyle}>
           {appearance.viewMode} view
         </span>
@@ -1117,6 +1176,66 @@ export default function InvestigationGraph({ sessionId }: Props) {
           {rfNodes.length} nodes · {rfEdges.length} edges
         </span>
       </div>
+
+      {notice && (
+        <div
+          style={{
+            position: 'absolute',
+            top: 72,
+            left: '50%',
+            transform: 'translateX(-50%)',
+            zIndex: 108,
+            width: 'min(92vw, 620px)',
+            padding: '12px 16px',
+            borderRadius: 18,
+            background:
+              notice.tone === 'error'
+                ? 'rgba(127,29,29,0.94)'
+                : 'rgba(15,23,42,0.92)',
+            border:
+              notice.tone === 'error'
+                ? '1px solid rgba(252,165,165,0.34)'
+                : '1px solid rgba(148,163,184,0.24)',
+            boxShadow: '0 16px 36px rgba(15,23,42,0.16)',
+            color: '#f8fafc',
+            display: 'flex',
+            gap: 12,
+            alignItems: 'flex-start',
+          }}
+        >
+          <div
+            style={{
+              color: notice.tone === 'error' ? '#fecaca' : '#93c5fd',
+              fontSize: 10,
+              fontWeight: 800,
+              letterSpacing: '0.08em',
+              textTransform: 'uppercase',
+              paddingTop: 3,
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {notice.tone === 'error' ? 'Expand error' : 'Investigation note'}
+          </div>
+          <div style={{ flex: 1, fontSize: 12, lineHeight: 1.55 }}>
+            {notice.message}
+          </div>
+          <button
+            type="button"
+            onClick={() => setNotice(null)}
+            style={{
+              border: 'none',
+              background: 'transparent',
+              color: '#e2e8f0',
+              fontSize: 16,
+              cursor: 'pointer',
+              lineHeight: 1,
+            }}
+            aria-label="Dismiss investigation notice"
+          >
+            x
+          </button>
+        </div>
+      )}
 
       {(filters.bridgeRoute || bridgeRouteHistory.length > 0 || filters.bridgeProtocols.length > 0) && (
         <div
@@ -1864,6 +1983,19 @@ function routeChipStyle(tone: string): React.CSSProperties {
 function branchLabel(branch: BranchMeta | undefined | null): string {
   if (!branch) return 'Unknown branch';
   return branch.minDepth === 0 ? 'Root branch' : `Branch ${branch.branchId.slice(0, 6)}`;
+}
+
+function expandOperationLabel(operation: ExpandRequest['operation_type']): string {
+  switch (operation) {
+    case 'expand_prev':
+      return 'previous';
+    case 'expand_next':
+      return 'next';
+    case 'expand_neighbors':
+      return 'neighbor';
+    default:
+      return 'related';
+  }
 }
 
 function pathStoryNodeLabel(node: InvestigationNode): string {
