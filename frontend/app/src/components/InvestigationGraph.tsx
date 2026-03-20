@@ -26,7 +26,7 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 
-import { useGraphStore } from '../store/graphStore';
+import { useGraphStore, type BranchMeta } from '../store/graphStore';
 import { expandNode } from '../api/client';
 import { computeElkLayout } from '../layout/elkLayout';
 import type { BridgeHopData, ExpandRequest, InvestigationNode } from '../types/graph';
@@ -89,6 +89,7 @@ function applyFilters(
   edges: Edge[],
   filters: FilterState,
   appearance: GraphAppearanceState,
+  branchSelection: { activeBranchIds: string[]; rootBranchId: string | null },
 ): { nodes: Node[]; edges: Edge[] } {
   let visibleNodes = nodes.filter((node) => {
     const data = node.data as unknown as InvestigationNode;
@@ -190,6 +191,25 @@ function applyFilters(
     visibleNodes = visibleNodes.filter((node) => contextualNodeIds.has(node.id));
   }
 
+  if (branchSelection.activeBranchIds.length > 0) {
+    const allowedBranches = new Set(
+      [
+        ...branchSelection.activeBranchIds,
+        branchSelection.rootBranchId,
+      ].filter((value): value is string => Boolean(value)),
+    );
+
+    visibleNodes = visibleNodes.filter((node) => {
+      const data = node.data as unknown as InvestigationNode;
+      return allowedBranches.has(data.branch_id);
+    });
+    visibleEdges = visibleEdges.filter((edge) => {
+      const data = edge.data as Record<string, unknown> | undefined;
+      const branchId = data?.branch_id as string | undefined;
+      return branchId ? allowedBranches.has(branchId) : true;
+    });
+  }
+
   return { nodes: visibleNodes, edges: visibleEdges };
 }
 
@@ -203,6 +223,7 @@ export default function InvestigationGraph({ sessionId }: Props) {
     expandingNodeIds,
     exportSnapshot,
     importSnapshot,
+    branchMap,
   } = useGraphStore();
 
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>(rfNodes);
@@ -216,6 +237,28 @@ export default function InvestigationGraph({ sessionId }: Props) {
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [inspectorCollapsed, setInspectorCollapsed] = useState(false);
   const [bridgeRouteHistory, setBridgeRouteHistory] = useState<string[]>([]);
+  const [activeBranchIds, setActiveBranchIds] = useState<string[]>([]);
+  const [branchHistory, setBranchHistory] = useState<string[]>([]);
+
+  const branchEntries = useMemo(
+    () =>
+      Array.from(branchMap.values()).sort((a, b) => {
+        if (a.minDepth === 0 && b.minDepth !== 0) return -1;
+        if (b.minDepth === 0 && a.minDepth !== 0) return 1;
+        return b.nodeCount - a.nodeCount;
+      }),
+    [branchMap],
+  );
+
+  const rootBranchId = useMemo(
+    () => branchEntries.find((branch) => branch.minDepth === 0)?.branchId ?? branchEntries[0]?.branchId ?? null,
+    [branchEntries],
+  );
+
+  const branchMetaById = useMemo(
+    () => new Map(branchEntries.map((branch) => [branch.branchId, branch])),
+    [branchEntries],
+  );
 
   const bridgeFilterOptions = useMemo(() => {
     const protocols = new Set<string>();
@@ -247,10 +290,16 @@ export default function InvestigationGraph({ sessionId }: Props) {
 
   // Keep local RF state in sync with store, applying current filters
   useEffect(() => {
-    const { nodes: fn, edges: fe } = applyFilters(rfNodes, rfEdges, filters, appearance);
+    const { nodes: fn, edges: fe } = applyFilters(
+      rfNodes,
+      rfEdges,
+      filters,
+      appearance,
+      { activeBranchIds, rootBranchId },
+    );
     setNodes(fn);
     setEdges(fe);
-  }, [rfNodes, rfEdges, filters, appearance, setNodes, setEdges]);
+  }, [rfNodes, rfEdges, filters, appearance, activeBranchIds, rootBranchId, setNodes, setEdges]);
 
   // Incremental ELK layout: only newly added nodes are placed freely.
   // Nodes that have already been laid out are passed to ELK as fixed-position
@@ -380,6 +429,14 @@ export default function InvestigationGraph({ sessionId }: Props) {
     ].slice(0, 6));
   }, [filters.bridgeRoute]);
 
+  useEffect(() => {
+    if (activeBranchIds.length === 0) return;
+    setBranchHistory((current) => [
+      ...activeBranchIds,
+      ...current.filter((branchId) => !activeBranchIds.includes(branchId)),
+    ].slice(0, 8));
+  }, [activeBranchIds]);
+
   const focusBridgeRoute = useCallback((route: string) => {
     setFilters((current) => ({
       ...current,
@@ -404,6 +461,27 @@ export default function InvestigationGraph({ sessionId }: Props) {
       bridgeStatuses: [],
       bridgeRoute: null,
     }));
+  }, []);
+
+  const focusBranch = useCallback((branchId: string) => {
+    setActiveBranchIds((current) =>
+      current.length === 1 && current[0] === branchId ? [] : [branchId],
+    );
+  }, []);
+
+  const compareBranch = useCallback((branchId: string) => {
+    setActiveBranchIds((current) => {
+      if (current.includes(branchId)) {
+        return current.filter((value) => value !== branchId);
+      }
+      if (current.length === 0) return [branchId];
+      if (current.length === 1) return [current[0], branchId];
+      return [current[1], branchId];
+    });
+  }, []);
+
+  const clearBranchFocus = useCallback(() => {
+    setActiveBranchIds([]);
   }, []);
 
   const bridgeSummary = useMemo(() => {
@@ -621,6 +699,134 @@ export default function InvestigationGraph({ sessionId }: Props) {
         </div>
       )}
 
+      {(activeBranchIds.length > 0 || branchHistory.length > 0 || branchEntries.length > 1) && (
+        <aside
+          style={{
+            position: 'absolute',
+            top: bridgeSummary ? 304 : 72,
+            left: 16,
+            zIndex: 104,
+            width: 320,
+            padding: '14px 16px',
+            borderRadius: 20,
+            background: 'rgba(255,255,255,0.94)',
+            border: '1px solid rgba(59,130,246,0.16)',
+            boxShadow: '0 18px 40px rgba(15,23,42,0.10)',
+            backdropFilter: 'blur(14px)',
+            color: '#0f172a',
+          }}
+        >
+          <div style={{ color: '#2563eb', fontSize: 10, fontWeight: 800, letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+            Branch workspace
+          </div>
+          <div style={{ marginTop: 6, fontSize: 21, fontWeight: 800 }}>
+            {activeBranchIds.length === 0
+              ? `${branchEntries.length} active branches`
+              : activeBranchIds.length === 1
+                ? 'Focused branch'
+                : 'Compare branches'}
+          </div>
+          {activeBranchIds.length > 0 && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
+              {activeBranchIds.map((branchId) => {
+                const branch = branchMetaById.get(branchId);
+                return (
+                  <button
+                    key={branchId}
+                    type="button"
+                    onClick={() => focusBranch(branchId)}
+                    style={{
+                      ...branchChipStyle(branch?.color ?? '#2563eb'),
+                      background: `${branch?.color ?? '#2563eb'}18`,
+                    }}
+                  >
+                    {branchLabel(branch)}
+                  </button>
+                );
+              })}
+              <button type="button" onClick={clearBranchFocus} style={clearRouteButtonStyle}>
+                Clear
+              </button>
+            </div>
+          )}
+          <div style={{ marginTop: 12, display: 'grid', gap: 8 }}>
+            {branchEntries.slice(0, 6).map((branch) => {
+              const active = activeBranchIds.includes(branch.branchId);
+              return (
+                <div
+                  key={branch.branchId}
+                  style={{
+                    border: `1px solid ${branch.color}24`,
+                    borderRadius: 14,
+                    padding: '10px 12px',
+                    background: active ? `${branch.color}12` : 'rgba(255,255,255,0.88)',
+                  }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
+                    <div>
+                      <div style={{ color: branch.color, fontWeight: 800, fontSize: 12 }}>
+                        {branchLabel(branch)}
+                      </div>
+                      <div style={{ color: '#64748b', fontSize: 11, marginTop: 4 }}>
+                        {branch.nodeCount} nodes · depth {branch.minDepth}-{branch.maxDepth}
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      <button
+                        type="button"
+                        onClick={() => focusBranch(branch.branchId)}
+                        style={{
+                          ...miniActionStyle,
+                          color: active && activeBranchIds.length === 1 ? branch.color : '#334155',
+                          borderColor: `${branch.color}24`,
+                        }}
+                      >
+                        {active && activeBranchIds.length === 1 ? 'Focused' : 'Focus'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => compareBranch(branch.branchId)}
+                        style={{
+                          ...miniActionStyle,
+                          color: active && activeBranchIds.length > 1 ? branch.color : '#334155',
+                          borderColor: `${branch.color}24`,
+                        }}
+                      >
+                        {active && activeBranchIds.length > 1 ? 'Compared' : 'Compare'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          {branchHistory.length > 0 && (
+            <div style={{ marginTop: 12 }}>
+              <div style={summaryHeadingStyle}>Recent branches</div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 6 }}>
+                {branchHistory
+                  .filter((branchId) => !activeBranchIds.includes(branchId))
+                  .slice(0, 4)
+                  .map((branchId) => {
+                    const branch = branchMetaById.get(branchId);
+                    if (!branch) return null;
+                    return (
+                      <button
+                        key={branchId}
+                        type="button"
+                        onClick={() => focusBranch(branchId)}
+                        style={branchChipStyle(branch.color)}
+                      >
+                        {branchLabel(branch)}
+                      </button>
+                    );
+                  })}
+              </div>
+            </div>
+          )}
+        </aside>
+      )}
+
       {bridgeSummary && (
         <aside
           style={{
@@ -774,10 +980,15 @@ export default function InvestigationGraph({ sessionId }: Props) {
         collapsed={inspectorCollapsed}
         activeBridgeRoute={filters.bridgeRoute}
         activeBridgeProtocols={filters.bridgeProtocols}
+        activeBranchIds={activeBranchIds}
+        branchMeta={selectedNode ? branchMetaById.get((selectedNode.data as unknown as InvestigationNode).branch_id) ?? null : null}
         onClose={() => {
           setSelectedNodeId(null);
           setSelectedEdgeId(null);
         }}
+        onFocusBranch={focusBranch}
+        onCompareBranch={compareBranch}
+        onClearBranchFocus={clearBranchFocus}
         onFocusBridgeRoute={focusBridgeRoute}
         onFocusBridgeProtocol={focusBridgeProtocol}
         onClearBridgeFocus={clearBridgeFocus}
@@ -852,6 +1063,34 @@ function routeChipStyle(tone: string): React.CSSProperties {
     cursor: 'pointer',
   };
 }
+
+function branchLabel(branch: BranchMeta | undefined | null): string {
+  if (!branch) return 'Unknown branch';
+  return branch.minDepth === 0 ? 'Root branch' : `Branch ${branch.branchId.slice(0, 6)}`;
+}
+
+function branchChipStyle(tone: string): React.CSSProperties {
+  return {
+    padding: '6px 10px',
+    borderRadius: 999,
+    border: `1px solid ${tone}24`,
+    background: 'rgba(255,255,255,0.88)',
+    color: tone,
+    fontSize: 11,
+    fontWeight: 700,
+    cursor: 'pointer',
+  };
+}
+
+const miniActionStyle: React.CSSProperties = {
+  padding: '6px 9px',
+  borderRadius: 999,
+  border: '1px solid rgba(148,163,184,0.24)',
+  background: 'rgba(255,255,255,0.9)',
+  fontSize: 11,
+  fontWeight: 700,
+  cursor: 'pointer',
+};
 
 const clearRouteButtonStyle: React.CSSProperties = {
   padding: '6px 10px',

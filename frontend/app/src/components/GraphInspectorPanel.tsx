@@ -15,6 +15,7 @@ import type {
   UTXONodeData,
   AtomicSwapData,
 } from '../types/graph';
+import type { BranchMeta } from '../store/graphStore';
 import {
   bridgeAssetRouteLabel,
   bridgeMechanismLabel,
@@ -45,6 +46,11 @@ interface Props {
   onClearBridgeFocus?: () => void;
   activeBridgeRoute?: string | null;
   activeBridgeProtocols?: string[];
+  onFocusBranch?: (branchId: string) => void;
+  onCompareBranch?: (branchId: string) => void;
+  onClearBranchFocus?: () => void;
+  activeBranchIds?: string[];
+  branchMeta?: BranchMeta | null;
 }
 
 export default function GraphInspectorPanel({
@@ -58,6 +64,11 @@ export default function GraphInspectorPanel({
   onClearBridgeFocus,
   activeBridgeRoute,
   activeBridgeProtocols = [],
+  onFocusBranch,
+  onCompareBranch,
+  onClearBranchFocus,
+  activeBranchIds = [],
+  branchMeta = null,
 }: Props) {
   const selectedNode = useMemo(
     () => (node?.data as InvestigationNode | undefined) ?? null,
@@ -121,6 +132,11 @@ export default function GraphInspectorPanel({
           onClearBridgeFocus={onClearBridgeFocus}
           activeBridgeRoute={activeBridgeRoute}
           activeBridgeProtocols={activeBridgeProtocols}
+          onFocusBranch={onFocusBranch}
+          onCompareBranch={onCompareBranch}
+          onClearBranchFocus={onClearBranchFocus}
+          activeBranchIds={activeBranchIds}
+          branchMeta={branchMeta}
         />
       ) : selectedEdge ? (
         <EdgeInspectorContent edge={selectedEdge} />
@@ -157,6 +173,11 @@ function NodeInspectorContent({
   onClearBridgeFocus,
   activeBridgeRoute,
   activeBridgeProtocols,
+  onFocusBranch,
+  onCompareBranch,
+  onClearBranchFocus,
+  activeBranchIds,
+  branchMeta,
 }: {
   node: InvestigationNode;
   onFocusBridgeRoute?: (route: string) => void;
@@ -164,6 +185,11 @@ function NodeInspectorContent({
   onClearBridgeFocus?: () => void;
   activeBridgeRoute?: string | null;
   activeBridgeProtocols: string[];
+  onFocusBranch?: (branchId: string) => void;
+  onCompareBranch?: (branchId: string) => void;
+  onClearBranchFocus?: () => void;
+  activeBranchIds: string[];
+  branchMeta: BranchMeta | null;
 }) {
   const accent = getChainColor(node.chain ?? (node.address_data as AddressNodeData | undefined)?.chain);
   const badges = semanticBadges(node);
@@ -228,6 +254,16 @@ function NodeInspectorContent({
 
       <Section title="Graph lineage">
         <KeyValue label="Branch">{shortHash(node.branch_id, 10, 6)}</KeyValue>
+        {branchMeta && (
+          <>
+            <KeyValue label="Branch size">{branchMeta.nodeCount} nodes</KeyValue>
+            <KeyValue label="Depth span">
+              {branchMeta.minDepth}
+              {' -> '}
+              {branchMeta.maxDepth}
+            </KeyValue>
+          </>
+        )}
         <KeyValue label="Path">{shortHash(node.path_id, 10, 6)}</KeyValue>
         <KeyValue label="Lineage">{shortHash(node.lineage_id, 10, 6)}</KeyValue>
         <KeyValue label="Depth">{node.depth}</KeyValue>
@@ -236,6 +272,59 @@ function NodeInspectorContent({
             ? node.expandable_directions.join(', ')
             : 'Not expandable'}
         </KeyValue>
+        {(onFocusBranch || onCompareBranch || onClearBranchFocus) && (
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
+            {onFocusBranch && (
+              <button
+                type="button"
+                onClick={() => onFocusBranch(node.branch_id)}
+                style={{
+                  ...actionButtonStyle,
+                  color:
+                    activeBranchIds.length === 1 && activeBranchIds[0] === node.branch_id
+                      ? '#2563eb'
+                      : '#334155',
+                  borderColor:
+                    activeBranchIds.length === 1 && activeBranchIds[0] === node.branch_id
+                      ? 'rgba(37,99,235,0.34)'
+                      : 'rgba(148,163,184,0.3)',
+                }}
+              >
+                {activeBranchIds.length === 1 && activeBranchIds[0] === node.branch_id
+                  ? 'Branch focused'
+                  : 'Focus branch'}
+              </button>
+            )}
+            {onCompareBranch && (
+              <button
+                type="button"
+                onClick={() => onCompareBranch(node.branch_id)}
+                style={{
+                  ...actionButtonStyle,
+                  color: activeBranchIds.includes(node.branch_id) && activeBranchIds.length > 1
+                    ? '#7c3aed'
+                    : '#334155',
+                  borderColor: activeBranchIds.includes(node.branch_id) && activeBranchIds.length > 1
+                    ? 'rgba(124,58,237,0.34)'
+                    : 'rgba(148,163,184,0.3)',
+                }}
+              >
+                {activeBranchIds.includes(node.branch_id) && activeBranchIds.length > 1
+                  ? 'Compared'
+                  : 'Compare branch'}
+              </button>
+            )}
+            {onClearBranchFocus && activeBranchIds.length > 0 && (
+              <button
+                type="button"
+                onClick={onClearBranchFocus}
+                style={actionButtonStyle}
+              >
+                Clear branch focus
+              </button>
+            )}
+          </div>
+        )}
       </Section>
     </div>
   );
