@@ -62,17 +62,32 @@ AuditMiddleware._store_audit_log = _noop_store_audit_log
 def client():
     """Provide a FastAPI TestClient with DB init/shutdown mocked out."""
     from fastapi.testclient import TestClient
-    from src.api.main import app
+    try:
+        from src.api.main import app
 
-    with (
-        patch("src.api.main.init_databases", new_callable=AsyncMock),
-        patch("src.api.main.close_databases", new_callable=AsyncMock),
-        patch("src.api.main.start_background_tasks", new_callable=AsyncMock),
-        patch("src.api.main.stop_background_tasks", new_callable=AsyncMock),
-        patch("src.monitoring.alert_rules.ensure_tables", new_callable=AsyncMock),
-    ):
-        with TestClient(app, raise_server_exceptions=False, base_url="http://localhost") as c:
-            yield c
+        with (
+            patch("src.api.main.init_databases", new_callable=AsyncMock),
+            patch("src.api.main.close_databases", new_callable=AsyncMock),
+            patch("src.api.main.start_background_tasks", new_callable=AsyncMock),
+            patch("src.api.main.stop_background_tasks", new_callable=AsyncMock),
+            patch("src.monitoring.alert_rules.ensure_tables", new_callable=AsyncMock),
+        ):
+            with TestClient(app, raise_server_exceptions=False, base_url="http://localhost") as c:
+                yield c
+    except ImportError:
+        from src.api.graph_app import app
+
+        with (
+            patch("src.api.graph_app.init_databases", new_callable=AsyncMock),
+            patch("src.api.graph_app.close_databases", new_callable=AsyncMock),
+            patch(
+                "src.api.migrations.migration_manager.run_database_migrations",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+        ):
+            with TestClient(app, raise_server_exceptions=False, base_url="http://localhost") as c:
+                yield c
 
 
 @pytest.fixture
