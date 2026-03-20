@@ -56,6 +56,10 @@ Read this file before touching graph schema, graph API, trace compiler semantics
   a hidden global graph state. Compare briefings must respect active route,
   semantic, and pinned-path focus.
 
+### ADR-013
+- Session briefings should export the visible graph lens as human-readable
+  markdown and stay paired with JSON snapshots rather than replacing them.
+
 ## Guardrails
 
 - Do not widen this repo into the private compliance dashboard.

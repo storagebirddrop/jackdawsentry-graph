@@ -84,6 +84,12 @@ interface Props {
   sessionId: string;
 }
 
+interface SessionBriefing {
+  title: string;
+  headline: string;
+  markdown: string;
+}
+
 /** Apply filter state to raw nodes/edges, returning the visible subset. */
 function applyFilters(
   nodes: Node[],
@@ -237,6 +243,7 @@ export default function InvestigationGraph({ sessionId }: Props) {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [inspectorCollapsed, setInspectorCollapsed] = useState(false);
+  const [briefingVisible, setBriefingVisible] = useState(false);
   const [bridgeRouteHistory, setBridgeRouteHistory] = useState<string[]>([]);
   const [activeBranchIds, setActiveBranchIds] = useState<string[]>([]);
   const [branchHistory, setBranchHistory] = useState<string[]>([]);
@@ -857,6 +864,146 @@ export default function InvestigationGraph({ sessionId }: Props) {
     return 'The active branches are balanced on visible node and bridge-hop counts.';
   }, [branchCompareSummaries]);
 
+  const activeSemanticEntry = useMemo(
+    () => semanticLegend.entries.find((entry) => entry.key === activeSemanticKey) ?? null,
+    [activeSemanticKey, semanticLegend.entries],
+  );
+
+  const sessionBriefing = useMemo<SessionBriefing>(() => {
+    const currentTimestamp = new Date().toISOString();
+    const title = `Session briefing · ${sessionId.slice(0, 8)}`;
+    const headlineParts = [
+      `${nodes.length} visible nodes`,
+      `${edges.length} visible edges`,
+      bridgeSummary ? `${bridgeSummary.total} bridge hops in view` : null,
+      activeBranchIds.length > 0
+        ? `${activeBranchIds.length} active branch${activeBranchIds.length === 1 ? '' : 'es'}`
+        : null,
+    ].filter((value): value is string => Boolean(value));
+
+    const overviewBullets = [
+      `Session ${sessionId}`,
+      `Canvas view: ${appearance.viewMode} / ${appearance.interactionMode}`,
+      `Visible graph: ${nodes.length} nodes and ${edges.length} edges`,
+      filters.bridgeRoute ? `Route focus: ${filters.bridgeRoute}` : null,
+      filters.bridgeProtocols.length > 0
+        ? `Bridge protocol focus: ${filters.bridgeProtocols.map((protocolId) => bridgeProtocolLabel(protocolId)).join(', ')}`
+        : null,
+      activeSemanticEntry ? `Semantic focus: ${activeSemanticEntry.label}` : null,
+      activeBranchIds.length > 0
+        ? `Branch focus: ${activeBranchIds.map((branchId) => branchLabel(branchMetaById.get(branchId))).join(', ')}`
+        : null,
+      pinnedPathStories.length > 0
+        ? `Pinned paths: ${pinnedPathStories.map((story) => story.summary).join(' | ')}`
+        : null,
+    ].filter((value): value is string => Boolean(value));
+
+    const bridgeLines = bridgeSummary
+      ? [
+          `Visible bridge hops: ${bridgeSummary.total}`,
+          `Bridge statuses: pending ${bridgeSummary.statuses.pending ?? 0}, completed ${bridgeSummary.statuses.completed ?? 0}${bridgeSummary.statuses.failed ? `, failed ${bridgeSummary.statuses.failed}` : ''}`,
+          bridgeSummary.protocols.length > 0
+            ? `Top bridge protocols: ${bridgeSummary.protocols.slice(0, 4).map((protocol) => `${protocol.label} (${protocol.count})`).join(', ')}`
+            : null,
+          bridgeSummary.routes.length > 0
+            ? `Dominant routes: ${bridgeSummary.routes.slice(0, 3).map(([route, count]) => `${route} (${count})`).join(', ')}`
+            : null,
+        ].filter((value): value is string => Boolean(value))
+      : [];
+
+    const semanticLines = semanticLegend.entries.length > 0
+      ? semanticLegend.entries.slice(0, 6).map((entry) => `${entry.label} [${entry.family}] (${entry.count})`)
+      : [];
+
+    const compareLines = branchCompareSummaries.length > 0
+      ? branchCompareSummaries.map((summary) => {
+          const semanticSummary = summary.topSemantics.length > 0
+            ? `; top rails ${summary.topSemantics.map((semantic) => `${semantic.label} (${semantic.count})`).join(', ')}`
+            : '';
+          return `${branchLabel(summary.branch)}: ${summary.visibleNodes} nodes, ${summary.visibleEdges} edges, ${summary.bridgeHopCount} bridge hops, ${summary.pathCount} paths${summary.pinnedPathCount > 0 ? `, ${summary.pinnedPathCount} pinned` : ''}${semanticSummary}`;
+        })
+      : [];
+
+    const pinnedPathLines = pinnedPathStories.map((story) => (
+      `${story.summary}: ${story.nodeCount} nodes, depth ${story.minDepth}-${story.maxDepth}, ${story.branchCount} branches`
+    ));
+
+    const markdown = [
+      `# ${title}`,
+      '',
+      `Generated: ${currentTimestamp}`,
+      '',
+      '## Headline',
+      '',
+      headlineParts.join(' · '),
+      '',
+      '## Current lens',
+      '',
+      ...overviewBullets.map((line) => `- ${line}`),
+      '',
+      '## Bridge intelligence',
+      '',
+      ...(bridgeLines.length > 0 ? bridgeLines.map((line) => `- ${line}`) : ['- No bridge hops in the current visible lens.']),
+      '',
+      '## Semantic rails in view',
+      '',
+      ...(semanticLines.length > 0 ? semanticLines.map((line) => `- ${line}`) : ['- No protocol or primitive legend entries are active in the current lens.']),
+      '',
+      '## Branch compare',
+      '',
+      ...(branchCompareHeadline ? [`- ${branchCompareHeadline}`] : ['- No branch compare is active.']),
+      ...compareLines.map((line) => `- ${line}`),
+      '',
+      '## Pinned path stories',
+      '',
+      ...(pinnedPathLines.length > 0 ? pinnedPathLines.map((line) => `- ${line}`) : ['- No pinned paths yet.']),
+      '',
+      '## Analyst note',
+      '',
+      'Use this briefing as a session handoff artifact and pair it with the JSON snapshot when another investigator needs the exact same graph state.',
+    ].join('\n');
+
+    return {
+      title,
+      headline: headlineParts.join(' · ') || 'No visible graph state',
+      markdown,
+    };
+  }, [
+    activeBranchIds,
+    activeSemanticEntry,
+    appearance.interactionMode,
+    appearance.viewMode,
+    branchCompareHeadline,
+    branchCompareSummaries,
+    branchMetaById,
+    bridgeSummary,
+    edges.length,
+    filters.bridgeProtocols,
+    filters.bridgeRoute,
+    nodes.length,
+    pinnedPathStories,
+    semanticLegend.entries,
+    sessionId,
+  ]);
+
+  const copyBriefing = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(sessionBriefing.markdown);
+    } catch (error) {
+      console.error('Failed to copy session briefing:', error);
+      alert('Unable to copy the session briefing. Please try the markdown export instead.');
+    }
+  }, [sessionBriefing.markdown]);
+
+  const downloadBriefing = useCallback(() => {
+    const blobUrl = URL.createObjectURL(new Blob([sessionBriefing.markdown], { type: 'text/markdown;charset=utf-8' }));
+    const anchor = document.createElement('a');
+    anchor.href = blobUrl;
+    anchor.download = `session-briefing-${sessionId.slice(0, 8)}.md`;
+    anchor.click();
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 100);
+  }, [sessionBriefing.markdown, sessionId]);
+
   return (
     <div
       style={{
@@ -946,6 +1093,20 @@ export default function InvestigationGraph({ sessionId }: Props) {
             }}
           />
         </label>
+        <button
+          onClick={() => setBriefingVisible((value) => !value)}
+          style={toolbarBtnStyle}
+          title="Open session briefing"
+        >
+          Briefing
+          {[
+            activeBranchIds.length > 0,
+            pinnedPathIds.length > 0,
+            Boolean(filters.bridgeRoute),
+            filters.bridgeProtocols.length > 0,
+            Boolean(activeSemanticKey),
+          ].some(Boolean) ? ' •' : ''}
+        </button>
         <span style={toolbarPillStyle}>
           {appearance.viewMode} view
         </span>
@@ -1462,6 +1623,91 @@ export default function InvestigationGraph({ sessionId }: Props) {
         </aside>
       )}
 
+      {briefingVisible && (
+        <aside
+          style={{
+            position: 'absolute',
+            right: inspectorCollapsed ? 92 : 376,
+            bottom: 24,
+            zIndex: 104,
+            width: 380,
+            maxHeight: '48vh',
+            padding: '16px 18px',
+            borderRadius: 22,
+            background: 'rgba(255,255,255,0.96)',
+            border: '1px solid rgba(180,83,9,0.16)',
+            boxShadow: '0 20px 44px rgba(15,23,42,0.12)',
+            backdropFilter: 'blur(14px)',
+            color: '#0f172a',
+            display: 'grid',
+            gap: 12,
+          }}
+        >
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start' }}>
+            <div>
+              <div style={{ color: '#b45309', fontSize: 10, fontWeight: 800, letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+                Session briefing
+              </div>
+              <div style={{ marginTop: 6, fontSize: 22, fontWeight: 800 }}>
+                {sessionBriefing.title}
+              </div>
+              <div style={{ color: '#475569', fontSize: 12, lineHeight: 1.55, marginTop: 8 }}>
+                {sessionBriefing.headline}
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setBriefingVisible(false)}
+              style={briefingCloseButtonStyle}
+              aria-label="Close session briefing"
+            >
+              x
+            </button>
+          </div>
+
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button type="button" onClick={copyBriefing} style={briefingActionButtonStyle('#b45309')}>
+              Copy markdown
+            </button>
+            <button type="button" onClick={downloadBriefing} style={briefingActionButtonStyle('#2563eb')}>
+              Download .md
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                const json = exportSnapshot();
+                const a = document.createElement('a');
+                const blobUrl = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
+                a.href = blobUrl;
+                a.download = `session-${sessionId.slice(0, 8)}.json`;
+                a.click();
+                setTimeout(() => URL.revokeObjectURL(blobUrl), 100);
+              }}
+              style={briefingActionButtonStyle('#475569')}
+            >
+              Download snapshot
+            </button>
+          </div>
+
+          <div
+            style={{
+              borderRadius: 16,
+              border: '1px solid rgba(148,163,184,0.18)',
+              background: 'rgba(248,250,252,0.94)',
+              padding: '12px 14px',
+              overflow: 'auto',
+              whiteSpace: 'pre-wrap',
+              fontFamily: '"IBM Plex Mono", "SFMono-Regular", monospace',
+              fontSize: 11,
+              lineHeight: 1.6,
+              color: '#1e293b',
+            }}
+          >
+            {sessionBriefing.markdown}
+          </div>
+        </aside>
+      )}
+
       {/* Filter panel */}
       {filterVisible && (
         <FilterPanel
@@ -1691,4 +1937,30 @@ const compareMetricValueStyle: React.CSSProperties = {
   fontSize: 18,
   fontWeight: 800,
   marginTop: 4,
+};
+
+function briefingActionButtonStyle(tone: string): React.CSSProperties {
+  return {
+    padding: '7px 12px',
+    borderRadius: 999,
+    border: `1px solid ${tone}2a`,
+    background: `${tone}12`,
+    color: tone,
+    fontSize: 11,
+    fontWeight: 800,
+    cursor: 'pointer',
+  };
+}
+
+const briefingCloseButtonStyle: React.CSSProperties = {
+  width: 30,
+  height: 30,
+  borderRadius: 10,
+  border: '1px solid rgba(148,163,184,0.26)',
+  background: 'rgba(255,255,255,0.88)',
+  color: '#475569',
+  fontSize: 15,
+  lineHeight: 1,
+  cursor: 'pointer',
+  fontWeight: 700,
 };

@@ -40,3 +40,4 @@ Acceptance criteria:
 - [x] inspector supports pinned path storytelling
 - [x] protocol-specific styling and legends cover more than bridge hops
 - [x] branch compare includes a visible briefing tied to the current graph lens
+- [x] session briefing exports the visible investigation lens as markdown

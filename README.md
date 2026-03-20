@@ -85,6 +85,8 @@ workflows:
   visible nodes, bridge hops, paths, and semantic rails
 - protocol legend cards now summarize visible swap, bridge, lightning, sidechain,
   service, and Solana rails directly on the canvas
+- session briefings turn the current visible investigation lens into a markdown
+  artifact you can copy or export alongside the raw session snapshot
 - the inspector is the narrative surface for node detail, lineage, branch
   actions, pinned paths, and active investigation context
 
