@@ -36,7 +36,7 @@ This repository is intentionally narrower than the private Jackdaw Sentry platfo
 ```bash
 # create .env with the required database and secret settings
 docker compose -f docker-compose.graph.yml up --build
-python scripts/split/create_graph_dev_user.py --username analyst --password change-me-now
+python scripts/dev/create_dev_user.py --username analyst --password change-me-now
 ```
 
 Browse:
@@ -63,6 +63,13 @@ cd frontend/app
 npm install
 npm run lint
 npm run build
+```
+
+Repo verification helpers:
+
+```bash
+python scripts/quality/boundary_audit.py
+python scripts/quality/public_readiness_audit.py
 ```
 
 ## License

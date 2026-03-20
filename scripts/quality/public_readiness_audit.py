@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Static public-readiness audit for the future MIT graph repo surface."""
+"""Static public-readiness audit for the standalone graph repo surface."""
 
 from __future__ import annotations
 
@@ -8,7 +8,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 PUBLIC_SURFACE = [
-    ROOT / "repo-templates/jackdawsentry-graph",
     ROOT / "frontend/app/src",
     ROOT / "frontend/app/index.html",
     ROOT / "frontend/app/README.md",

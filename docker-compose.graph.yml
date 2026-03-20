@@ -1,4 +1,4 @@
-# Graph-only stack for the future standalone MIT investigation graph product.
+# Graph runtime stack for the standalone Jackdaw Sentry investigation graph.
 
 services:
   neo4j:

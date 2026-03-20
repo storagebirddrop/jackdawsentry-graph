@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Boundary audit for the split-first program."""
+"""Boundary audit for the standalone graph product."""
 
 from __future__ import annotations
 

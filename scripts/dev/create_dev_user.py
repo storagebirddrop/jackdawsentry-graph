@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create a local graph-runtime user without the private setup flow."""
+"""Create or update a local graph-runtime user."""
 
 from __future__ import annotations
 
