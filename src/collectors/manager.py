@@ -17,6 +17,7 @@ from src.api.config import settings
 from src.api.database import get_redis_connection
 
 from .base import BaseCollector
+from .address_ingest_worker import AddressIngestWorker
 from .backfill import EventStoreBackfillWorker
 from .bitcoin import BitcoinCollector
 from .cosmos import CosmosCollector
@@ -37,6 +38,7 @@ class CollectorManager:
         self.collectors: Dict[str, BaseCollector] = {}
         self.is_running = False
         self.backfill_worker: Optional[EventStoreBackfillWorker] = None
+        self.address_ingest_worker: Optional[AddressIngestWorker] = None
         self.metrics = {
             "total_collectors": 0,
             "running_collectors": 0,
@@ -270,6 +272,11 @@ class CollectorManager:
             self.backfill_worker = EventStoreBackfillWorker(self.collectors)
             tasks.append(asyncio.create_task(self.backfill_worker.start()))
 
+        # Always start address ingest worker — it processes investigator-driven
+        # on-demand requests from address_ingest_queue regardless of backfill setting.
+        self.address_ingest_worker = AddressIngestWorker(self.collectors)
+        tasks.append(asyncio.create_task(self.address_ingest_worker.start()))
+
         # Wait for all tasks
         await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -288,6 +295,9 @@ class CollectorManager:
 
         if self.backfill_worker is not None:
             await self.backfill_worker.stop()
+
+        if self.address_ingest_worker is not None:
+            await self.address_ingest_worker.stop()
 
         # Stop all collectors
         tasks = []

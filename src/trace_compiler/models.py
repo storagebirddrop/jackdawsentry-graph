@@ -514,6 +514,10 @@ class ExpansionResponseV2(BaseModel):
     continuation_token: Optional[str] = None
     pagination: PaginationMeta = Field(default_factory=PaginationMeta)
 
+    # Ingest signalling — True when expansion was empty because historical data
+    # is not yet in the event store; the frontend should poll and retry.
+    ingest_pending: bool = False
+
     # Context
     layout_hints: LayoutHints = Field(default_factory=LayoutHints)
     chain_context: ChainContext = Field(
