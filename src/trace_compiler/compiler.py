@@ -6,7 +6,7 @@ This is the semantic boundary between raw blockchain facts (PostgreSQL event
 store, Neo4j canonical graph) and the investigation-view graph served to the
 frontend.
 
-Current state (Phase 4): EVM, UTXO, and Solana chain compilers are implemented.
+Current state (Phase 4+): EVM, UTXO, Solana, Tron, XRP, Cosmos, and Sui chain compilers are implemented.
 Session creation and expansion are fully wired; bridge hop status polling
 is supported via the PostgreSQL ``bridge_correlations`` table.
 
@@ -27,6 +27,8 @@ from typing import Optional
 from src.trace_compiler.chains.bitcoin import UTXOChainCompiler
 from src.trace_compiler.chains.evm import EVMChainCompiler
 from src.trace_compiler.chains.solana import SolanaChainCompiler
+from src.trace_compiler.chains.cosmos import CosmosChainCompiler
+from src.trace_compiler.chains.sui import SuiChainCompiler
 from src.trace_compiler.chains.tron import TronChainCompiler
 from src.trace_compiler.chains.xrp import XRPChainCompiler
 from src.trace_compiler.lineage import edge_id as mk_edge_id
@@ -170,6 +172,8 @@ class TraceCompiler:
         _sol = SolanaChainCompiler(postgres_pool, neo4j_driver, redis_client)
         _tron = TronChainCompiler(postgres_pool, neo4j_driver, redis_client)
         _xrp = XRPChainCompiler(postgres_pool, neo4j_driver, redis_client)
+        _cosmos = CosmosChainCompiler(postgres_pool, neo4j_driver, redis_client)
+        _sui = SuiChainCompiler(postgres_pool, neo4j_driver, redis_client)
         self._chain_compilers: Dict[str, Any] = {
             chain: _evm for chain in _evm.supported_chains
         }
@@ -184,6 +188,12 @@ class TraceCompiler:
         )
         self._chain_compilers.update(
             {chain: _xrp for chain in _xrp.supported_chains}
+        )
+        self._chain_compilers.update(
+            {chain: _cosmos for chain in _cosmos.supported_chains}
+        )
+        self._chain_compilers.update(
+            {chain: _sui for chain in _sui.supported_chains}
         )
 
     async def create_session(
