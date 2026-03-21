@@ -79,7 +79,7 @@ Acceptance criteria:
 - [x] _GenericTransferChainCompiler base class extracted from EVMChainCompiler
       to avoid 300-line code duplication across chain compilers
 
-## Depth Quality Pass [IN PROGRESS]
+## Depth Quality Pass [COMPLETE]
 
 Goal:
 - improve semantic quality of graph output for highest-traffic compliance
@@ -97,5 +97,8 @@ Acceptance criteria:
       verified by parametrized tests (tron, xrp, cosmos, sui, partial-failure)
 - [x] price oracle wired for TRX, XRP, ATOM, SUI via _native_canonical_asset_id
       in each chain compiler; CoinGecko IDs: tron/ripple/cosmos/sui
-- [ ] service classifier extended with high-traffic XRP AMM and Cosmos DEX
-      contract equivalents (DEX Aggregator → Osmosis, etc.)
+- [~] XRP AMM / Cosmos DEX service classifier DEFERRED — XRP Ledger DEX is
+      order-book-based (no fixed contract address; AMM pool IDs are dynamic),
+      Cosmos Hub has minimal DEX activity (Osmosis is separate chain).
+      Requires tx-type detection (AMMSwap tx type on XRP, IBC MsgSwap on
+      Osmosis), not address lookup. Tracked for future pass.
