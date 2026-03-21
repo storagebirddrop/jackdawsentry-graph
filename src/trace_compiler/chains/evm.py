@@ -31,6 +31,11 @@ from typing import Optional
 from typing import Tuple
 
 from src.trace_compiler.chains.base import BaseChainCompiler
+from src.trace_compiler.chains.evm_log_decoder import (
+    DEX_SWAP_SIGS,
+    decode_swap_log,
+    extract_swap_amounts,
+)
 from src.trace_compiler.lineage import edge_id as mk_edge_id
 from src.trace_compiler.lineage import lineage_id as mk_lineage
 from src.trace_compiler.lineage import node_id as mk_node_id
@@ -406,6 +411,67 @@ class EVMChainCompiler(BaseChainCompiler):
             logger.debug("_fetch_tx_native_leg failed for %s/%s: %s", chain, tx_hash, exc)
             return None
 
+    async def _fetch_dex_swap_log(
+        self,
+        chain: str,
+        tx_hash: str,
+        contract: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Fetch and decode a DEX Swap event log for a transaction.
+
+        Queries ``raw_evm_logs`` for a Swap event emitted by ``contract``
+        in ``tx_hash``.  Returns the decoded field values (amounts, direction)
+        so ``_maybe_build_swap_event`` can use ground-truth log data instead
+        of token-transfer inference.
+
+        Only returns rows with a recognised DEX Swap event signature.
+        Returns None when ``raw_evm_logs`` is unavailable, the table does not
+        exist yet, or no matching log is found.
+
+        Args:
+            chain:    Blockchain name.
+            tx_hash:  Transaction hash.
+            contract: The DEX contract address (pool or router).
+
+        Returns:
+            Dict with ``event_sig`` and ``decoded`` keys, or None.
+        """
+        if self._pg is None:
+            return None
+        try:
+            sql = """
+                SELECT event_sig, decoded, data
+                FROM raw_evm_logs
+                WHERE blockchain = $1
+                  AND tx_hash    = $2
+                  AND contract   = $3
+                  AND event_sig  = ANY($4)
+                ORDER BY log_index ASC
+                LIMIT 1
+            """
+            async with self._pg.acquire() as conn:
+                row = await conn.fetchrow(
+                    sql,
+                    chain,
+                    tx_hash,
+                    contract.lower(),
+                    list(DEX_SWAP_SIGS),
+                )
+            if row is None:
+                return None
+            decoded = row["decoded"]
+            if decoded is None and row["data"]:
+                # Decode on the fly if the collector did not pre-decode.
+                decoded = decode_swap_log(row["event_sig"], row["data"])
+            if decoded is None:
+                return None
+            return {"event_sig": row["event_sig"], "decoded": decoded}
+        except Exception as exc:
+            logger.debug(
+                "_fetch_dex_swap_log failed chain=%s tx=%s: %s", chain, tx_hash, exc
+            )
+            return None
+
     @staticmethod
     def _pick_swap_leg(
         legs: List[_SwapLeg],
@@ -450,6 +516,23 @@ class EVMChainCompiler(BaseChainCompiler):
         """
         token_legs = await self._fetch_tx_token_transfers(chain, tx_hash)
         native_leg = await self._fetch_tx_native_leg(chain, tx_hash)
+
+        # --- Log-aware swap amounts (Uniswap V2/V3/V4) ----------------------
+        # When a Swap event log is available for this contract, use it to
+        # determine the canonical input/output amounts.  The log provides the
+        # pool's recorded amounts which are more accurate than token-transfer
+        # leg inference (they include fee deduction and handle wrapped assets).
+        _log_input_amount: Optional[float] = None
+        _log_output_amount: Optional[float] = None
+        _log_token0_is_input: Optional[bool] = None
+        dex_log = await self._fetch_dex_swap_log(chain, tx_hash, counterparty)
+        if dex_log is not None:
+            amounts = extract_swap_amounts(
+                dex_log["decoded"],
+                dex_log["event_sig"],
+            )
+            if amounts is not None:
+                _log_input_amount, _log_output_amount, _log_token0_is_input = amounts
 
         outgoing: List[_SwapLeg] = []
         incoming: List[_SwapLeg] = []
@@ -520,13 +603,17 @@ class EVMChainCompiler(BaseChainCompiler):
         ):
             return None
 
+        # Use log-decoded amounts as ground truth when available.
+        final_input_amount = _log_input_amount if _log_input_amount is not None else input_leg.amount
+        final_output_amount = _log_output_amount if _log_output_amount is not None else output_leg.amount
+
         swap_id = mk_swap_event_id(chain, tx_hash, 0)
         swap_node_id = mk_node_id(chain, "swap_event", swap_id)
         lineage = mk_lineage(session_id, branch_id, path_id, depth)
         route_summary = f"{input_leg.asset_symbol} -> {output_leg.asset_symbol}"
         exchange_rate = (
-            output_leg.amount / input_leg.amount
-            if input_leg.amount not in (0, None)
+            final_output_amount / final_input_amount
+            if final_input_amount not in (0, None)
             else None
         )
 
@@ -546,9 +633,9 @@ class EVMChainCompiler(BaseChainCompiler):
                 protocol_id=protocol_id,
                 chain=chain,
                 input_asset=input_leg.asset_symbol,
-                input_amount=input_leg.amount,
+                input_amount=final_input_amount,
                 output_asset=output_leg.asset_symbol,
-                output_amount=output_leg.amount,
+                output_amount=final_output_amount,
                 exchange_rate=exchange_rate,
                 route_summary=route_summary,
                 tx_hash=tx_hash,
@@ -570,11 +657,11 @@ class EVMChainCompiler(BaseChainCompiler):
                 contract_address=counterparty,
                 asset_symbol=input_leg.asset_symbol,
                 canonical_asset_id=input_leg.canonical_asset_id,
-                value_native=input_leg.amount,
+                value_native=final_input_amount,
                 source_asset=input_leg.asset_symbol,
                 destination_asset=output_leg.asset_symbol,
-                source_amount=input_leg.amount,
-                destination_amount=output_leg.amount,
+                source_amount=final_input_amount,
+                destination_amount=final_output_amount,
                 route_summary=route_summary,
             ),
         )
@@ -586,7 +673,7 @@ class EVMChainCompiler(BaseChainCompiler):
             branch_id=branch_id,
             path_id=path_id,
             edge_type="swap_input",
-            value_native=input_leg.amount,
+            value_native=final_input_amount,
             asset_symbol=input_leg.asset_symbol,
             canonical_asset_id=input_leg.canonical_asset_id,
             tx_hash=tx_hash,
@@ -601,7 +688,7 @@ class EVMChainCompiler(BaseChainCompiler):
             branch_id=branch_id,
             path_id=path_id,
             edge_type="swap_output",
-            value_native=output_leg.amount,
+            value_native=final_output_amount,
             asset_symbol=output_leg.asset_symbol,
             canonical_asset_id=output_leg.canonical_asset_id,
             tx_hash=tx_hash,

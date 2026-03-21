@@ -42,6 +42,11 @@ KNOWN_PROGRAMS: Dict[str, str] = {
     "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8": "raydium_amm_v4",
     "worm2ZoG2kUd4vFXhvjh93UUH596ayRfgQ2MgjNMTth": "wormhole_token_bridge",
     "11111111111111111111111111111111": "system_program",
+    "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc": "orca_whirlpool",
+    "9W959DqEETiGZocYWCQPaJ6sBmUzgfxXfqGeTEdp3aQP": "orca_whirlpool",
+    "Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB": "meteora_dlmm",
+    "PhoeNiXZ8ByJGLkxNfZRnkUfjvmuYqLR89jjFHGqdXY": "phoenix",
+    "opnb2LAfJYbRMAHHvqjCwQxanZn7ReEHp1k81EohpZb": "openbook_v2",
 }
 
 # ---------------------------------------------------------------------------
@@ -82,6 +87,12 @@ _WORMHOLE_INSTRUCTIONS: Dict[int, str] = {
     10: "transferTokensWithPayload",
 }
 
+# Phoenix instruction discriminants (single-byte, custom layout — not Anchor)
+_PHOENIX_INSTRUCTIONS: Dict[int, str] = {
+    9:  "swap",           # Swap (IOC taker order)
+    10: "swapWithFreeFunds",
+}
+
 
 # ---------------------------------------------------------------------------
 # Parsed instruction dataclass
@@ -115,6 +126,22 @@ class ParsedInstruction:
     decoded_args: Dict[str, Any] = field(default_factory=dict)
     raw_data_b64: str = ""
     decode_status: str = "ok"  # ok | partial | raw
+
+
+def _anchor_discriminant(instruction_name: str) -> bytes:
+    """Return the 8-byte Anchor discriminant for a global instruction.
+
+    Anchor discriminants are the first 8 bytes of
+    ``sha256("global:<instruction_name>")``.
+
+    Args:
+        instruction_name: The instruction name as used in the IDL.
+
+    Returns:
+        8-byte bytes object.
+    """
+    import hashlib
+    return hashlib.sha256(f"global:{instruction_name}".encode()).digest()[:8]
 
 
 # ---------------------------------------------------------------------------
@@ -269,6 +296,22 @@ class SolanaInstructionParser:
                 )
             if program_name == "wormhole_token_bridge":
                 return self._decode_wormhole(
+                    program_id, accounts, raw_bytes, raw_data_b64
+                )
+            if program_name == "orca_whirlpool":
+                return self._decode_orca_whirlpool(
+                    program_id, accounts, raw_bytes, raw_data_b64
+                )
+            if program_name == "meteora_dlmm":
+                return self._decode_meteora_dlmm(
+                    program_id, accounts, raw_bytes, raw_data_b64
+                )
+            if program_name == "phoenix":
+                return self._decode_phoenix(
+                    program_id, accounts, raw_bytes, raw_data_b64
+                )
+            if program_name == "openbook_v2":
+                return self._decode_openbook_v2(
                     program_id, accounts, raw_bytes, raw_data_b64
                 )
             if program_name == "system_program":
@@ -607,6 +650,368 @@ class SolanaInstructionParser:
         return ParsedInstruction(
             program_id=program_id,
             program_name="raydium_amm_v4",
+            instruction_type=ix_name,
+            accounts=accounts,
+            decoded_args=decoded_args,
+            raw_data_b64=raw_b64,
+            decode_status=status,
+        )
+
+    # ------------------------------------------------------------------
+    # Orca Whirlpool decoder (Anchor-based)
+    # ------------------------------------------------------------------
+
+    def _decode_orca_whirlpool(
+        self,
+        program_id: str,
+        accounts: List[str],
+        data: bytes,
+        raw_b64: str,
+    ) -> ParsedInstruction:
+        """Decode Orca Whirlpool swap instructions.
+
+        Orca Whirlpool uses Anchor 8-byte discriminants.
+
+        Supported variants:
+        - ``swap``: Simple single-pool swap.
+          Layout (after 8-byte discriminant):
+          amount (u64) + other_amount_threshold (u64) +
+          sqrt_price_limit (u128, 16 bytes) +
+          amount_specified_is_input (bool) + a_to_b (bool)
+
+        - ``twoHopSwap``: Two-pool sequential swap.
+          Layout (after 8-byte discriminant):
+          amount (u64) + other_amount_threshold_one (u64) +
+          other_amount_threshold_two (u64) + amount_specified_is_input (bool) +
+          a_to_b_one (bool) + a_to_b_two (bool)
+
+        Args:
+            program_id: Orca Whirlpool program ID.
+            accounts: Resolved account pubkeys.
+            data: Raw instruction bytes.
+            raw_b64: Base64 source.
+
+        Returns:
+            :class:`ParsedInstruction` with swap metadata.
+        """
+        _SWAP_DISC = _anchor_discriminant("swap")
+        _TWO_HOP_DISC = _anchor_discriminant("two_hop_swap")
+        _SWAP_V2_DISC = _anchor_discriminant("swap_v2")
+
+        if len(data) < 8:
+            return ParsedInstruction(
+                program_id=program_id,
+                program_name="orca_whirlpool",
+                instruction_type="unknown",
+                accounts=accounts,
+                raw_data_b64=raw_b64,
+                decode_status="raw",
+            )
+
+        discriminant = data[:8]
+        decoded_args: Dict[str, Any] = {}
+        status = "partial"
+
+        if discriminant == _SWAP_DISC or discriminant == _SWAP_V2_DISC:
+            ix_name = "swap"
+            # amount(u64, 8) + other_amount_threshold(u64, 8) + sqrt_price_limit(u128, 16)
+            # + amount_specified_is_input(bool, 1) + a_to_b(bool, 1) = 34 bytes
+            if len(data) >= 42:
+                amount = struct.unpack_from("<Q", data, 8)[0]
+                other_amount_threshold = struct.unpack_from("<Q", data, 16)[0]
+                # skip sqrt_price_limit (16 bytes) at offset 24
+                amount_specified_is_input = bool(data[40]) if len(data) > 40 else None
+                a_to_b = bool(data[41]) if len(data) > 41 else None
+                decoded_args = {
+                    "amount": amount,
+                    "other_amount_threshold": other_amount_threshold,
+                    "amount_specified_is_input": amount_specified_is_input,
+                    "a_to_b": a_to_b,
+                    # Account layout: whirlpool(0), token_owner_account_a(1),
+                    # token_vault_a(2), token_owner_account_b(3), token_vault_b(4),
+                    # tick_array_0(5..7), oracle(8)
+                    "token_owner_account_a": accounts[1] if len(accounts) > 1 else None,
+                    "token_owner_account_b": accounts[3] if len(accounts) > 3 else None,
+                    "whirlpool": accounts[0] if accounts else None,
+                }
+                status = "ok"
+        elif discriminant == _TWO_HOP_DISC:
+            ix_name = "twoHopSwap"
+            # amount(u64) + other_amount_threshold_one(u64) + other_amount_threshold_two(u64)
+            # + amount_specified_is_input(bool) + a_to_b_one(bool) + a_to_b_two(bool)
+            if len(data) >= 35:
+                amount = struct.unpack_from("<Q", data, 8)[0]
+                other_one = struct.unpack_from("<Q", data, 16)[0]
+                other_two = struct.unpack_from("<Q", data, 24)[0]
+                amount_specified_is_input = bool(data[32]) if len(data) > 32 else None
+                a_to_b_one = bool(data[33]) if len(data) > 33 else None
+                a_to_b_two = bool(data[34]) if len(data) > 34 else None
+                decoded_args = {
+                    "amount": amount,
+                    "other_amount_threshold_one": other_one,
+                    "other_amount_threshold_two": other_two,
+                    "amount_specified_is_input": amount_specified_is_input,
+                    "a_to_b_one": a_to_b_one,
+                    "a_to_b_two": a_to_b_two,
+                    "whirlpool_one": accounts[0] if accounts else None,
+                    "whirlpool_two": accounts[1] if len(accounts) > 1 else None,
+                }
+                status = "ok"
+        else:
+            ix_name = "unknown_orca"
+
+        return ParsedInstruction(
+            program_id=program_id,
+            program_name="orca_whirlpool",
+            instruction_type=ix_name,
+            accounts=accounts,
+            decoded_args=decoded_args,
+            raw_data_b64=raw_b64,
+            decode_status=status,
+        )
+
+    # ------------------------------------------------------------------
+    # Meteora DLMM decoder (Anchor-based)
+    # ------------------------------------------------------------------
+
+    def _decode_meteora_dlmm(
+        self,
+        program_id: str,
+        accounts: List[str],
+        data: bytes,
+        raw_b64: str,
+    ) -> ParsedInstruction:
+        """Decode Meteora DLMM swap instructions.
+
+        Meteora DLMM uses Anchor 8-byte discriminants.
+
+        Supported variant:
+        - ``swap``: Single-hop DLMM swap.
+          Layout (after 8-byte discriminant):
+          amount_in (u64) + min_amount_out (u64)
+
+        Account layout (standard DLMM swap):
+        lb_pair(0), bin_array_bitmap_extension(1),
+        reserve_x(2), reserve_y(3), user_token_in(4), user_token_out(5),
+        token_x_mint(6), token_y_mint(7), oracle(8), host_fee_in(9),
+        user(10), token_x_program(11), token_y_program(12), event_authority(13),
+        program(14)
+
+        Args:
+            program_id: Meteora DLMM program ID.
+            accounts: Resolved account pubkeys.
+            data: Raw instruction bytes.
+            raw_b64: Base64 source.
+
+        Returns:
+            :class:`ParsedInstruction` with swap metadata.
+        """
+        _SWAP_DISC = _anchor_discriminant("swap")
+
+        if len(data) < 8:
+            return ParsedInstruction(
+                program_id=program_id,
+                program_name="meteora_dlmm",
+                instruction_type="unknown",
+                accounts=accounts,
+                raw_data_b64=raw_b64,
+                decode_status="raw",
+            )
+
+        discriminant = data[:8]
+        decoded_args: Dict[str, Any] = {}
+        status = "partial"
+
+        if discriminant == _SWAP_DISC:
+            ix_name = "swap"
+            if len(data) >= 24:
+                amount_in = struct.unpack_from("<Q", data, 8)[0]
+                min_amount_out = struct.unpack_from("<Q", data, 16)[0]
+                decoded_args = {
+                    "amount_in": amount_in,
+                    "min_amount_out": min_amount_out,
+                    "lb_pair": accounts[0] if accounts else None,
+                    "user_token_in": accounts[4] if len(accounts) > 4 else None,
+                    "user_token_out": accounts[5] if len(accounts) > 5 else None,
+                    "user": accounts[10] if len(accounts) > 10 else None,
+                }
+                status = "ok"
+        else:
+            ix_name = "unknown_meteora"
+
+        return ParsedInstruction(
+            program_id=program_id,
+            program_name="meteora_dlmm",
+            instruction_type=ix_name,
+            accounts=accounts,
+            decoded_args=decoded_args,
+            raw_data_b64=raw_b64,
+            decode_status=status,
+        )
+
+    # ------------------------------------------------------------------
+    # Phoenix decoder (custom single-byte discriminant, not Anchor)
+    # ------------------------------------------------------------------
+
+    def _decode_phoenix(
+        self,
+        program_id: str,
+        accounts: List[str],
+        data: bytes,
+        raw_b64: str,
+    ) -> ParsedInstruction:
+        """Decode Phoenix DEX swap instructions.
+
+        Phoenix uses a single-byte discriminant (not Anchor).
+
+        Discriminant 9 = Swap (IOC taker order that fills immediately).
+        Layout (after 1-byte header):
+        - side: u8 (0=Bid/Buy, 1=Ask/Sell)
+        - num_base_lots: u64
+        - min_base_lots_out: u64
+        - num_quote_lots: u64
+        - min_quote_lots_out: u64
+
+        Phoenix standard account layout for Swap:
+        phoenix_program(0), log_authority(1), market(2),
+        trader(3), base_account(4), quote_account(5),
+        base_vault(6), quote_vault(7), token_program(8)
+
+        Args:
+            program_id: Phoenix program ID.
+            accounts: Resolved account pubkeys.
+            data: Raw instruction bytes.
+            raw_b64: Base64 source.
+
+        Returns:
+            :class:`ParsedInstruction` with swap metadata.
+        """
+        if not data:
+            return ParsedInstruction(
+                program_id=program_id,
+                program_name="phoenix",
+                instruction_type="unknown",
+                accounts=accounts,
+                raw_data_b64=raw_b64,
+                decode_status="raw",
+            )
+
+        discriminant = data[0]
+        ix_name = _PHOENIX_INSTRUCTIONS.get(discriminant, "unknown_phoenix")
+        decoded_args: Dict[str, Any] = {}
+        status = "partial"
+
+        if ix_name in ("swap", "swapWithFreeFunds") and len(data) >= 34:
+            # 1 (header) + 1 (side) + 4×u64 (32 bytes) = 34 bytes minimum
+            side_byte = data[1]
+            side = "bid" if side_byte == 0 else "ask"
+            num_base_lots = struct.unpack_from("<Q", data, 2)[0]
+            min_base_lots_out = struct.unpack_from("<Q", data, 10)[0]
+            num_quote_lots = struct.unpack_from("<Q", data, 18)[0]
+            min_quote_lots_out = struct.unpack_from("<Q", data, 26)[0]
+            decoded_args = {
+                "side": side,
+                "num_base_lots": num_base_lots,
+                "min_base_lots_out": min_base_lots_out,
+                "num_quote_lots": num_quote_lots,
+                "min_quote_lots_out": min_quote_lots_out,
+                "market": accounts[2] if len(accounts) > 2 else None,
+                "trader": accounts[3] if len(accounts) > 3 else None,
+                "base_account": accounts[4] if len(accounts) > 4 else None,
+                "quote_account": accounts[5] if len(accounts) > 5 else None,
+            }
+            status = "ok"
+
+        return ParsedInstruction(
+            program_id=program_id,
+            program_name="phoenix",
+            instruction_type=ix_name,
+            accounts=accounts,
+            decoded_args=decoded_args,
+            raw_data_b64=raw_b64,
+            decode_status=status,
+        )
+
+    # ------------------------------------------------------------------
+    # OpenBook v2 decoder (Anchor-based)
+    # ------------------------------------------------------------------
+
+    def _decode_openbook_v2(
+        self,
+        program_id: str,
+        accounts: List[str],
+        data: bytes,
+        raw_b64: str,
+    ) -> ParsedInstruction:
+        """Decode OpenBook v2 swap instructions.
+
+        OpenBook v2 uses Anchor 8-byte discriminants.
+
+        Relevant variants:
+        - ``placeOrder``: Place a limit or IOC order.
+        - ``placeTakeOrder``: Taker-only order (equivalent to swap).
+
+        Layout for ``placeTakeOrder`` (after 8-byte discriminant):
+        side (u8) + max_base_lots (i64) + max_quote_lots_including_fees (i64)
+        + limit (u8, max fill count)
+
+        Account layout:
+        signer(0), open_orders_account(1), open_orders_admin(2?),
+        market(3), bids(4), asks(5), base_vault(6), quote_vault(7),
+        event_heap(8), market_base_vault(9), market_quote_vault(10),
+        user_base_account(11), user_quote_account(12),
+        token_program(13)
+
+        Args:
+            program_id: OpenBook v2 program ID.
+            accounts: Resolved account pubkeys.
+            data: Raw instruction bytes.
+            raw_b64: Base64 source.
+
+        Returns:
+            :class:`ParsedInstruction` with order/swap metadata.
+        """
+        _PLACE_TAKE_DISC = _anchor_discriminant("place_take_order")
+
+        if len(data) < 8:
+            return ParsedInstruction(
+                program_id=program_id,
+                program_name="openbook_v2",
+                instruction_type="unknown",
+                accounts=accounts,
+                raw_data_b64=raw_b64,
+                decode_status="raw",
+            )
+
+        discriminant = data[:8]
+        decoded_args: Dict[str, Any] = {}
+        status = "partial"
+
+        if discriminant == _PLACE_TAKE_DISC:
+            ix_name = "placeTakeOrder"
+            # side(u8,1) + max_base_lots(i64,8) + max_quote_lots_including_fees(i64,8)
+            # + limit(u8,1) = 18 bytes after discriminant
+            if len(data) >= 26:
+                side_byte = data[8]
+                side = "bid" if side_byte == 0 else "ask"
+                max_base_lots = struct.unpack_from("<q", data, 9)[0]
+                max_quote_lots = struct.unpack_from("<q", data, 17)[0]
+                decoded_args = {
+                    "side": side,
+                    "max_base_lots": max_base_lots,
+                    "max_quote_lots_including_fees": max_quote_lots,
+                    "market": accounts[3] if len(accounts) > 3 else None,
+                    "signer": accounts[0] if accounts else None,
+                    "user_base_account": accounts[11] if len(accounts) > 11 else None,
+                    "user_quote_account": accounts[12] if len(accounts) > 12 else None,
+                }
+                status = "ok"
+        else:
+            ix_name = "unknown_openbook_v2"
+
+        return ParsedInstruction(
+            program_id=program_id,
+            program_name="openbook_v2",
             instruction_type=ix_name,
             accounts=accounts,
             decoded_args=decoded_args,

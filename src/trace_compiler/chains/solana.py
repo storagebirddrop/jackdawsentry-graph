@@ -456,6 +456,59 @@ class SolanaChainCompiler(BaseChainCompiler):
             )
             return []
 
+    async def _fetch_swap_instruction(
+        self,
+        tx_hash: str,
+        program_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Return a successfully decoded swap instruction for a transaction.
+
+        Queries ``raw_solana_instructions`` for the given (tx_signature,
+        program_id) pair.  Only rows with ``decode_status = 'success'`` and a
+        recognised swap instruction_type are returned — partial or raw rows are
+        ignored so callers receive either a trustworthy result or None.
+
+        Args:
+            tx_hash:    Transaction signature.
+            program_id: DEX program ID (e.g. Raydium, Jupiter).
+
+        Returns:
+            Dict with ``instruction_type`` and ``decoded_args`` keys, or None
+            when no successfully-decoded swap instruction is found.
+        """
+        if self._pg is None:
+            return None
+        # Instruction types that represent a direct swap at the user level.
+        _SWAP_TYPES = frozenset({
+            "swapBaseIn", "swapBaseOut",         # Raydium AMM v4
+            "route", "sharedAccountsRoute",      # Jupiter v6
+            "swap", "twoHopSwap",                # Orca Whirlpool
+            "placeTakeOrder",                    # OpenBook v2
+        })
+        try:
+            sql = """
+                SELECT instruction_type, decoded_args
+                FROM raw_solana_instructions
+                WHERE tx_signature = $1
+                  AND program_id    = $2
+                  AND decode_status = 'success'
+                ORDER BY ix_index ASC
+                LIMIT 1
+            """
+            async with self._pg.acquire() as conn:
+                row = await conn.fetchrow(sql, tx_hash, program_id)
+            if row and row["instruction_type"] in _SWAP_TYPES:
+                return {
+                    "instruction_type": row["instruction_type"],
+                    "decoded_args": row["decoded_args"] or {},
+                }
+        except Exception as exc:
+            logger.debug(
+                "_fetch_swap_instruction failed tx=%s prog=%s: %s",
+                tx_hash, program_id, exc,
+            )
+        return None
+
     async def _maybe_build_solana_swap_event(
         self,
         *,
@@ -508,6 +561,34 @@ class SolanaChainCompiler(BaseChainCompiler):
         if not spl_legs:
             return None
 
+        # --- Instruction-level ATA refinement (when available) ----------------
+        # For protocols where we have a fully-decoded instruction, use the
+        # explicit user ATA addresses from the instruction to filter SPL legs
+        # precisely.  This prevents multi-hop or pool-internal transfers from
+        # being misidentified as the user's swap legs.
+        swap_ix = await self._fetch_swap_instruction(tx_hash, program_address)
+        user_atas: set[str] = set()
+        if swap_ix is not None:
+            args = swap_ix.get("decoded_args") or {}
+            # Collect all ATA fields that indicate user-controlled token accounts
+            for field in (
+                "input_token_account",        # Jupiter route
+                "output_token_account",       # Jupiter route
+                "user_source_token_account",  # Raydium AMM v4
+                "user_destination_token_account",  # Raydium AMM v4
+                "token_owner_account_a",      # Orca Whirlpool
+                "token_owner_account_b",      # Orca Whirlpool
+                "user_token_in",              # Meteora DLMM
+                "user_token_out",             # Meteora DLMM
+                "user_base_account",          # OpenBook v2
+                "user_quote_account",         # OpenBook v2
+                "base_account",               # Phoenix
+                "quote_account",              # Phoenix
+            ):
+                val = args.get(field)
+                if val:
+                    user_atas.add(val.lower())
+
         # Resolve ATAs in the transfer legs so comparisons are against owner wallets.
         seed_lc = seed_address.lower()
 
@@ -517,12 +598,16 @@ class SolanaChainCompiler(BaseChainCompiler):
         incoming_amount: float = 0.0
 
         for leg in spl_legs:
+            raw_from = leg.get("from_address", "")
+            raw_to = leg.get("to_address", "")
             from_addr = (
-                ata_map.get(leg.get("from_address", ""), leg.get("from_address", ""))
+                ata_map.get(raw_from, raw_from)
             ).lower()
             to_addr = (
-                ata_map.get(leg.get("to_address", ""), leg.get("to_address", ""))
+                ata_map.get(raw_to, raw_to)
             ).lower()
+            raw_from_lc = raw_from.lower()
+            raw_to_lc = raw_to.lower()
             amount = leg.get("amount_normalized")
             if not amount:
                 continue
@@ -531,13 +616,24 @@ class SolanaChainCompiler(BaseChainCompiler):
             if not symbol:
                 continue
 
-            if from_addr == seed_lc and amount > 0:
+            # When instruction ATA data is available, additionally require that
+            # the raw ATA address is in the confirmed user ATA set.  This
+            # prevents intermediate pool transfers in multi-hop routes from
+            # being counted as the user's swap legs.
+            if user_atas:
+                from_ata_ok = raw_from_lc in user_atas
+                to_ata_ok = raw_to_lc in user_atas
+            else:
+                from_ata_ok = True
+                to_ata_ok = True
+
+            if from_addr == seed_lc and amount > 0 and from_ata_ok:
                 # Pick the largest outgoing leg (ignore dust/fee legs).
                 if amount > outgoing_amount:
                     outgoing_asset = symbol
                     outgoing_amount = amount
 
-            if to_addr == seed_lc and amount > 0:
+            if to_addr == seed_lc and amount > 0 and to_ata_ok:
                 if amount > incoming_amount:
                     incoming_asset = symbol
                     incoming_amount = amount
