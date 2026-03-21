@@ -76,6 +76,27 @@ Read this file before touching graph schema, graph API, trace compiler semantics
   stays request-only; `docker-compose.graph.ingest.yml` is the opt-in sidecar
   overlay for ingestion.
 
+### ADR-017
+- Semantic activity detection is a near-term product priority. The public graph
+  must graduate from generic service hits to first-class semantic nodes when
+  chain data can support it:
+  - decode EVM logs into real `swap_event` nodes
+  - decode Solana instructions into real `swap_event` / instruction semantics
+  - keep bridge hops rich enough to surface destination chain, destination
+    asset, and destination address directly in the graph contract
+
+### ADR-018
+- Address intelligence must run in the session pipeline, not as an optional
+  afterthought. Newly discovered addresses should be screened and labeled
+  during session create/expand with graph-safe enrichment that can populate:
+  `risk_score`, `sanctioned`, `entity_*`, and fraud / abuse labels.
+
+### ADR-019
+- Empty graph frontiers should not remain dead ends when ingestion can help.
+  The near-term target is on-demand address-targeted ingest when expansion hits
+  an empty frontier, while keeping the request-serving graph API isolated from
+  long-running collector work.
+
 ## Guardrails
 
 - Do not widen this repo into the private compliance dashboard.
@@ -85,6 +106,12 @@ Read this file before touching graph schema, graph API, trace compiler semantics
 - Prefer state-of-the-art graph UX only when it keeps the standalone product clearer, not more coupled.
 - Branch and path workflow should stay explainable to investigators. Do not add
   clever controls that hide lineage state or make the current focus ambiguous.
+- Do not present generic DEX / service interactions as if they were already
+  semantically decoded swaps. Until true `swap_event` generation is in place,
+  keep the product honest about the distinction.
+- Do not treat graph-safe enrichment as optional in the long term. The target
+  product behavior is immediate screening and labeling of newly discovered
+  addresses within the session flow.
 
 ## Security Invariants
 
@@ -99,3 +126,16 @@ Read this file before touching graph schema, graph API, trace compiler semantics
 - Security-sensitive backend or nginx changes are not complete until the live stack is rebuilt and `python scripts/quality/live_abuse_probe.py ...` passes against the running deployment.
 - Performance claims are not credible without representative graph data. Run `python scripts/quality/live_perf_probe.py ...` and record the dataset footprint before treating local timings as meaningful.
 - For local performance work, `python scripts/dev/load_perf_fixture_dataset.py` is the supported way to create a deterministic high-degree plus bridge/cross-chain fixture set without relying on private-repo ingestion.
+- Near-term implementation priorities:
+  - decode EVM logs and Solana instructions into real `swap_event` nodes
+  - upgrade bridge handling to persist and surface destination address / asset /
+    chain directly
+  - run mandatory address enrichment during session create/expand so every
+    discovered address is screened and labeled immediately against sanctions,
+    AML / CFT, fraud, and entity datasets
+  - add on-demand address-targeted ingest when expansion hits an empty frontier
+  - promote DEX interactions into true `swap_event` nodes instead of generic
+    `service` markers
+  - add a graph-safe enrichment adapter that stamps `risk_score`,
+    `sanctioned`, `entity_*`, and fraud labels onto every newly discovered
+    address in the session flow

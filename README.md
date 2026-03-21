@@ -150,6 +150,33 @@ When you add new graph UX, prefer actions that help an analyst answer
 "what happened here?" or "how does this branch differ?" over generic dashboard
 chrome.
 
+## Near-Term Product Priorities
+
+The next implementation wave is focused on semantic detection and immediate
+address intelligence so the graph can move closer to a true investigator-grade
+tracing product.
+
+- decode EVM logs into real `swap_event` nodes instead of stopping at generic
+  DEX / service markers
+- decode Solana instructions into richer semantic activity nodes where program
+  flows clearly reveal swaps, routes, or protocol actions
+- upgrade bridge handling to persist and surface destination chain,
+  destination asset, and destination address directly
+- add on-demand address-targeted ingest when expansion hits an empty frontier
+- run mandatory address enrichment during session create / expand so newly
+  discovered addresses are screened and labeled immediately against sanctions,
+  AML / CFT, fraud, and entity datasets
+- add a graph-safe enrichment adapter that stamps `risk_score`, `sanctioned`,
+  `entity_*`, and fraud labels into the public graph contract
+
+Current honest limitation:
+- bridge hops are active today
+- Lightning and BTC peg markers are active today
+- generic DEX / aggregator interactions are still mostly rendered as `service`
+  nodes
+- first-class `swap_event` and `atomic_swap` generation are not yet broadly
+  active in the public graph flow
+
 Backend verification:
 
 ```bash
