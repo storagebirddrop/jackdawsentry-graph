@@ -112,6 +112,9 @@ export interface SwapEventData {
   input_amount?: number;
   output_amount?: number;
   exchange_rate?: number;
+  route_summary?: string;
+  tx_hash?: string;
+  timestamp?: string;
 }
 
 export interface LightningChannelOpenData {

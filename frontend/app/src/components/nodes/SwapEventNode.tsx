@@ -31,7 +31,10 @@ export default function SwapEventNode({ data }: NodeProps) {
   // NodeProps<T> in @xyflow/react v12 types data as Record<string,unknown>;
   // cast via unknown to reach our richer interface.
   const swapData = data as unknown as SwapNodeData;
-  const swap = swapData.node_data as SwapEventData;
+  const swap = (swapData.swap_event_data ?? swapData.node_data) as SwapEventData | undefined;
+  if (!swap) {
+    return null;
+  }
   const appearance = swapData.appearance ?? DEFAULT_GRAPH_APPEARANCE;
   const accent = nodeSemanticAccentColor(swapData, appearance, '#0f766e');
   const protocolLabel = swapProtocolLabel(swap.protocol_id);

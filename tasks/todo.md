@@ -49,8 +49,12 @@ Goal:
   behavior instead of generic service hits and optional best-effort labels
 
 Acceptance criteria:
-- [ ] EVM log decoding emits true `swap_event` nodes with asset-in / asset-out,
-      amounts, and protocol context
+- [x] known EVM DEX / aggregator transactions can emit true `swap_event` nodes
+      with asset-in / asset-out, amounts, and protocol context when the raw
+      event store has enough tx-leg evidence
+- [ ] broaden EVM swap detection beyond the current tx-leg inference path so
+      more router / pool patterns decode semantically instead of falling back
+      to generic service hits
 - [ ] Solana instruction decoding emits real semantic activity nodes instead of
       leaving high-signal program flows as generic transfers
 - [ ] bridge hops persist and surface destination chain, destination asset, and

@@ -156,8 +156,8 @@ The next implementation wave is focused on semantic detection and immediate
 address intelligence so the graph can move closer to a true investigator-grade
 tracing product.
 
-- decode EVM logs into real `swap_event` nodes instead of stopping at generic
-  DEX / service markers
+- deepen EVM `swap_event` detection from the current tx-leg inference path
+  into broader log-aware semantic decoding
 - decode Solana instructions into richer semantic activity nodes where program
   flows clearly reveal swaps, routes, or protocol actions
 - upgrade bridge handling to persist and surface destination chain,
@@ -172,8 +172,10 @@ tracing product.
 Current honest limitation:
 - bridge hops are active today
 - Lightning and BTC peg markers are active today
-- generic DEX / aggregator interactions are still mostly rendered as `service`
-  nodes
+- known EVM DEX / aggregator transactions can now promote into first-class
+  `swap_event` nodes when the raw event store can justify both asset legs
+- DEX / aggregator interactions with incomplete transaction context still fall
+  back to generic `service` nodes
 - first-class `swap_event` and `atomic_swap` generation are not yet broadly
   active in the public graph flow
 

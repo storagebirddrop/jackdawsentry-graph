@@ -97,6 +97,13 @@ Read this file before touching graph schema, graph API, trace compiler semantics
   an empty frontier, while keeping the request-serving graph API isolated from
   long-running collector work.
 
+### ADR-020
+- EVM `swap_event` generation is now active for known DEX and aggregator
+  transactions when the raw event store can justify both sides of the asset
+  transformation from native-value legs and persisted ERC-20 transfers.
+  Keep the logic honest: when the transaction context is incomplete, fall back
+  to a generic `service` node rather than inventing swap semantics.
+
 ## Guardrails
 
 - Do not widen this repo into the private compliance dashboard.
@@ -106,9 +113,9 @@ Read this file before touching graph schema, graph API, trace compiler semantics
 - Prefer state-of-the-art graph UX only when it keeps the standalone product clearer, not more coupled.
 - Branch and path workflow should stay explainable to investigators. Do not add
   clever controls that hide lineage state or make the current focus ambiguous.
-- Do not present generic DEX / service interactions as if they were already
-  semantically decoded swaps. Until true `swap_event` generation is in place,
-  keep the product honest about the distinction.
+- Do not invent swap semantics from thin evidence. Only emit `swap_event`
+  when both asset legs can be justified from persisted transaction context;
+  otherwise keep the activity as a generic `service` interaction.
 - Do not treat graph-safe enrichment as optional in the long term. The target
   product behavior is immediate screening and labeling of newly discovered
   addresses within the session flow.
@@ -127,15 +134,15 @@ Read this file before touching graph schema, graph API, trace compiler semantics
 - Performance claims are not credible without representative graph data. Run `python scripts/quality/live_perf_probe.py ...` and record the dataset footprint before treating local timings as meaningful.
 - For local performance work, `python scripts/dev/load_perf_fixture_dataset.py` is the supported way to create a deterministic high-degree plus bridge/cross-chain fixture set without relying on private-repo ingestion.
 - Near-term implementation priorities:
-  - decode EVM logs and Solana instructions into real `swap_event` nodes
+  - deepen EVM `swap_event` detection from current tx-leg inference toward
+    fuller log-aware decoding
+  - decode Solana instructions into real `swap_event` nodes
   - upgrade bridge handling to persist and surface destination address / asset /
     chain directly
   - run mandatory address enrichment during session create/expand so every
     discovered address is screened and labeled immediately against sanctions,
     AML / CFT, fraud, and entity datasets
   - add on-demand address-targeted ingest when expansion hits an empty frontier
-  - promote DEX interactions into true `swap_event` nodes instead of generic
-    `service` markers
   - add a graph-safe enrichment adapter that stamps `risk_score`,
     `sanctioned`, `entity_*`, and fraud labels onto every newly discovered
     address in the session flow

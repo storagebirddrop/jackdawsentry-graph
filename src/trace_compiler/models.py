@@ -148,17 +148,29 @@ class BridgeHopData(BaseModel):
 class SwapEventData(BaseModel):
     """DEX / AMM swap event data."""
 
+    model_config = ConfigDict(populate_by_name=True)
+
+    swap_id: Optional[str] = None
     protocol_id: str
-    in_asset: str
-    in_amount: float
-    in_fiat: Optional[float] = None
-    out_asset: str
-    out_amount: float
-    out_fiat: Optional[float] = None
-    exchange_rate: float
+    chain: Optional[str] = None
+    input_asset: str = Field(validation_alias=AliasChoices("input_asset", "in_asset"))
+    input_amount: float = Field(validation_alias=AliasChoices("input_amount", "in_amount"))
+    input_fiat: Optional[float] = Field(
+        default=None,
+        validation_alias=AliasChoices("input_fiat", "in_fiat"),
+    )
+    output_asset: str = Field(validation_alias=AliasChoices("output_asset", "out_asset"))
+    output_amount: float = Field(
+        validation_alias=AliasChoices("output_amount", "out_amount"),
+    )
+    output_fiat: Optional[float] = Field(
+        default=None,
+        validation_alias=AliasChoices("output_fiat", "out_fiat"),
+    )
+    exchange_rate: Optional[float] = None
     route_summary: Optional[str] = None
-    tx_hash: str
-    timestamp: str
+    tx_hash: Optional[str] = None
+    timestamp: Optional[str] = None
 
 
 class LightningChannelOpenData(BaseModel):

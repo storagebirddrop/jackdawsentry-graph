@@ -588,7 +588,8 @@ function EntitySection({ node }: { node: InvestigationNode }) {
 }
 
 function SwapSection({ node }: { node: InvestigationNode }) {
-  const swap = node.node_data as SwapEventData;
+  const swap = (node.swap_event_data ?? node.node_data) as SwapEventData | undefined;
+  if (!swap) return null;
 
   return (
     <Section title="Swap details">

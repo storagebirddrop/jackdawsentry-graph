@@ -20,6 +20,7 @@ Phase 4: full expand_next / expand_prev / expand_neighbors implemented.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import logging
 from datetime import datetime
 from datetime import timezone
@@ -34,10 +35,13 @@ from src.trace_compiler.lineage import edge_id as mk_edge_id
 from src.trace_compiler.lineage import lineage_id as mk_lineage
 from src.trace_compiler.lineage import node_id as mk_node_id
 from src.trace_compiler.lineage import path_id as mk_path
+from src.trace_compiler.lineage import swap_event_id as mk_swap_event_id
+from src.trace_compiler.models import ActivitySummary
 from src.trace_compiler.models import AddressNodeData
 from src.trace_compiler.models import ExpandOptions
 from src.trace_compiler.models import InvestigationEdge
 from src.trace_compiler.models import InvestigationNode
+from src.trace_compiler.models import SwapEventData
 from src.trace_compiler.price_oracle import price_oracle
 
 logger = logging.getLogger(__name__)
@@ -58,6 +62,16 @@ EVM_CHAINS = {
 # Maximum rows fetched from the event store per expansion call before
 # pagination.  This is the per-SQL LIMIT, not the max_results option.
 _SQL_FETCH_LIMIT = 500
+
+
+@dataclass(frozen=True)
+class _SwapLeg:
+    """Minimal value leg used to infer a seed-centric swap event."""
+
+    address: str
+    asset_symbol: str
+    canonical_asset_id: Optional[str]
+    amount: float
 
 
 class EVMChainCompiler(BaseChainCompiler):
@@ -336,6 +350,267 @@ class EVMChainCompiler(BaseChainCompiler):
             logger.debug("_fetch_inbound_token_transfers failed: %s", exc)
             return []
 
+    async def _fetch_tx_token_transfers(
+        self,
+        chain: str,
+        tx_hash: str,
+    ) -> List[Dict[str, Any]]:
+        """Return all persisted token-transfer legs for a single transaction."""
+        if self._pg is None:
+            return []
+        try:
+            sql = """
+                SELECT
+                    transfer_index,
+                    asset_symbol,
+                    canonical_asset_id,
+                    from_address,
+                    to_address,
+                    amount_normalized
+                FROM raw_token_transfers
+                WHERE blockchain = $1
+                  AND tx_hash = $2
+                ORDER BY transfer_index ASC
+            """
+            async with self._pg.acquire() as conn:
+                rows = await conn.fetch(sql, chain, tx_hash)
+            return [dict(r) for r in rows]
+        except Exception as exc:
+            logger.debug("_fetch_tx_token_transfers failed for %s/%s: %s", chain, tx_hash, exc)
+            return []
+
+    async def _fetch_tx_native_leg(
+        self,
+        chain: str,
+        tx_hash: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Return the native-value leg for a transaction when one exists."""
+        if self._pg is None:
+            return None
+        try:
+            sql = """
+                SELECT
+                    from_address,
+                    to_address,
+                    value_native,
+                    timestamp
+                FROM raw_transactions
+                WHERE blockchain = $1
+                  AND tx_hash = $2
+                LIMIT 1
+            """
+            async with self._pg.acquire() as conn:
+                row = await conn.fetchrow(sql, chain, tx_hash)
+            return dict(row) if row else None
+        except Exception as exc:
+            logger.debug("_fetch_tx_native_leg failed for %s/%s: %s", chain, tx_hash, exc)
+            return None
+
+    @staticmethod
+    def _pick_swap_leg(
+        legs: List[_SwapLeg],
+        preferred_counterparty: str,
+    ) -> Optional[_SwapLeg]:
+        """Pick the strongest swap leg, preferring the matched service contract."""
+        if not legs:
+            return None
+        preferred = preferred_counterparty.lower()
+        return sorted(
+            legs,
+            key=lambda leg: (
+                0 if leg.address == preferred else 1,
+                -(leg.amount or 0.0),
+                leg.asset_symbol,
+            ),
+        )[0]
+
+    async def _maybe_build_swap_event(
+        self,
+        *,
+        tx_hash: str,
+        seed_node_id: str,
+        seed_address: str,
+        counterparty: str,
+        chain: str,
+        session_id: str,
+        branch_id: str,
+        path_id: str,
+        depth: int,
+        direction: str,
+        timestamp: Optional[str],
+        protocol_id: str,
+        protocol_label: str,
+        protocol_type: str,
+    ) -> Optional[Tuple[List[InvestigationNode], List[InvestigationEdge]]]:
+        """Promote a DEX / aggregator interaction into a first-class swap event.
+
+        The current raw store does not persist a full generic EVM log stream, so
+        this infers a swap from the same transaction's native leg plus ERC-20
+        transfer events already extracted into ``raw_token_transfers``.
+        """
+        token_legs = await self._fetch_tx_token_transfers(chain, tx_hash)
+        native_leg = await self._fetch_tx_native_leg(chain, tx_hash)
+
+        outgoing: List[_SwapLeg] = []
+        incoming: List[_SwapLeg] = []
+
+        if native_leg:
+            native_from = (native_leg.get("from_address") or "").lower()
+            native_to = (native_leg.get("to_address") or "").lower()
+            native_value = native_leg.get("value_native")
+            if native_value:
+                native_amount = float(native_value)
+                native_symbol = _native_symbol(chain)
+                native_asset_id = _native_canonical_asset_id(chain)
+                if native_from == seed_address and native_to:
+                    outgoing.append(
+                        _SwapLeg(
+                            address=native_to,
+                            asset_symbol=native_symbol,
+                            canonical_asset_id=native_asset_id,
+                            amount=native_amount,
+                        )
+                    )
+                if native_to == seed_address and native_from:
+                    incoming.append(
+                        _SwapLeg(
+                            address=native_from,
+                            asset_symbol=native_symbol,
+                            canonical_asset_id=native_asset_id,
+                            amount=native_amount,
+                        )
+                    )
+                if timestamp is None:
+                    native_ts = native_leg.get("timestamp")
+                    if isinstance(native_ts, datetime):
+                        timestamp = native_ts.isoformat()
+                    elif isinstance(native_ts, str):
+                        timestamp = native_ts
+
+        for leg in token_legs:
+            from_addr = (leg.get("from_address") or "").lower()
+            to_addr = (leg.get("to_address") or "").lower()
+            amount = leg.get("amount_normalized")
+            if amount in (None, 0):
+                continue
+
+            symbol = leg.get("asset_symbol") or leg.get("canonical_asset_id")
+            if not symbol:
+                continue
+
+            swap_leg = _SwapLeg(
+                address=to_addr if from_addr == seed_address else from_addr,
+                asset_symbol=str(symbol).upper(),
+                canonical_asset_id=leg.get("canonical_asset_id"),
+                amount=float(amount),
+            )
+            if from_addr == seed_address:
+                outgoing.append(swap_leg)
+            if to_addr == seed_address:
+                incoming.append(swap_leg)
+
+        input_leg = self._pick_swap_leg(outgoing, counterparty)
+        output_leg = self._pick_swap_leg(incoming, counterparty)
+        if input_leg is None or output_leg is None:
+            return None
+
+        if (
+            input_leg.asset_symbol == output_leg.asset_symbol
+            and abs(input_leg.amount - output_leg.amount) < 1e-12
+        ):
+            return None
+
+        swap_id = mk_swap_event_id(chain, tx_hash, 0)
+        swap_node_id = mk_node_id(chain, "swap_event", swap_id)
+        lineage = mk_lineage(session_id, branch_id, path_id, depth)
+        route_summary = f"{input_leg.asset_symbol} -> {output_leg.asset_symbol}"
+        exchange_rate = (
+            output_leg.amount / input_leg.amount
+            if input_leg.amount not in (0, None)
+            else None
+        )
+
+        swap_node = InvestigationNode(
+            node_id=swap_node_id,
+            lineage_id=lineage,
+            node_type="swap_event",
+            branch_id=branch_id,
+            path_id=path_id,
+            depth=depth + 1,
+            display_label=protocol_label,
+            display_sublabel=route_summary,
+            chain=chain,
+            expandable_directions=[],
+            swap_event_data=SwapEventData(
+                swap_id=swap_id,
+                protocol_id=protocol_id,
+                chain=chain,
+                input_asset=input_leg.asset_symbol,
+                input_amount=input_leg.amount,
+                output_asset=output_leg.asset_symbol,
+                output_amount=output_leg.amount,
+                exchange_rate=exchange_rate,
+                route_summary=route_summary,
+                tx_hash=tx_hash,
+                timestamp=timestamp,
+            ),
+            activity_summary=ActivitySummary(
+                activity_type=(
+                    "router_interaction"
+                    if protocol_type == "aggregator"
+                    else "dex_interaction"
+                ),
+                title=f"{protocol_label} swap",
+                protocol_id=protocol_id,
+                protocol_type=protocol_type,
+                tx_hash=tx_hash,
+                tx_chain=chain,
+                timestamp=timestamp,
+                direction=direction,
+                contract_address=counterparty,
+                asset_symbol=input_leg.asset_symbol,
+                canonical_asset_id=input_leg.canonical_asset_id,
+                value_native=input_leg.amount,
+                source_asset=input_leg.asset_symbol,
+                destination_asset=output_leg.asset_symbol,
+                source_amount=input_leg.amount,
+                destination_amount=output_leg.amount,
+                route_summary=route_summary,
+            ),
+        )
+
+        swap_input_edge = InvestigationEdge(
+            edge_id=mk_edge_id(seed_node_id, swap_node_id, branch_id, f"{tx_hash}:swap_input"),
+            source_node_id=seed_node_id,
+            target_node_id=swap_node_id,
+            branch_id=branch_id,
+            path_id=path_id,
+            edge_type="swap_input",
+            value_native=input_leg.amount,
+            asset_symbol=input_leg.asset_symbol,
+            canonical_asset_id=input_leg.canonical_asset_id,
+            tx_hash=tx_hash,
+            tx_chain=chain,
+            timestamp=timestamp,
+            direction=direction,
+        )
+        swap_output_edge = InvestigationEdge(
+            edge_id=mk_edge_id(swap_node_id, seed_node_id, branch_id, f"{tx_hash}:swap_output"),
+            source_node_id=swap_node_id,
+            target_node_id=seed_node_id,
+            branch_id=branch_id,
+            path_id=path_id,
+            edge_type="swap_output",
+            value_native=output_leg.amount,
+            asset_symbol=output_leg.asset_symbol,
+            canonical_asset_id=output_leg.canonical_asset_id,
+            tx_hash=tx_hash,
+            tx_chain=chain,
+            timestamp=timestamp,
+            direction=direction,
+        )
+        return [swap_node], [swap_input_edge, swap_output_edge]
+
     # ------------------------------------------------------------------
     # Neo4j fallback queries
     # ------------------------------------------------------------------
@@ -469,6 +744,7 @@ class EVMChainCompiler(BaseChainCompiler):
         """
         seen_nodes: Dict[str, InvestigationNode] = {}
         edges: List[InvestigationEdge] = []
+        handled_swap_txs: set[str] = set()
 
         _path = mk_path(branch_id, path_sequence)
         seed_node_id = mk_node_id(chain, "address", seed_address)
@@ -479,6 +755,8 @@ class EVMChainCompiler(BaseChainCompiler):
                 continue
 
             tx_hash = row.get("tx_hash") or ""
+            if tx_hash in handled_swap_txs:
+                continue
             value_native: Optional[float] = row.get("value_native")
             asset_symbol: Optional[str] = row.get("asset_symbol")
             canonical_asset_id: Optional[str] = row.get("canonical_asset_id")
@@ -537,6 +815,34 @@ class EVMChainCompiler(BaseChainCompiler):
                     edges.extend(bridge_edges)
                     continue  # Do not also create a plain address node.
 
+            service_record = self._service.get_record(chain, counterparty)
+
+            # --- Semantic swap promotion (DEX / aggregator only) ---
+            if service_record is not None and service_record.service_type in {"dex", "aggregator"}:
+                swap_result = await self._maybe_build_swap_event(
+                    tx_hash=tx_hash,
+                    seed_node_id=seed_node_id,
+                    seed_address=seed_address,
+                    counterparty=counterparty,
+                    chain=chain,
+                    session_id=session_id,
+                    branch_id=branch_id,
+                    path_id=_path,
+                    depth=depth,
+                    direction=direction,
+                    timestamp=_ts_str,
+                    protocol_id=service_record.protocol_id,
+                    protocol_label=service_record.display_name,
+                    protocol_type=service_record.service_type,
+                )
+                if swap_result is not None:
+                    swap_nodes, swap_edges = swap_result
+                    for swap_node in swap_nodes:
+                        seen_nodes.setdefault(swap_node.node_id, swap_node)
+                    edges.extend(swap_edges)
+                    handled_swap_txs.add(tx_hash)
+                    continue
+
             # --- Service classification (both directions) ---
             # Non-bridge protocol contracts (DEX, aggregator, mixer, lending)
             # are reclassified here so investigators see a named service node
@@ -568,8 +874,8 @@ class EVMChainCompiler(BaseChainCompiler):
                 continue  # Do not also create a plain address node.
 
             # --- Plain address node (non-bridge, non-service path) ---
-            if counterparty not in seen_nodes:
-                _cp_node_id = mk_node_id(chain, "address", counterparty)
+            _cp_node_id = mk_node_id(chain, "address", counterparty)
+            if _cp_node_id not in seen_nodes:
                 _lineage = mk_lineage(session_id, branch_id, _path, depth + 1)
                 node = InvestigationNode(
                     node_id=_cp_node_id,
@@ -590,14 +896,14 @@ class EVMChainCompiler(BaseChainCompiler):
                         address_type="unknown",
                     ),
                 )
-                seen_nodes[counterparty] = node
+                seen_nodes[_cp_node_id] = node
 
             # --- Edge ---
             if direction == "forward":
                 src_node_id = seed_node_id
-                tgt_node_id = seen_nodes[counterparty].node_id
+                tgt_node_id = _cp_node_id
             else:
-                src_node_id = seen_nodes[counterparty].node_id
+                src_node_id = _cp_node_id
                 tgt_node_id = seed_node_id
 
             edge = InvestigationEdge(
@@ -641,3 +947,19 @@ def _native_symbol(chain: str) -> str:
         "starknet": "ETH",
     }
     return _MAP.get(chain, "ETH")
+
+
+def _native_canonical_asset_id(chain: str) -> Optional[str]:
+    """Return a stable canonical asset identifier for a chain's native token."""
+    _MAP = {
+        "ethereum": "ethereum",
+        "bsc": "binancecoin",
+        "polygon": "matic-network",
+        "arbitrum": "ethereum",
+        "base": "ethereum",
+        "avalanche": "avalanche-2",
+        "optimism": "ethereum",
+        "injective": "injective-protocol",
+        "starknet": "ethereum",
+    }
+    return _MAP.get(chain)
