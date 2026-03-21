@@ -126,6 +126,11 @@ class Transaction:
     is_bridge_ingress: bool = False
     is_bridge_egress: bool = False
     bridge_protocol: Optional[str] = None
+    # DEX Swap event logs extracted from the transaction receipt.
+    # Populated by EVM collectors for dual-write to raw_evm_logs.
+    # Each dict carries: log_index, contract, event_sig, topic1, topic2,
+    # topic3, data (hex string).
+    dex_logs: List[Dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -348,6 +353,11 @@ class BaseCollector(ABC):
                 # instruction semantics without scanning raw_transactions.
                 if tx.blockchain == "solana":
                     asyncio.create_task(self._insert_raw_solana_instructions(tx))
+                # EVM chains: write DEX Swap event logs to raw_evm_logs so
+                # the trace compiler can use ground-truth log amounts instead
+                # of token-transfer-leg inference (ADR-017).
+                if tx.dex_logs and tx.blockchain not in ("bitcoin", "solana"):
+                    asyncio.create_task(self._insert_raw_evm_logs(tx))
 
             # Update address info for account-based chains.
             if tx.from_address:
@@ -1024,6 +1034,63 @@ class BaseCollector(ABC):
             logger.warning(
                 "dual-write _insert_raw_solana_instructions failed for solana/%s: %s — "
                 "event store parity loss; investigate before T1.15 cutover",
+                tx.hash,
+                exc,
+            )
+
+    async def _insert_raw_evm_logs(self, tx: Transaction) -> None:
+        """Write DEX Swap event logs to ``raw_evm_logs`` (dual-write, ADR-017).
+
+        Inserts one row per DEX Swap log found in ``tx.dex_logs``.  Uses
+        ``ON CONFLICT DO NOTHING`` so re-processing the same transaction is
+        safe.  Failures are logged as warnings rather than raised so they
+        never interrupt the main processing loop.
+
+        Args:
+            tx: Transaction dataclass with ``dex_logs`` populated by the
+                EVM collector's ``_extract_dex_logs()`` method.
+        """
+        if not tx.dex_logs:
+            return
+        query = """
+            INSERT INTO raw_evm_logs (
+                blockchain, tx_hash, log_index,
+                contract, event_sig,
+                topic1, topic2, topic3,
+                data, decoded, timestamp
+            ) VALUES (
+                $1, $2, $3,
+                $4, $5,
+                $6, $7, $8,
+                $9, NULL, $10
+            )
+            ON CONFLICT (blockchain, tx_hash, log_index) DO NOTHING
+        """
+        try:
+            async with get_postgres_connection() as conn:
+                await conn.executemany(
+                    query,
+                    [
+                        (
+                            tx.blockchain,
+                            tx.hash,
+                            log["log_index"],
+                            log["contract"],
+                            log["event_sig"],
+                            log.get("topic1"),
+                            log.get("topic2"),
+                            log.get("topic3"),
+                            log.get("data"),
+                            tx.timestamp,
+                        )
+                        for log in tx.dex_logs
+                    ],
+                )
+        except Exception as exc:
+            logger.warning(
+                "dual-write _insert_raw_evm_logs failed for %s/%s: %s — "
+                "DEX log parity loss; swap_event will fall back to transfer inference",
+                tx.blockchain,
                 tx.hash,
                 exc,
             )

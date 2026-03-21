@@ -451,6 +451,15 @@ class TraceCompiler:
                 node_type,
             )
 
+        # When the event store has no data for this address, queue an
+        # on-demand ingest so future expansions are served from live data.
+        ingest_pending = False
+        if not added_nodes and node_type == "address":
+            from src.trace_compiler.ingest.trigger import maybe_trigger_address_ingest
+            ingest_pending = await maybe_trigger_address_ingest(
+                identifier, chain, self._pg
+            )
+
         # Build the response
         response = ExpansionResponseV2(
             operation_id=new_operation_id(),
@@ -467,6 +476,7 @@ class TraceCompiler:
                 and request.options.max_results > 0
                 and len(added_nodes) >= request.options.max_results
             ),
+            ingest_pending=ingest_pending,
             pagination=PaginationMeta(
                 page_size=request.options.page_size,
                 max_results=request.options.max_results,

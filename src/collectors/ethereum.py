@@ -234,8 +234,10 @@ class EthereumCollector(BaseCollector):
 
             # Get token transfers
             token_transfers = []
+            dex_logs = []
             if self.erc20_tracking and receipt:
                 token_transfers = await self.get_token_transfers(tx_hash, receipt)
+                dex_logs = self._extract_dex_logs(receipt)
 
             return Transaction(
                 hash=tx_hash,
@@ -258,6 +260,7 @@ class EthereumCollector(BaseCollector):
                     else None
                 ),
                 token_transfers=token_transfers,
+                dex_logs=dex_logs,
             )
 
         except Exception as e:
@@ -391,6 +394,78 @@ class EthereumCollector(BaseCollector):
             logger.error(f"Error parsing token transfers for {tx_hash}: {e}")
 
         return transfers
+
+    # keccak256 event signatures for DEX Swap events written to raw_evm_logs.
+    # Keep in sync with src/trace_compiler/chains/evm_log_decoder.py.
+    _DEX_SWAP_SIGS: frozenset = frozenset({
+        "0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822",  # Uniswap V2
+        "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67",  # Uniswap V3
+        "0x19b47279256b2a23a1665c810c8d55a1758940ee09377d4f8d26497a3577dc83",  # Uniswap V4
+    })
+
+    def _extract_dex_logs(self, receipt: Dict) -> List[Dict]:
+        """Extract DEX Swap event logs from a transaction receipt.
+
+        Iterates through the receipt log list and returns raw log data for
+        any log whose ``topics[0]`` matches a known DEX Swap event signature.
+        The returned dicts are ready for dual-write to ``raw_evm_logs`` via
+        ``base.py._insert_raw_evm_logs()``.
+
+        Only the raw log fields are returned — the ``decoded`` column is left
+        null and populated on-demand in ``EVMChainCompiler._fetch_dex_swap_log``.
+
+        Args:
+            receipt: Transaction receipt dict as returned by
+                ``web3.eth.get_transaction_receipt()``.
+
+        Returns:
+            List of dicts with keys: ``log_index``, ``contract``,
+            ``event_sig``, ``topic1``, ``topic2``, ``topic3``, ``data``.
+            Empty list if no DEX Swap logs are found.
+        """
+        result = []
+        try:
+            for log in receipt.get("logs", []):
+                topics = log.get("topics", [])
+                if not topics:
+                    continue
+                # topics[0] is a HexBytes object from web3.py — convert to hex str.
+                topic0 = (
+                    "0x" + topics[0].hex()
+                    if hasattr(topics[0], "hex")
+                    else str(topics[0])
+                )
+                if topic0 not in self._DEX_SWAP_SIGS:
+                    continue
+
+                def _topic_hex(t) -> Optional[str]:
+                    if t is None:
+                        return None
+                    return "0x" + t.hex() if hasattr(t, "hex") else str(t)
+
+                contract = log.get("address", "")
+                if hasattr(contract, "lower"):
+                    contract = contract.lower()
+
+                data_raw = log.get("data", b"")
+                data_hex = (
+                    "0x" + data_raw.hex()
+                    if hasattr(data_raw, "hex")
+                    else str(data_raw) if data_raw else None
+                )
+
+                result.append({
+                    "log_index": log.get("logIndex", 0),
+                    "contract": contract,
+                    "event_sig": topic0,
+                    "topic1": _topic_hex(topics[1]) if len(topics) > 1 else None,
+                    "topic2": _topic_hex(topics[2]) if len(topics) > 2 else None,
+                    "topic3": _topic_hex(topics[3]) if len(topics) > 3 else None,
+                    "data": data_hex,
+                })
+        except Exception as exc:
+            logger.debug("_extract_dex_logs failed: %s", exc)
+        return result
 
     def get_stablecoin_symbol(self, contract_address: str) -> Optional[str]:
         """Get stablecoin symbol from contract address"""
