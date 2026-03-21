@@ -48,13 +48,20 @@ class PriceOracle:
     """Async CoinGecko price oracle with in-memory TTL cache.
 
     Args:
-        api_key: Optional CoinGecko Pro API key.  If provided, included as
-                 the ``x-cg-pro-api-key`` header.  If absent, the free tier
-                 is used (rate-limited to ~30 req/min).
+        api_key:  Optional CoinGecko Pro API key.  If provided, included as
+                  the ``x-cg-pro-api-key`` header.  If absent, the free tier
+                  is used (rate-limited to ~30 req/min).
+        base_url: CoinGecko API base URL.  Defaults to ``_COINGECKO_BASE``.
+                  Override to point at a local CoinGecko-compatible mock.
     """
 
-    def __init__(self, api_key: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        base_url: str = _COINGECKO_BASE,
+    ) -> None:
         self._api_key = api_key
+        self._base_url = base_url
         # Flat cache: canonical_asset_id -> (price_usd, fetched_at_epoch)
         self._cache: Dict[str, tuple[float, float]] = {}
         self._lock = asyncio.Lock()
@@ -129,7 +136,7 @@ class PriceOracle:
                 batch = asset_ids[batch_start: batch_start + _MAX_IDS_PER_CALL]
                 ids_param = ",".join(batch)
                 url = (
-                    f"{_COINGECKO_BASE}/simple/price"
+                    f"{self._base_url}/simple/price"
                     f"?ids={ids_param}&vs_currencies=usd"
                 )
                 try:
@@ -177,5 +184,6 @@ def get_price_oracle(api_key: Optional[str] = None) -> PriceOracle:
     if _singleton is None:
         from src.api.config import settings
         key = api_key or getattr(settings, "COINGECKO_API_KEY", None)
-        _singleton = PriceOracle(api_key=key)
+        base_url = getattr(settings, "COINGECKO_API_URL", _COINGECKO_BASE)
+        _singleton = PriceOracle(api_key=key, base_url=base_url)
     return _singleton
