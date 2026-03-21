@@ -220,7 +220,9 @@ class CollectorManager:
                 "collection_interval": 15,
                 "batch_size": 20,
             }
-            self.collectors["xrpl"] = XrplCollector(xrpl_config)
+            _xrpl = XrplCollector(xrpl_config)
+            self.collectors["xrpl"] = _xrpl   # human-friendly alias
+            self.collectors["xrp"] = _xrpl    # canonical key (matches DB blockchain field)
 
         # Initialize Cosmos collector
         if settings.COSMOS_REST_URL:

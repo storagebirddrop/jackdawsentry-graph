@@ -311,6 +311,45 @@ _SEED_SERVICES: List[_ServiceRecord] = [
             ],
         },
     ),
+    # =========================================================================
+    # Tron DEX / aggregator contracts
+    # Addresses are stored in the event store as 25-byte hex strings produced by
+    # TronCollector.base58_to_hex() — base58check decoded bytes including the
+    # 4-byte checksum, lowercased.  Format: 41<20-byte-addr><4-byte-checksum>.
+    # =========================================================================
+    # ---- JustSwap / SunSwap V1 (Uniswap V2 fork, highest USDT volume on Tron) ----
+    _ServiceRecord(
+        protocol_id="justswap_v1",
+        display_name="JustSwap (SunSwap V1)",
+        service_type="dex",
+        chains=["tron"],
+        contracts={
+            # TXF1xDbVGdxFGbovmmmXvBGu8ZiE3Lq4mR — JustSwap Router
+            "tron": ["41e95812d8d5b5412d2b9f3a4d5a87ca15c5c51f33366bfa2c"],
+        },
+    ),
+    # ---- SunSwap V2 ----
+    _ServiceRecord(
+        protocol_id="sunswap_v2",
+        display_name="SunSwap V2",
+        service_type="dex",
+        chains=["tron"],
+        contracts={
+            # TKzxdSv2FZKQrEqkKVgp5DcwEXBEKMg2Ax — SunSwap V2 Router
+            "tron": ["416e0617948fe030a7e4970f8389d4ad295f249b7ee9ecb03d"],
+        },
+    ),
+    # ---- SunSwap V3 / StableSwap ----
+    _ServiceRecord(
+        protocol_id="sunswap_v3",
+        display_name="SunSwap V3",
+        service_type="dex",
+        chains=["tron"],
+        contracts={
+            # TSy7jXKKpckJ8zqUiUECG9U7LjkdJxnNEb — SunSwap V3 Router
+            "tron": ["41ba75bdae5ae107596be3e36f0bae72f21b608ec92cba7aa0"],
+        },
+    ),
 ]
 
 
