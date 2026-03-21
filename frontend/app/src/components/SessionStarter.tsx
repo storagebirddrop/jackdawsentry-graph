@@ -36,7 +36,7 @@ export default function SessionStarter({ onSessionCreated }: Props) {
       onSessionCreated(resp.session_id);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to create session';
-      setError(message === 'Not authenticated' ? 'Redirecting to login…' : message);
+      setError(message);
     } finally {
       setLoading(false);
     }

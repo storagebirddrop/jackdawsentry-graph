@@ -168,6 +168,18 @@ async def get_current_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ) -> User:
     """Get current authenticated user from token, backed by database lookup"""
+    if settings.GRAPH_AUTH_DISABLED:
+        return User(
+            id=UUID("00000000-0000-0000-0000-000000000000"),
+            username="local",
+            email="local@localhost",
+            role="analyst",
+            permissions=ROLES.get("analyst", []),
+            is_active=True,
+            created_at=datetime.now(timezone.utc),
+            last_login=datetime.now(timezone.utc),
+        )
+
     if credentials is None or not credentials.credentials:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

@@ -235,6 +235,8 @@ class Settings(BaseSettings):
     EXPOSE_API_DOCS: bool = False
     ENABLE_LEGACY_GRAPH_ENDPOINTS: bool = False
     EXPOSE_METRICS: bool = False
+    # Bypass JWT auth on all graph endpoints — intended for standalone/local use.
+    GRAPH_AUTH_DISABLED: bool = False
 
     # API Rate Limiting
     RATE_LIMIT_ENABLED: bool = True
