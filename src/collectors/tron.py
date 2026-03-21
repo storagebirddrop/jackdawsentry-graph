@@ -288,15 +288,51 @@ class TronCollector(BaseCollector):
     async def get_address_transactions(
         self, address: str, limit: int = 100
     ) -> List[Transaction]:
-        """Get address transaction history"""
-        try:
-            # Tron API doesn't have a direct method for address transactions
-            # This would typically use a third-party indexer
-            # For now, return empty list
-            return []
+        """Return confirmed transactions for *address* using TronGrid v1 REST API.
 
-        except Exception as e:
-            logger.error(f"Error getting Tron address transactions for {address}: {e}")
+        Uses the ``/v1/accounts/{address}/transactions`` endpoint which is
+        available on TronGrid-hosted nodes.  Self-hosted Tron full-nodes do
+        not expose this endpoint; in that case the call returns HTTP 404 and
+        an empty list is returned gracefully.
+
+        Args:
+            address: Base58 or hex Tron address to query.
+            limit:   Maximum number of transactions to return (capped at 200
+                     by TronGrid).
+
+        Returns:
+            List of parsed ``Transaction`` objects; empty on any error.
+        """
+        if not self.session:
+            return []
+        try:
+            per_page = min(limit, 200)
+            url = (
+                f"{self.rpc_url.rstrip('/')}/v1/accounts/{address}/transactions"
+                f"?limit={per_page}&only_confirmed=true"
+            )
+            async with self.session.get(url) as resp:
+                if resp.status != 200:
+                    logger.debug(
+                        "TronGrid v1 address transactions returned HTTP %s for %s",
+                        resp.status,
+                        address,
+                    )
+                    return []
+                data = await resp.json()
+
+            txs: List[Transaction] = []
+            for tx_data in data.get("data", [])[:limit]:
+                tx_hash = tx_data.get("txID") or tx_data.get("txid", "")
+                if not tx_hash:
+                    continue
+                tx = await self.get_transaction(tx_hash)
+                if tx is not None:
+                    txs.append(tx)
+            return txs
+
+        except Exception as exc:
+            logger.debug("get_address_transactions failed addr=%s: %s", address, exc)
             return []
 
     async def get_block_transactions(self, block_number: int) -> List[str]:
