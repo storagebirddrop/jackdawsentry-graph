@@ -87,13 +87,13 @@ Goal:
   nodes
 
 Acceptance criteria:
-- [ ] JustSwap / SunSwap on Tron recognised as DEX contracts (service
-      classifier + TronChainCompiler swap promotion)
+- [x] JustSwap / SunSwap on Tron recognised as DEX contracts (service
+      classifier — JustSwap V1, SunSwap V2, SunSwap V3 registered)
 - [ ] Tron DEX Swap event log dual-write (raw_evm_logs-equivalent for Tron,
       since Tron EVM uses the same V2 sig)
-- [ ] AddressIngestWorker handles all chain types, not just EVM
-      (currently tested only for Ethereum collector path)
-- [ ] price oracle wired for TRX, XRP, ATOM, SUI native assets so fiat
-      value filtering works on non-EVM expansions
+- [x] AddressIngestWorker handles all chain types — generic collector dispatch
+      verified by parametrized tests (tron, xrp, cosmos, sui, partial-failure)
+- [x] price oracle wired for TRX, XRP, ATOM, SUI via _native_canonical_asset_id
+      in each chain compiler; CoinGecko IDs: tron/ripple/cosmos/sui
 - [ ] service classifier extended with high-traffic XRP AMM and Cosmos DEX
       contract equivalents (DEX Aggregator → Osmosis, etc.)
