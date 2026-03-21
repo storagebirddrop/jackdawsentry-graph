@@ -99,7 +99,7 @@ class BridgeHopCompiler:
             return None
         sql = """
             SELECT
-                protocol,
+                protocol_id AS protocol,
                 mechanism,
                 source_chain,
                 destination_chain,
@@ -432,6 +432,29 @@ class BridgeHopCompiler:
             return None
 
         correlation = await self.lookup_correlation(source_chain, tx_hash)
+
+        # If no cached correlation exists, attempt live resolution via BridgeTracer.
+        # This covers protocols resolvable by tx_hash alone (THORChain, Wormhole,
+        # Allbridge, Synapse, and solver protocols like LI.FI / Squid / Mayan /
+        # deBridge / Symbiosis).  Protocols that require an intermediate ID from
+        # decoded event logs remain pending.
+        if correlation is None:
+            try:
+                from src.tracing.bridge_tracer import BridgeTracer
+                tracer = BridgeTracer()
+                live = await tracer.detect_bridge_hop(tx_hash, source_chain, to_address)
+                if live is not None:
+                    await tracer.store_correlation(live)
+                    # Re-fetch from DB so the dict shape matches lookup_correlation output.
+                    correlation = await self.lookup_correlation(source_chain, tx_hash)
+            except Exception as exc:
+                logger.debug(
+                    "BridgeHopCompiler: live resolution failed for %s/%s: %s",
+                    source_chain,
+                    tx_hash[:16],
+                    exc,
+                )
+
         hop_node = self.build_hop_node(
             protocol=protocol,
             correlation=correlation,
