@@ -325,3 +325,65 @@ def test_native_symbol_is_trx():
 def test_native_canonical_asset_id_is_tron():
     compiler = TronChainCompiler()
     assert compiler._native_canonical_asset_id("tron") == "tron"
+
+
+# ---------------------------------------------------------------------------
+# _try_swap_promotion
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_try_swap_promotion_skips_non_dex():
+    """Non-DEX service types do not trigger swap promotion."""
+    compiler = TronChainCompiler()
+    service_record = MagicMock()
+    service_record.service_type = "exchange"
+
+    result = await compiler._try_swap_promotion(
+        tx_hash="0x" + "a" * 64,
+        seed_node_id="tron:address:seedabc",
+        seed_address="seedabc",
+        counterparty="cptydef",
+        chain="tron",
+        session_id="s",
+        branch_id="b",
+        path_id="p",
+        depth=1,
+        direction="forward",
+        timestamp=None,
+        service_record=service_record,
+    )
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_try_swap_promotion_calls_maybe_build_for_dex():
+    """DEX service type delegates to _maybe_build_swap_event."""
+    compiler = TronChainCompiler()
+    service_record = MagicMock()
+    service_record.service_type = "dex"
+    service_record.protocol_id = "justswap_v1"
+    service_record.display_name = "JustSwap (SunSwap V1)"
+
+    with patch.object(
+        compiler, "_maybe_build_swap_event", new=AsyncMock(return_value=None)
+    ) as mock_build:
+        result = await compiler._try_swap_promotion(
+            tx_hash="0x" + "b" * 64,
+            seed_node_id="tron:address:seedxyz",
+            seed_address="seedxyz",
+            counterparty="cptyabc",
+            chain="tron",
+            session_id="s",
+            branch_id="b",
+            path_id="p",
+            depth=0,
+            direction="forward",
+            timestamp="2024-01-01T00:00:00",
+            service_record=service_record,
+        )
+
+    mock_build.assert_awaited_once()
+    call_kwargs = mock_build.call_args[1]
+    assert call_kwargs["protocol_id"] == "justswap_v1"
+    assert call_kwargs["chain"] == "tron"

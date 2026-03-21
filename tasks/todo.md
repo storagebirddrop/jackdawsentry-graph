@@ -89,8 +89,10 @@ Goal:
 Acceptance criteria:
 - [x] JustSwap / SunSwap on Tron recognised as DEX contracts (service
       classifier — JustSwap V1, SunSwap V2, SunSwap V3 registered)
-- [ ] Tron DEX Swap event log dual-write (raw_evm_logs-equivalent for Tron,
-      since Tron EVM uses the same V2 sig)
+- [x] Tron DEX Swap event log dual-write: migration 013 (raw_evm_logs_tron
+      partition), TronCollector._extract_dex_logs_tron via gettransactioninfobyid,
+      _try_swap_promotion in TronChainCompiler delegates to _maybe_build_swap_event
+      (moved to _GenericTransferChainCompiler base for reuse by Tron + EVM)
 - [x] AddressIngestWorker handles all chain types — generic collector dispatch
       verified by parametrized tests (tron, xrp, cosmos, sui, partial-failure)
 - [x] price oracle wired for TRX, XRP, ATOM, SUI via _native_canonical_asset_id

@@ -134,6 +134,10 @@ class AddressIngestWorker:
                 # apply ON CONFLICT DO NOTHING so re-ingest is safe.
                 await collector._insert_raw_transaction(tx)
                 await collector._insert_raw_token_transfers(tx)
+                # Write DEX Swap event logs when the collector has populated
+                # them (e.g. TronCollector with raw_evm_logs_tron, migration 013).
+                if getattr(tx, "dex_logs", None):
+                    await collector._insert_raw_evm_logs(tx)
                 tx_count += 1
             except Exception as exc:
                 logger.debug(

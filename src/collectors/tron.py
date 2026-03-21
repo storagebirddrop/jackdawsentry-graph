@@ -41,6 +41,14 @@ from .base import Transaction
 
 logger = logging.getLogger(__name__)
 
+# DEX Swap event signatures used by JustSwap (SunSwap V1) and SunSwap V2/V3.
+# These are Uniswap V2 / V3 forks running on TVM, so they emit the identical
+# keccak256 event signatures as their EVM counterparts.
+_DEX_SWAP_SIGS: frozenset = frozenset({
+    "0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822",  # V2 Swap
+    "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67",  # V3 Swap
+})
+
 
 class TronCollector(BaseCollector):
     """Tron blockchain collector"""
@@ -247,6 +255,12 @@ class TronCollector(BaseCollector):
             if self.trc20_tracking and contract_data:
                 token_transfers = await self.parse_trc20_transfers(tx_data)
 
+            # Extract DEX Swap event logs (JustSwap / SunSwap V2/V3).
+            # Uses wallet/gettransactioninfobyid to fetch TVM execution logs.
+            # Populated into tx.dex_logs for dual-write to raw_evm_logs_tron
+            # (migration 013) so TronChainCompiler can build swap_event nodes.
+            dex_logs = await self._extract_dex_logs_tron(tx_hash)
+
             return Transaction(
                 hash=tx_hash,
                 blockchain=self.blockchain,
@@ -262,6 +276,7 @@ class TronCollector(BaseCollector):
                     self.base58_to_hex(contract_address) if contract_address else None
                 ),
                 token_transfers=token_transfers,
+                dex_logs=dex_logs,
             )
 
         except Exception as e:
@@ -381,6 +396,73 @@ class TronCollector(BaseCollector):
                 return hex_address
         except Exception:
             return hex_address
+
+    async def _extract_dex_logs_tron(self, tx_hash: str) -> List[Dict]:
+        """Extract DEX Swap event logs from TVM execution via TronGrid.
+
+        Calls ``wallet/gettransactioninfobyid`` to obtain the TVM execution
+        trace, then returns raw log data for any log whose first topic matches
+        a known DEX Swap event signature (Uniswap V2 or V3 — used by JustSwap
+        and SunSwap since they are Uniswap forks running on TVM).
+
+        The returned dicts use the same schema as
+        ``BaseCollector._insert_raw_evm_logs`` expects via ``tx.dex_logs``.
+
+        TronGrid log format for each entry in ``TransactionInfo.log``:
+        - ``address``: 20-byte hex contract address (no ``41`` prefix, no ``0x``).
+        - ``topics``: list of 32-byte hex strings (no ``0x`` prefix).
+        - ``data``: hex-encoded non-indexed log data (no ``0x`` prefix).
+
+        Returns an empty list on any error or when no matching logs are found.
+
+        Args:
+            tx_hash: Tron transaction hash (hex string).
+
+        Returns:
+            List of raw log dicts ready for ``tx.dex_logs`` / ``raw_evm_logs``.
+        """
+        result = []
+        try:
+            tx_info = await self.rpc_call(
+                "wallet/gettransactioninfobyid", {"value": tx_hash}
+            )
+            if not tx_info:
+                return []
+
+            for log_entry in tx_info.get("log", []):
+                topics = log_entry.get("topics", [])
+                if not topics:
+                    continue
+
+                # topics elements have no "0x" prefix in TronGrid response.
+                topic0 = "0x" + topics[0]
+                if topic0 not in _DEX_SWAP_SIGS:
+                    continue
+
+                # Address is the 20-byte portion; prepend "41" for Tron
+                # network prefix so the stored hex matches what the Tron
+                # collector writes for other addresses.
+                raw_addr = log_entry.get("address", "")
+                contract = "41" + raw_addr if raw_addr else ""
+
+                def _topic_hex(t: str) -> Optional[str]:
+                    return "0x" + t if t else None
+
+                data_raw = log_entry.get("data", "")
+                data_hex = "0x" + data_raw if data_raw else None
+
+                result.append({
+                    "log_index": len(result),
+                    "contract": contract.lower(),
+                    "event_sig": topic0,
+                    "topic1": _topic_hex(topics[1]) if len(topics) > 1 else None,
+                    "topic2": _topic_hex(topics[2]) if len(topics) > 2 else None,
+                    "topic3": _topic_hex(topics[3]) if len(topics) > 3 else None,
+                    "data": data_hex,
+                })
+        except Exception as exc:
+            logger.debug("_extract_dex_logs_tron failed tx=%s: %s", tx_hash, exc)
+        return result
 
     async def parse_trc20_transfers(self, tx_data: Dict) -> List[Dict]:
         """Parse TRC20 token transfers from transaction"""
