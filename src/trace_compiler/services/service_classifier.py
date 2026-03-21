@@ -208,8 +208,8 @@ _SEED_SERVICES: List[_ServiceRecord] = [
     ),
     # =========================================================================
     # Solana DEX / aggregator programs
-    # Program IDs are case-sensitive base58 strings; stored as-is (not lowercased).
-    # The lookup at classify time must match the program ID exactly.
+    # Program IDs are case-sensitive base58 strings; stored as-is.
+    # Classification uses exact string matching against these program IDs.
     # =========================================================================
     # ---- Raydium ----
     _ServiceRecord(

@@ -39,6 +39,7 @@ _POLL_INTERVAL = 30          # seconds between polling cycles
 _BATCH_SIZE = 5              # max rows per cycle
 _MAX_RETRIES = 3             # mark as failed after this many attempts
 _TX_FETCH_LIMIT = 200        # max transactions to fetch per address ingest
+_RUNNING_STALE_INTERVAL = 300  # seconds (5 minutes) after which running rows are considered stale
 
 
 class AddressIngestWorker:
@@ -82,12 +83,14 @@ class AddressIngestWorker:
                     SELECT id FROM address_ingest_queue
                     WHERE status = 'pending'
                       AND (next_retry_at IS NULL OR next_retry_at <= NOW())
+                       OR (status = 'running' AND started_at <= NOW() - INTERVAL '%s seconds')
                     ORDER BY priority DESC, requested_at ASC
                     LIMIT $1
                     FOR UPDATE SKIP LOCKED
                 )
                 RETURNING id, address, blockchain, retry_count
                 """,
+                _RUNNING_STALE_INTERVAL,
                 _BATCH_SIZE,
             )
 
@@ -175,7 +178,8 @@ class AddressIngestWorker:
                     queue_id,
                 )
         except Exception as exc:
-            logger.debug("Failed to mark id=%s completed: %s", queue_id, exc)
+            logger.error("Failed to mark id=%s completed: %s", queue_id, exc, exc_info=True)
+            raise
 
     async def _mark_failed(
         self, queue_id: int, error: str, retry_count: int
@@ -214,4 +218,5 @@ class AddressIngestWorker:
                         queue_id,
                     )
         except Exception as exc:
-            logger.debug("Failed to mark id=%s failed: %s", queue_id, exc)
+            logger.error("Failed to mark id=%s failed: %s", queue_id, exc, exc_info=True)
+            raise

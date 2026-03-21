@@ -287,7 +287,7 @@ class TraceCompiler:
             enriched = await enrich_nodes([root_node])
             root_node = enriched[0]
         except Exception as exc:
-            logger.debug("Seed node enrichment failed: %s", exc)
+            logger.warning("Seed node enrichment failed: %s", exc)
 
         return SessionCreateResponse(
             session_id=session_id,
@@ -536,8 +536,21 @@ class TraceCompiler:
 
         # Enrich address nodes with sanctions and entity labels.
         if added_nodes:
+            import time
+            start_time = time.time()
             from src.trace_compiler.attribution.enricher import enrich_nodes
-            added_nodes = await enrich_nodes(added_nodes)
+            # Only enrich address nodes to avoid unnecessary work
+            address_nodes = [n for n in added_nodes if n.node_type == "address"]
+            if address_nodes:
+                enriched_address_nodes = await enrich_nodes(address_nodes)
+                # Replace the original address nodes with enriched ones
+                enriched_map = {n.id: n for n in enriched_address_nodes}
+                added_nodes = [
+                    enriched_map.get(n.id, n) if n.node_type == "address" else n
+                    for n in added_nodes
+                ]
+            enrichment_time = time.time() - start_time
+            logger.debug("Enriched %d address nodes in %.3fs", len(address_nodes), enrichment_time)
 
         # Cache successful non-empty results in Redis (15-minute TTL).
         if added_nodes and self._redis is not None:

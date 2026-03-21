@@ -119,6 +119,22 @@ class BridgeTracer:
     ``get_postgres_pool()`` lazily so construction never blocks.
     """
 
+    @staticmethod
+    async def _make_http_request(url: str) -> Optional[dict]:
+        """Helper method to make HTTP requests with shared client configuration."""
+        import httpx
+        
+        try:
+            async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
+                resp = await client.get(url)
+                if resp.status_code == 404:
+                    return None
+                resp.raise_for_status()
+                return resp.json()
+        except Exception as exc:
+            logger.debug("HTTP request failed for %s: %s", url, exc)
+            return None
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -376,14 +392,9 @@ class BridgeTracer:
         url = f"{protocol.api_base}/thorchain/tx/details/{tx_hash}"
         t0 = time.monotonic()
 
-        async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
-            resp = await client.get(url)
-
-        if resp.status_code == 404:
-            logger.debug("THORChain tx %s not found", tx_hash[:16])
+        data = await self._make_http_request(url)
+        if data is None:
             return None
-        resp.raise_for_status()
-        data = resp.json()
 
         observed = data.get("observed_tx", {})
         tx = observed.get("tx", {})
@@ -430,7 +441,7 @@ class BridgeTracer:
         dest_amount = _thorchain_amount(dest_coins[0].get("amount")) if dest_coins else None
         dest_tx = out.get("id", "") or None
 
-        elapsed = int(time.monotonic() - t0)
+        elapsed = time.monotonic() - t0
 
         return BridgeCorrelation(
             protocol=protocol.protocol_id,

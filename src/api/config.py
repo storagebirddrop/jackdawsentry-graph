@@ -325,6 +325,7 @@ class Settings(BaseSettings):
         "EXPOSE_API_DOCS",
         "ENABLE_LEGACY_GRAPH_ENDPOINTS",
         "EXPOSE_METRICS",
+        "GRAPH_AUTH_DISABLED",
         "RATE_LIMIT_ENABLED",
         "DUAL_WRITE_RAW_EVENT_STORE",
         "AUTO_BACKFILL_RAW_EVENT_STORE",

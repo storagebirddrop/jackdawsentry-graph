@@ -1,10 +1,8 @@
 /**
  * AddressNode — custom React Flow node for blockchain addresses.
- *
- * Displays short address, attribution, risk, semantic badges, value context,
- * and quick expansion affordances.
  */
 
+import { useState, useCallback } from 'react';
 import { Handle, Position, type NodeProps } from '@xyflow/react';
 
 import type { InvestigationNode, AddressNodeData } from '../../types/graph';
@@ -34,14 +32,41 @@ interface AddressNodeComponentData extends InvestigationNode {
 }
 
 function shortAddr(addr: string): string {
-  if (addr.length <= 16) return addr;
-  return `${addr.slice(0, 8)}...${addr.slice(-6)}`;
+  if (!addr || addr.length <= 18) return addr;
+  return `${addr.slice(0, 10)}...${addr.slice(-8)}`;
 }
 
 export default function AddressNode({ data, selected }: NodeProps) {
   const d = data as unknown as AddressNodeComponentData;
   const addr = (d.address_data ?? d.node_data) as AddressNodeData;
   const appearance = d.appearance ?? DEFAULT_GRAPH_APPEARANCE;
+
+  const [copied, setCopied] = useState(false);
+  const [hoverPrev, setHoverPrev] = useState(false);
+  const [hoverNext, setHoverNext] = useState(false);
+
+  const copyAddress = useCallback(() => {
+    if (!addr?.address) return;
+    navigator.clipboard.writeText(addr.address).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    }).catch((err) => {
+      console.error('Failed to copy address:', err);
+      // Fallback for browsers that don't support clipboard API
+      const textArea = document.createElement('textarea');
+      textArea.value = addr.address;
+      document.body.appendChild(textArea);
+      textArea.select();
+      try {
+        document.execCommand('copy');
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      } catch (fallbackErr) {
+        console.error('Fallback copy failed:', fallbackErr);
+      }
+      document.body.removeChild(textArea);
+    });
+  }, [addr?.address]);
 
   if (!addr?.address) {
     return (
@@ -58,6 +83,9 @@ export default function AddressNode({ data, selected }: NodeProps) {
   const accent = nodeAccentColor(d, appearance, d.branch_color ?? chainColor);
   const valueLabel = appearance.showValues ? formatUsd(addr.fiat_value_usd) : null;
   const badges = semanticBadges(d);
+  const hasEntityName = !!(d.entity_name ?? addr.entity_name);
+  const risk = addr.risk_score;
+  const isUnknownRisk = risk === null || risk === undefined;
 
   return (
     <div
@@ -79,17 +107,66 @@ export default function AddressNode({ data, selected }: NodeProps) {
         )}
 
         <div style={{ flex: 1, minWidth: 0 }}>
+          {/* Header row: chain + risk */}
           <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'flex-start' }}>
             <div style={{ minWidth: 0 }}>
-              <div style={eyebrowStyle}>{chain}</div>
-              <div style={titleStyle}>{d.entity_name ?? addr.entity_name ?? shortAddr(addr.address)}</div>
-              <div style={subtitleStyle}>{(d.entity_name ?? addr.entity_name) ? shortAddr(addr.address) : 'unattributed address'}</div>
+              {/* Chain eyebrow with color dot */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 5, ...eyebrowStyle }}>
+                <span
+                  style={{
+                    display: 'inline-block',
+                    width: 6,
+                    height: 6,
+                    borderRadius: '50%',
+                    background: chainColor,
+                    flexShrink: 0,
+                  }}
+                />
+                {chain.toUpperCase()}
+              </div>
+
+              {/* Title: entity name or clickable address */}
+              <div
+                title={copied ? 'Copied!' : `Click to copy ${addr.address}`}
+                onClick={copyAddress}
+                style={{
+                  ...titleStyle,
+                  cursor: 'pointer',
+                  userSelect: 'none',
+                  color: copied ? accent : '#0f172a',
+                  transition: 'color 0.15s',
+                }}
+              >
+                {hasEntityName
+                  ? (d.entity_name ?? addr.entity_name)
+                  : shortAddr(addr.address)}
+              </div>
+
+              {/* Subtitle */}
+              <div style={subtitleStyle}>
+                {hasEntityName
+                  ? <span style={monoStyle}>{shortAddr(addr.address)}</span>
+                  : <span style={{ ...monoStyle, color: '#94a3b8' }}>
+                      {chain.toUpperCase()} • {addr.address.slice(0, 8)}...
+                    </span>
+                }
+              </div>
             </div>
-            <div style={{ ...riskPillStyle, color: riskColor(addr.risk_score), borderColor: `${riskColor(addr.risk_score)}55` }}>
-              {riskLabel(addr.risk_score)}
+
+            {/* Risk pill — subdued when unknown */}
+            <div
+              style={{
+                ...riskPillStyle,
+                color: isUnknownRisk ? '#94a3b8' : riskColor(risk),
+                borderColor: isUnknownRisk ? '#e2e8f0' : `${riskColor(risk)}55`,
+                background: isUnknownRisk ? '#f8fafc' : '#ffffff',
+              }}
+            >
+              {isUnknownRisk ? 'unscored' : riskLabel(risk)}
             </div>
           </div>
 
+          {/* Semantic badges */}
           {badges.length > 0 && (
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 10 }}>
               {badges.map((badge) => (
@@ -100,34 +177,53 @@ export default function AddressNode({ data, selected }: NodeProps) {
             </div>
           )}
 
+          {/* Bottom row: value + expand buttons */}
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, marginTop: 12 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
               {valueLabel && <span style={valueChipStyle}>{valueLabel}</span>}
-              {(d.display_sublabel ?? addr.label) && <span style={secondaryChipStyle}>{d.display_sublabel ?? addr.label}</span>}
+              {(d.display_sublabel ?? addr.label) && (
+                <span style={secondaryChipStyle}>{d.display_sublabel ?? addr.label}</span>
+              )}
             </div>
-            <div style={{ display: 'flex', gap: 6 }}>
+
+            <div style={{ display: 'flex', gap: 5 }}>
               {d.onExpandPrev && d.expandable_directions.includes('prev') && (
                 <button
                   type="button"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    d.onExpandPrev?.();
+                  onClick={(e) => { e.stopPropagation(); d.onExpandPrev?.(); }}
+                  onMouseEnter={() => setHoverPrev(true)}
+                  onMouseLeave={() => setHoverPrev(false)}
+                  style={{
+                    ...actionButtonBase,
+                    background: hoverPrev ? '#f1f5f9' : '#ffffff',
+                    color: hoverPrev ? '#0f172a' : '#475569',
                   }}
-                  style={actionButtonStyle}
                 >
-                  Prev
+                  ← Prev
                 </button>
               )}
               {d.onExpandNext && d.expandable_directions.includes('next') && (
                 <button
                   type="button"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    d.onExpandNext?.();
+                  onClick={(e) => { e.stopPropagation(); d.onExpandNext?.(); }}
+                  onMouseEnter={() => setHoverNext(true)}
+                  onMouseLeave={() => setHoverNext(false)}
+                  disabled={d.isExpanding}
+                  style={{
+                    ...actionButtonBase,
+                    background: d.isExpanding
+                      ? '#dbeafe'
+                      : hoverNext ? accent : `${accent}18`,
+                    color: d.isExpanding
+                      ? '#3b82f6'
+                      : hoverNext ? '#ffffff' : accent,
+                    borderColor: `${accent}55`,
+                    opacity: d.isExpanding ? 0.8 : 1,
                   }}
-                  style={actionButtonStyle}
                 >
-                  {d.isExpanding ? '...' : 'Next'}
+                  {d.isExpanding
+                    ? <span style={pulseStyle}>●</span>
+                    : 'Next →'}
                 </button>
               )}
             </div>
@@ -141,8 +237,8 @@ export default function AddressNode({ data, selected }: NodeProps) {
 }
 
 const cardStyle: React.CSSProperties = {
-  minWidth: 250,
-  maxWidth: 290,
+  minWidth: 260,
+  maxWidth: 300,
   padding: 14,
   borderRadius: 18,
   background: 'rgba(255,255,255,0.97)',
@@ -155,36 +251,40 @@ const eyebrowStyle: React.CSSProperties = {
   fontSize: 10,
   fontWeight: 800,
   letterSpacing: '0.08em',
-  textTransform: 'uppercase',
+  textTransform: 'uppercase' as const,
 };
 
 const titleStyle: React.CSSProperties = {
   color: '#0f172a',
-  fontSize: 16,
-  lineHeight: 1.15,
+  fontSize: 15,
+  lineHeight: 1.2,
   fontWeight: 700,
   marginTop: 3,
 };
 
 const subtitleStyle: React.CSSProperties = {
+  marginTop: 3,
+};
+
+const monoStyle: React.CSSProperties = {
+  fontFamily: '"IBM Plex Mono", "Fira Code", monospace',
+  fontSize: 11,
   color: '#64748b',
-  fontSize: 12,
-  marginTop: 4,
 };
 
 const riskPillStyle: React.CSSProperties = {
-  padding: '4px 8px',
+  padding: '3px 8px',
   borderRadius: 999,
-  background: '#ffffff',
   border: '1px solid',
   fontSize: 10,
-  fontWeight: 800,
-  textTransform: 'uppercase',
-  whiteSpace: 'nowrap',
+  fontWeight: 700,
+  textTransform: 'uppercase' as const,
+  whiteSpace: 'nowrap' as const,
+  letterSpacing: '0.05em',
 };
 
 const valueChipStyle: React.CSSProperties = {
-  padding: '5px 8px',
+  padding: '4px 8px',
   borderRadius: 10,
   background: '#eff6ff',
   border: '1px solid #bfdbfe',
@@ -194,7 +294,7 @@ const valueChipStyle: React.CSSProperties = {
 };
 
 const secondaryChipStyle: React.CSSProperties = {
-  padding: '5px 8px',
+  padding: '4px 8px',
   borderRadius: 10,
   background: '#f8fafc',
   border: '1px solid #e2e8f0',
@@ -203,13 +303,18 @@ const secondaryChipStyle: React.CSSProperties = {
   fontWeight: 600,
 };
 
-const actionButtonStyle: React.CSSProperties = {
-  border: '1px solid #cbd5e1',
-  background: '#ffffff',
-  color: '#334155',
+const actionButtonBase: React.CSSProperties = {
+  border: '1px solid #e2e8f0',
   borderRadius: 10,
-  padding: '6px 10px',
+  padding: '5px 10px',
   fontSize: 11,
   fontWeight: 700,
   cursor: 'pointer',
+  transition: 'background 0.12s, color 0.12s',
+  outline: 'none',
+};
+
+const pulseStyle: React.CSSProperties = {
+  display: 'inline-block',
+  animation: 'pulse 1s ease-in-out infinite',
 };

@@ -52,34 +52,39 @@ async def maybe_trigger_address_ingest(
     try:
         async with pg_pool.acquire() as conn:
             # Check whether raw_transactions already has data for this address.
-            row_count = await conn.fetchval(
+            # Check if any transactions exist for this address
+            has_transactions = await conn.fetchval(
                 """
-                SELECT COUNT(*)
-                FROM raw_transactions
-                WHERE blockchain = $1
-                  AND (from_address = $2 OR to_address = $2)
-                LIMIT 1
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM raw_transactions
+                    WHERE blockchain = $1
+                      AND (from_address = $2 OR to_address = $2)
+                    LIMIT 1
+                )
                 """,
                 chain,
                 address,
             )
-            if row_count and row_count > 0:
+            if has_transactions:
                 # Data exists — expansion was empty for other reasons.
                 return False
 
             # Also check raw_token_transfers (ERC-20 / SPL token activity).
-            token_row_count = await conn.fetchval(
+            has_token_transfers = await conn.fetchval(
                 """
-                SELECT COUNT(*)
-                FROM raw_token_transfers
-                WHERE blockchain = $1
-                  AND (from_address = $2 OR to_address = $2)
-                LIMIT 1
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM raw_token_transfers
+                    WHERE blockchain = $1
+                      AND (from_address = $2 OR to_address = $2)
+                    LIMIT 1
+                )
                 """,
                 chain,
                 address,
             )
-            if token_row_count and token_row_count > 0:
+            if has_token_transfers:
                 return False
 
             # No data found — insert a queue entry if one isn't already active.
@@ -109,7 +114,7 @@ async def maybe_trigger_address_ingest(
             return triggered
 
     except Exception as exc:
-        logger.debug(
+        logger.warning(
             "maybe_trigger_address_ingest failed for %s/%s: %s", address, chain, exc
         )
         return False

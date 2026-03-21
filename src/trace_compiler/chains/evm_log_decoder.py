@@ -187,7 +187,10 @@ def decode_v4_swap(data_hex: str) -> Optional[Dict[str, Any]]:
         # int128 — stored in 32 bytes but only lower 16 bytes are meaningful
         # (ABI encoding always pads to 32 bytes)
         def _i128(d: bytes, off: int) -> int:
-            raw = int.from_bytes(d[off : off + 32], "big")
+            # Extract only the lower 16 bytes (128 bits) that contain the actual value
+            # ABI pads to 32 bytes, but int128 only uses the lower 16 bytes
+            raw_bytes = d[off + 16 : off + 32]  # skip upper 16 padding bytes
+            raw = int.from_bytes(raw_bytes, "big")
             if raw >= (1 << 127):
                 raw -= 1 << 128
             return raw

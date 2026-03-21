@@ -287,43 +287,356 @@ class EthereumCollector(BaseCollector):
     async def get_address_transactions(
         self, address: str, limit: int = 100
     ) -> List[Transaction]:
-        """Get address transaction history"""
+        """Get address transaction history via Etherscan API (falls back to block scan).
+
+        Uses the Etherscan ``txlist`` endpoint which returns paginated history
+        instantly, avoiding the multi-minute block-scan approach.  Works without
+        an API key (public rate limit applies).
+        """
+        # Primary: Ethplorer (free, no key required)
+        transactions = await self._get_address_transactions_ethplorer(address, limit)
+        if transactions:
+            return transactions
+
+        # Secondary: Etherscan V2 (requires ETHERSCAN_API_KEY)
+        transactions = await self._get_address_transactions_etherscan(address, limit)
+        if transactions:
+            return transactions
+
+        # Tertiary: eth_getLogs for recent ERC-20 activity (no key, last 2k blocks)
+        transactions = await self._get_address_transactions_logs(address, limit)
+        if transactions:
+            return transactions
+
+        # Quaternary: block-scan fallback (last 1k blocks, slow)
+        transactions = await self._get_address_transactions_scan(address, limit)
+        if transactions:
+            return transactions
+
+        logger.info(
+            "No transactions found for %s/%s via any lookup path",
+            self.blockchain,
+            address,
+        )
+        return []
+
+    async def _get_address_transactions_ethplorer(
+        self, address: str, limit: int
+    ) -> List[Transaction]:
+        """Fetch transaction history from Ethplorer (free, no key required).
+
+        Uses the public ``freekey`` which returns up to 100 recent transactions
+        with full ETH value, from/to, timestamp, and success flag — no per-tx
+        RPC calls needed.
+        """
+        import aiohttp
+
+        url = (
+            f"https://api.ethplorer.io/getAddressTransactions/{address}"
+            f"?apiKey=freekey&limit={min(limit, 100)}"
+        )
+        try:
+            async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=15)
+            ) as session:
+                async with session.get(url) as resp:
+                    if resp.status != 200:
+                        return []
+                    data = await resp.json(content_type=None)
+
+            if not isinstance(data, list):
+                return []
+
+            transactions: List[Transaction] = []
+            for item in data:
+                tx_hash = item.get("hash")
+                if not tx_hash:
+                    continue
+                try:
+                    ts_val = item.get("timestamp")
+                    if ts_val is None:
+                        logger.debug("Skipping transaction %s: missing timestamp", tx_hash)
+                        continue
+                    
+                    ts = datetime.fromtimestamp(ts_val, tz=timezone.utc)
+                    transactions.append(Transaction(
+                        hash=tx_hash,
+                        blockchain=self.blockchain,
+                        timestamp=ts,
+                        from_address=(item.get("from") or "").lower() or None,
+                        to_address=(item.get("to") or "").lower() or None,
+                        value=float(item.get("value", 0)),
+                        status="confirmed" if item.get("success", True) else "failed",
+                    ))
+                except Exception as exc:
+                    logger.debug("Ethplorer tx parse error %s: %s", tx_hash, exc)
+
+            logger.info(
+                "Ethplorer: found %d txs for %s/%s",
+                len(transactions), self.blockchain, address,
+            )
+            return transactions
+        except Exception as exc:
+            logger.debug("Ethplorer lookup failed for %s: %s", address, exc)
+            return []
+
+    async def _get_address_transactions_etherscan(
+        self, address: str, limit: int
+    ) -> List[Transaction]:
+        """Fetch up to ``limit`` transactions from Etherscan V2 API.
+
+        Requires ETHERSCAN_API_KEY in settings.  Returns [] when no key is
+        configured so the caller falls through to the eth_getLogs path.
+        """
+        import aiohttp
+
+        api_key = getattr(settings, "ETHERSCAN_API_KEY", None)
+        if not api_key:
+            return []
+
+        # Map blockchain names to Etherscan chain IDs
+        chain_to_id = {
+            "ethereum": 1,
+            "bsc": 56,
+            "polygon": 137,
+            "arbitrum": 42161,
+            "base": 8453,
+            "avalanche": 43114,
+            "optimism": 10,
+            "fantom": 250,
+            "cronos": 25,
+        }
+        chainid = chain_to_id.get(self.blockchain, 1)  # default to Ethereum mainnet
+
+        url = (
+            "https://api.etherscan.io/v2/api"
+            f"?chainid={chainid}"
+            "&module=account&action=txlist"
+            f"&address={address}"
+            "&startblock=0&endblock=99999999"
+            f"&page=1&offset={min(limit, 100)}"
+            "&sort=desc"
+            f"&apikey={api_key}"
+        )
+        try:
+            async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=20)
+            ) as session:
+                async with session.get(url) as resp:
+                    if resp.status != 200:
+                        return []
+                    data = await resp.json()
+            if data.get("status") != "1" or not isinstance(data.get("result"), list):
+                return []
+            transactions: List[Transaction] = []
+            for item in data["result"][:limit]:
+                tx_hash = item.get("hash")
+                if not tx_hash:
+                    continue
+                try:
+                    ts = int(item.get("timeStamp", 0))
+                    gas_used_raw = item.get("gasUsed")
+                    gas_price_raw = item.get("gasPrice")
+                    gas_used = int(gas_used_raw) if gas_used_raw not in (None, "", "0x0") else None
+                    gas_price = int(gas_price_raw) if gas_price_raw not in (None, "", "0x0") else None
+                    fee = (
+                        from_wei(gas_used * gas_price, "ether")
+                        if gas_used and gas_price
+                        else None
+                    )
+                    transactions.append(Transaction(
+                        hash=tx_hash,
+                        blockchain=self.blockchain,
+                        timestamp=datetime.fromtimestamp(ts, tz=timezone.utc),
+                        from_address=(item.get("from") or "").lower() or None,
+                        to_address=(item.get("to") or "").lower() or None,
+                        value=from_wei(int(item.get("value", 0)), "ether"),
+                        gas_used=gas_used,
+                        gas_price=gas_price,
+                        fee=fee,
+                        block_number=int(item["blockNumber"]) if item.get("blockNumber") else None,
+                        status="confirmed" if item.get("isError", "0") == "0" else "failed",
+                    ))
+                except Exception as parse_exc:
+                    logger.debug("Etherscan tx parse error %s: %s", tx_hash, parse_exc)
+            return transactions
+        except Exception as exc:
+            logger.debug("Etherscan txlist failed for %s: %s", address, exc)
+            return []
+
+    async def _get_address_transactions_logs(
+        self, address: str, limit: int
+    ) -> List[Transaction]:
+        """Discover transactions via eth_getLogs (ERC-20 Transfer events).
+
+        Uses direct async HTTP JSON-RPC calls (via aiohttp) against the
+        fallback HTTP endpoint so we avoid sharing the WebSocket w3 instance
+        with the concurrent backfill worker.  Works without any API key.
+        Scans the last 2 000 blocks for Transfer events where the address
+        appears as ERC-20 sender or recipient.
+        """
+        import aiohttp
+
+        rpc_url = getattr(settings, "ETHEREUM_RPC_FALLBACK", None)
+        if not rpc_url or not rpc_url.startswith("http"):
+            return []
+
+        TRANSFER_SIG = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+        _SCAN_BLOCKS = 2_000
+        _TIMEOUT = aiohttp.ClientTimeout(total=20)
+
+        # Pad address to 32-byte topic
+        addr = address.removeprefix("0x").lower() if address.lower().startswith("0x") else address.lower()
+        padded = "0x" + "0" * 24 + addr
+
+        async def _rpc(session, method, params, req_id=1):
+            async with session.post(
+                rpc_url,
+                json={"jsonrpc": "2.0", "method": method, "params": params, "id": req_id},
+                timeout=_TIMEOUT,
+            ) as resp:
+                data = await resp.json()
+                return data.get("result")
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                # Get latest block number
+                latest_hex = await _rpc(session, "eth_blockNumber", [])
+                if not latest_hex:
+                    return []
+                latest_block = int(latest_hex, 16)
+                from_block = max(0, latest_block - _SCAN_BLOCKS)
+                from_block_hex = hex(from_block)
+
+                # Fetch Transfer logs where address is sender (topic1) or recipient (topic2)
+                logs_from_task = _rpc(session, "eth_getLogs", [{
+                    "fromBlock": from_block_hex, "toBlock": "latest",
+                    "topics": [TRANSFER_SIG, padded],
+                }], req_id=2)
+                logs_to_task = _rpc(session, "eth_getLogs", [{
+                    "fromBlock": from_block_hex, "toBlock": "latest",
+                    "topics": [TRANSFER_SIG, None, padded],
+                }], req_id=3)
+                logs_from, logs_to = await asyncio.gather(logs_from_task, logs_to_task)
+
+            all_logs = list(logs_from or []) + list(logs_to or [])
+            if not all_logs:
+                return []
+
+            # Collect unique tx hashes, keep highest block number seen per hash
+            seen: dict = {}
+            for log in all_logs:
+                tx_hash = log.get("transactionHash", "")
+                blk = int(log.get("blockNumber", "0x0"), 16)
+                if tx_hash:
+                    seen[tx_hash] = max(seen.get(tx_hash, 0), blk)
+
+            ordered_hashes = [
+                h for h, _ in sorted(seen.items(), key=lambda kv: kv[1], reverse=True)
+            ][:limit]
+
+            if not ordered_hashes:
+                return []
+
+            # Fetch tx data and block timestamps in parallel (one session, many requests)
+            async with aiohttp.ClientSession() as session:
+                tx_tasks = [
+                    _rpc(session, "eth_getTransactionByHash", [h], req_id=i)
+                    for i, h in enumerate(ordered_hashes, start=10)
+                ]
+                raw_txs = await asyncio.gather(*tx_tasks, return_exceptions=True)
+
+                unique_blocks = list({seen[h] for h in ordered_hashes})
+                blk_tasks = [
+                    _rpc(session, "eth_getBlockByNumber", [hex(bn), False], req_id=i)
+                    for i, bn in enumerate(unique_blocks, start=1000)
+                ]
+                blk_results = await asyncio.gather(*blk_tasks, return_exceptions=True)
+
+            block_ts: dict = {}
+            for res in blk_results:
+                if isinstance(res, dict) and res:
+                    try:
+                        bn = int(res["number"], 16)
+                        ts = datetime.fromtimestamp(int(res["timestamp"], 16), tz=timezone.utc)
+                        block_ts[bn] = ts
+                    except Exception:
+                        pass
+
+            transactions: List[Transaction] = []
+            for tx_hash, tx_data in zip(ordered_hashes, raw_txs):
+                if isinstance(tx_data, Exception) or not tx_data:
+                    continue
+                try:
+                    blk = int(tx_data.get("blockNumber") or "0x0", 16) or None
+                    ts = block_ts.get(blk, datetime.now(tz=timezone.utc))
+                    gas_price_hex = tx_data.get("gasPrice")
+                    gas_price = int(gas_price_hex, 16) if gas_price_hex else None
+                    value_hex = tx_data.get("value", "0x0")
+                    value_wei = int(value_hex, 16) if value_hex else 0
+                    # Fetch transaction receipt to get actual status
+                    status = "unknown"  # default fallback
+                    try:
+                        if self.w3 and WEB3_AVAILABLE:
+                            receipt = await asyncio.get_event_loop().run_in_executor(
+                                None, self.w3.eth.get_transaction_receipt, tx_hash
+                            )
+                            if receipt:
+                                status = "confirmed" if receipt.status == 1 else "failed"
+                    except Exception as receipt_exc:
+                        logger.debug("Failed to fetch receipt for %s: %s", tx_hash, receipt_exc)
+                    
+                    transactions.append(Transaction(
+                        hash=tx_hash,
+                        blockchain=self.blockchain,
+                        timestamp=ts,
+                        from_address=(tx_data.get("from") or "").lower() or None,
+                        to_address=(tx_data.get("to") or "").lower() or None,
+                        value=from_wei(value_wei, "ether"),
+                        gas_price=gas_price,
+                        block_number=blk,
+                        status=status,
+                    ))
+                except Exception as exc:
+                    logger.debug("Log-based tx build error %s: %s", tx_hash, exc)
+
+            return transactions
+
+        except Exception as exc:
+            logger.warning("eth_getLogs address scan failed for %s: %s", address, exc)
+            return []
+
+    async def _get_address_transactions_scan(
+        self, address: str, limit: int
+    ) -> List[Transaction]:
+        """Narrow block-scan fallback (last 1 000 blocks only)."""
         try:
             if not self.w3 or not WEB3_AVAILABLE:
                 return []
-
             checksum_address = to_checksum_address(address)
-
-            # Get transactions using logs (more efficient than scanning all blocks)
-            # This is a simplified approach - in production, you'd use a proper indexing service
-            transactions = []
-
-            # Get latest block and scan backwards
+            transactions: List[Transaction] = []
             latest_block = self.w3.eth.block_number
-            start_block = max(0, latest_block - 10000)  # Limit scan range
-
+            start_block = max(0, latest_block - 1000)
             for block_num in range(latest_block, start_block, -1):
                 if len(transactions) >= limit:
                     break
-
                 block = self.w3.eth.get_block(block_num, full_transactions=True)
                 if not block:
                     continue
-
                 for tx in block["transactions"]:
                     if tx["from"] == checksum_address or (
                         tx["to"] and tx["to"] == checksum_address
                     ):
-
                         tx_obj = await self.get_transaction(tx["hash"].hex())
                         if tx_obj:
                             transactions.append(tx_obj)
-
             return transactions[:limit]
-
-        except Exception as e:
+        except Exception as exc:
             logger.error(
-                f"Error getting {self.blockchain} address transactions for {address}: {e}"
+                "Error in block-scan fallback for %s/%s: %s",
+                self.blockchain,
+                address,
+                exc,
             )
             return []
 

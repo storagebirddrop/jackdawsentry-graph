@@ -26,8 +26,8 @@ from src.trace_compiler.models import ExpandOptions
 # Fixtures
 # ---------------------------------------------------------------------------
 
-SEED = "0x" + "a" * 64
-COUNTERPARTY = "0x" + "b" * 64
+SEED = "a" * 64  # Sui addresses are 64-character hex strings
+COUNTERPARTY = "b" * 64
 TX_HASH_1 = "tx" + "a" * 62
 TX_HASH_2 = "tx" + "b" * 62
 

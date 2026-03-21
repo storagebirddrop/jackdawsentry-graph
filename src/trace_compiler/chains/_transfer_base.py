@@ -197,8 +197,9 @@ class _GenericTransferChainCompiler(BaseChainCompiler):
             result = [dict(r) for r in rows]
 
             # Merge token transfers for the same addresses.
+            native_symbol = self._native_symbol(chain).upper()
             if not options.asset_filter or any(
-                af.upper() not in {"ETH", "BNB", "MATIC", "AVAX"}
+                af.upper() != native_symbol
                 for af in options.asset_filter
             ):
                 token_rows = await self._fetch_outbound_token_transfers(
@@ -255,8 +256,9 @@ class _GenericTransferChainCompiler(BaseChainCompiler):
             result = [dict(r) for r in rows]
 
             # Merge token transfers for the same addresses.
+            native_symbol = self._native_symbol(chain).upper()
             if not options.asset_filter or any(
-                af.upper() not in {"ETH", "BNB", "MATIC", "AVAX"}
+                af.upper() != native_symbol
                 for af in options.asset_filter
             ):
                 token_rows = await self._fetch_inbound_token_transfers(

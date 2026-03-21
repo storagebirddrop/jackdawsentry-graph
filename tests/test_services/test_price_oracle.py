@@ -144,8 +144,8 @@ async def test_network_exception_returns_none():
 
 
 @pytest.mark.asyncio
-async def test_aiohttp_unavailable_returns_none():
-    """If aiohttp is not installed (module-level None), returns empty dict."""
+async def test_aiohttp_unavailable_gracefully_returns_empty():
+    """When aiohttp is unavailable, price oracle should gracefully return empty dict."""
     oracle = _make_oracle()
 
     with patch("src.services.price_oracle.aiohttp", None):

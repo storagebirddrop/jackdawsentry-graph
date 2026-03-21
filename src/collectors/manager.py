@@ -34,8 +34,13 @@ logger = logging.getLogger(__name__)
 class CollectorManager:
     """Manages all blockchain collectors"""
 
+    def _resolve_blockchain(self, blockchain: str) -> str:
+        """Resolve blockchain name to canonical key (handle aliases)."""
+        return self._collector_aliases.get(blockchain, blockchain)
+
     def __init__(self):
         self.collectors: Dict[str, BaseCollector] = {}
+        self._collector_aliases: Dict[str, str] = {"xrpl": "xrp"}  # alias -> canonical mapping
         self.is_running = False
         self.backfill_worker: Optional[EventStoreBackfillWorker] = None
         self.address_ingest_worker: Optional[AddressIngestWorker] = None
@@ -220,9 +225,7 @@ class CollectorManager:
                 "collection_interval": 15,
                 "batch_size": 20,
             }
-            _xrpl = XrplCollector(xrpl_config)
-            self.collectors["xrpl"] = _xrpl   # human-friendly alias
-            self.collectors["xrp"] = _xrpl    # canonical key (matches DB blockchain field)
+            self.collectors["xrp"] = XrplCollector(xrpl_config)  # canonical key only
 
         # Initialize Cosmos collector
         if settings.COSMOS_REST_URL:
@@ -246,7 +249,7 @@ class CollectorManager:
             }
             self.collectors["injective"] = CosmosCollector("injective", injective_config)
 
-        self.metrics["total_collectors"] = len(self.collectors)
+        self.metrics["total_collectors"] = len(set(self._resolve_blockchain(b) for b in self.collectors.keys()))
         logger.info(f"Initialized {len(self.collectors)} blockchain collectors")
 
     async def start_all(self):
@@ -258,11 +261,15 @@ class CollectorManager:
         logger.info("Starting all blockchain collectors...")
         self.is_running = True
 
-        # Start all collectors
+        # Start all collectors (dedupe to avoid double-starting aliased collectors)
         tasks = []
+        seen_collectors = set()
         for blockchain, collector in self.collectors.items():
-            task = asyncio.create_task(self.start_collector(blockchain, collector))
-            tasks.append(task)
+            canonical_blockchain = self._resolve_blockchain(blockchain)
+            if canonical_blockchain not in seen_collectors:
+                seen_collectors.add(canonical_blockchain)
+                task = asyncio.create_task(self.start_collector(canonical_blockchain, collector))
+                tasks.append(task)
 
         # Start metrics collection
         tasks.append(asyncio.create_task(self.collect_metrics()))
@@ -301,11 +308,15 @@ class CollectorManager:
         if self.address_ingest_worker is not None:
             await self.address_ingest_worker.stop()
 
-        # Stop all collectors
+        # Stop all collectors (dedupe to avoid double-stopping aliased collectors)
         tasks = []
+        seen_collectors = set()
         for blockchain, collector in self.collectors.items():
-            task = asyncio.create_task(self.stop_collector(blockchain, collector))
-            tasks.append(task)
+            canonical_blockchain = self._resolve_blockchain(blockchain)
+            if canonical_blockchain not in seen_collectors:
+                seen_collectors.add(canonical_blockchain)
+                task = asyncio.create_task(self.stop_collector(canonical_blockchain, collector))
+                tasks.append(task)
 
         await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -378,12 +389,17 @@ class CollectorManager:
                 total_blocks = 0
                 running_collectors = 0
 
-                for collector in self.collectors.values():
-                    metrics = await collector.get_metrics()
-                    total_transactions += metrics.get("transactions_collected", 0)
-                    total_blocks += metrics.get("blocks_processed", 0)
-                    if metrics.get("is_running", False):
-                        running_collectors += 1
+                # Aggregate metrics from unique collectors only
+                seen_collectors = set()
+                for blockchain, collector in self.collectors.items():
+                    canonical_blockchain = self._resolve_blockchain(blockchain)
+                    if canonical_blockchain not in seen_collectors:
+                        seen_collectors.add(canonical_blockchain)
+                        metrics = await collector.get_metrics()
+                        total_transactions += metrics.get("transactions_collected", 0)
+                        total_blocks += metrics.get("blocks_processed", 0)
+                        if metrics.get("is_running", False):
+                            running_collectors += 1
 
                 self.metrics.update(
                     {
@@ -417,12 +433,17 @@ class CollectorManager:
         """Monitor health of all collectors"""
         while self.is_running:
             try:
+                # Monitor health of unique collectors only
+                seen_collectors = set()
                 for blockchain, collector in self.collectors.items():
-                    if not collector.is_running:
-                        logger.warning(
-                            f"Collector {blockchain} is not running, attempting restart..."
-                        )
-                        asyncio.create_task(self.restart_collector(blockchain))
+                    canonical_blockchain = self._resolve_blockchain(blockchain)
+                    if canonical_blockchain not in seen_collectors:
+                        seen_collectors.add(canonical_blockchain)
+                        if not collector.is_running:
+                            logger.warning(
+                                f"Collector {canonical_blockchain} is not running, attempting restart..."
+                            )
+                            asyncio.create_task(self.restart_collector(canonical_blockchain))
 
                 await asyncio.sleep(300)  # Check every 5 minutes
 
@@ -434,13 +455,17 @@ class CollectorManager:
         """Get network statistics from all collectors"""
         stats = {}
 
+        # Get network stats from unique collectors only
+        seen_collectors = set()
         for blockchain, collector in self.collectors.items():
-            try:
-                if hasattr(collector, "get_network_stats"):
-                    stats[blockchain] = await collector.get_network_stats()
-            except Exception as e:
-                logger.error(f"Error getting network stats for {blockchain}: {e}")
-                stats[blockchain] = {"error": str(e)}
+            canonical_blockchain = self._resolve_blockchain(blockchain)
+            if canonical_blockchain not in seen_collectors:
+                seen_collectors.add(canonical_blockchain)
+                try:
+                    if hasattr(collector, "get_network_stats"):
+                        stats[canonical_blockchain] = await collector.get_network_stats()
+                except Exception as e:
+                    logger.error(f"Error getting network stats for {canonical_blockchain}: {e}")
 
         return stats
 

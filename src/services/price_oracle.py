@@ -64,7 +64,18 @@ class PriceOracle:
         self._base_url = base_url
         # Flat cache: canonical_asset_id -> (price_usd, fetched_at_epoch)
         self._cache: Dict[str, tuple[float, float]] = {}
-        self._lock = asyncio.Lock()
+        self._lock: Optional[asyncio.Lock] = None
+
+    @property
+    def _lock(self) -> asyncio.Lock:
+        """Lazy initialization of asyncio.Lock."""
+        if self.__lock is None:
+            self.__lock = asyncio.Lock()
+        return self.__lock
+
+    @_lock.setter
+    def _lock(self, value):
+        self.__lock = value
 
     async def get_prices_bulk(
         self,
@@ -132,15 +143,15 @@ class PriceOracle:
             headers["x-cg-pro-api-key"] = self._api_key
 
         async with self._lock:
-            for batch_start in range(0, len(asset_ids), _MAX_IDS_PER_CALL):
-                batch = asset_ids[batch_start: batch_start + _MAX_IDS_PER_CALL]
-                ids_param = ",".join(batch)
-                url = (
-                    f"{self._base_url}/simple/price"
-                    f"?ids={ids_param}&vs_currencies=usd"
-                )
-                try:
-                    async with aiohttp.ClientSession(headers=headers) as session:
+            async with aiohttp.ClientSession(headers=headers) as session:
+                for batch_start in range(0, len(asset_ids), _MAX_IDS_PER_CALL):
+                    batch = asset_ids[batch_start: batch_start + _MAX_IDS_PER_CALL]
+                    ids_param = ",".join(batch)
+                    url = (
+                        f"{self._base_url}/simple/price"
+                        f"?ids={ids_param}&vs_currencies=usd"
+                    )
+                    try:
                         async with session.get(
                             url, timeout=aiohttp.ClientTimeout(total=_REQUEST_TIMEOUT)
                         ) as resp:
@@ -152,14 +163,14 @@ class PriceOracle:
                                 )
                                 continue
                             data = await resp.json()
-                    for aid in batch:
-                        entry = data.get(aid)
-                        if entry and isinstance(entry, dict):
-                            usd = entry.get("usd")
-                            if isinstance(usd, (int, float)):
-                                prices[aid] = float(usd)
-                except Exception as exc:
-                    logger.debug("CoinGecko fetch failed for batch starting %s: %s", batch_start, exc)
+                            for aid in batch:
+                                entry = data.get(aid)
+                                if entry and isinstance(entry, dict):
+                                    usd = entry.get("usd")
+                                    if isinstance(usd, (int, float)):
+                                        prices[aid] = float(usd)
+                    except Exception as exc:
+                        logger.debug("CoinGecko fetch failed for batch starting %s: %s", batch_start, exc)
 
         return prices
 

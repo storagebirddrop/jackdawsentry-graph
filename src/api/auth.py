@@ -168,7 +168,27 @@ async def get_current_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ) -> User:
     """Get current authenticated user from token, backed by database lookup"""
+    # Auth bypass with safeguards - only allowed in non-production contexts
     if settings.GRAPH_AUTH_DISABLED:
+        # Additional safety checks: only allow bypass in debug mode or explicit development flag
+        if not (settings.DEBUG or getattr(settings, 'ALLOW_AUTH_BYPASS', False)):
+            logger.error(
+                "GRAPH_AUTH_DISABLED is true but bypass blocked - "
+                "not in DEBUG mode and ALLOW_AUTH_BYPASS not set. "
+                "This prevents accidental auth bypass in production."
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Authentication bypass configuration error",
+            )
+        
+        # Audit logging for auth bypass
+        logger.warning(
+            "AUTH BYPASS ACTIVE: GRAPH_AUTH_DISABLED=true - "
+            "Returning elevated local user without authentication. "
+            f"Timestamp: {datetime.now(timezone.utc).isoformat()}, "
+            f"DEBUG={settings.DEBUG}, ALLOW_AUTH_BYPASS={getattr(settings, 'ALLOW_AUTH_BYPASS', False)}"
+        )
         return User(
             id=UUID("00000000-0000-0000-0000-000000000000"),
             username="local",

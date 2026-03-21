@@ -1,0 +1,16 @@
+name: Semgrep Security Scan
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  semgrep:
+    uses: storagebirddrop/.github/.github/workflows/semgrep.yml@v1.0.0
+    with:
+      code_excludes: "frontend/app/node_modules"
+    permissions:
+      contents: read
+      security-events: write

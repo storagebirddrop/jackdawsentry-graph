@@ -1068,9 +1068,17 @@ class BaseCollector(ABC):
         """
         try:
             async with get_postgres_connection() as conn:
-                await conn.executemany(
-                    query,
-                    [
+                # Validate and filter logs before insertion
+                valid_logs = []
+                for log in tx.dex_logs:
+                    # Check required keys exist
+                    if not all(key in log for key in ['log_index', 'contract', 'event_sig']):
+                        logger.warning(
+                            f"Skipping malformed DEX log for tx {tx.hash}: missing required keys. "
+                            f"Log keys: {list(log.keys()) if isinstance(log, dict) else 'not a dict'}"
+                        )
+                        continue
+                    valid_logs.append(
                         (
                             tx.blockchain,
                             tx.hash,
@@ -1083,9 +1091,10 @@ class BaseCollector(ABC):
                             log.get("data"),
                             tx.timestamp,
                         )
-                        for log in tx.dex_logs
-                    ],
-                )
+                    )
+                
+                if valid_logs:
+                    await conn.executemany(query, valid_logs)
         except Exception as exc:
             logger.warning(
                 "dual-write _insert_raw_evm_logs failed for %s/%s: %s — "

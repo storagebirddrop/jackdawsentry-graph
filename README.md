@@ -116,6 +116,17 @@ For local graph exploration, load representative data first:
 python scripts/dev/load_perf_fixture_dataset.py
 ```
 
+## Recent Improvements
+
+The codebase has undergone significant enhancements for security, performance, and reliability:
+
+- **🔒 Security**: Fixed authentication bypass vulnerability with proper safeguards and audit logging
+- **🚀 Performance**: Optimized database queries, HTTP client usage, and enrichment processes  
+- **🐛 Reliability**: Enhanced error handling, stale row reclamation, and robust data validation
+- **🧪 Quality**: Improved test accuracy, fixed data formats, and enhanced code maintainability
+
+See [CHANGELOG.md](CHANGELOG.md) for detailed technical changes and migration notes.
+
 ## Development
 
 This repo is the default place for active sprint work on the graph product.
