@@ -129,38 +129,56 @@ def _redis_error():
 
 
 def test_cache_key_deterministic():
-    k1 = _expansion_cache_key("n", "expand_next", 10)
-    k2 = _expansion_cache_key("n", "expand_next", 10)
+    r = _request("expand_next", max_results=10)
+    r.seed_node_id = "n"
+    k1 = _expansion_cache_key("session-a", r)
+    k2 = _expansion_cache_key("session-a", r)
     assert k1 == k2
 
 
-def test_cache_key_excludes_session_id():
-    """Same seed + operation from different sessions must produce the same key."""
-    k1 = _expansion_cache_key("n", "expand_next", 10)
-    k2 = _expansion_cache_key("n", "expand_next", 10)
-    assert k1 == k2, "Cache key must be session-independent (PHASE3 spec P1.2)"
+def test_cache_key_scoped_to_session():
+    """Different sessions must produce different cache keys (security isolation)."""
+    r = _request("expand_next", max_results=10)
+    r.seed_node_id = "n"
+    k1 = _expansion_cache_key("session-a", r)
+    k2 = _expansion_cache_key("session-b", r)
+    assert k1 != k2, "Cache must be session-scoped so results cannot bleed across investigators"
 
 
 def test_cache_key_differs_by_seed():
-    k1 = _expansion_cache_key("ethereum:address:0xaaa", "expand_next", 10)
-    k2 = _expansion_cache_key("ethereum:address:0xbbb", "expand_next", 10)
+    r1 = _request("expand_next", max_results=10)
+    r1.seed_node_id = "ethereum:address:0xaaa"
+    r2 = _request("expand_next", max_results=10)
+    r2.seed_node_id = "ethereum:address:0xbbb"
+    k1 = _expansion_cache_key("session-a", r1)
+    k2 = _expansion_cache_key("session-a", r2)
     assert k1 != k2
 
 
 def test_cache_key_differs_by_operation():
-    k1 = _expansion_cache_key("n", "expand_next", 10)
-    k2 = _expansion_cache_key("n", "expand_prev", 10)
+    r1 = _request("expand_next", max_results=10)
+    r1.seed_node_id = "n"
+    r2 = _request("expand_prev", max_results=10)
+    r2.seed_node_id = "n"
+    k1 = _expansion_cache_key("session-a", r1)
+    k2 = _expansion_cache_key("session-a", r2)
     assert k1 != k2
 
 
 def test_cache_key_differs_by_max_results():
-    k1 = _expansion_cache_key("n", "expand_next", 10)
-    k2 = _expansion_cache_key("n", "expand_next", 20)
+    r1 = _request("expand_next", max_results=10)
+    r1.seed_node_id = "n"
+    r2 = _request("expand_next", max_results=20)
+    r2.seed_node_id = "n"
+    k1 = _expansion_cache_key("session-a", r1)
+    k2 = _expansion_cache_key("session-a", r2)
     assert k1 != k2
 
 
 def test_cache_key_prefixed():
-    k = _expansion_cache_key("n", "expand_next", 10)
+    r = _request("expand_next", max_results=10)
+    r.seed_node_id = "n"
+    k = _expansion_cache_key("session-a", r)
     assert k.startswith("tc:")
 
 

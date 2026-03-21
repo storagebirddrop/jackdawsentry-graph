@@ -206,6 +206,111 @@ _SEED_SERVICES: List[_ServiceRecord] = [
             "avalanche": ["0x794a61358d6845594f94dc1db02a252b5b4814ad"],
         },
     ),
+    # =========================================================================
+    # Solana DEX / aggregator programs
+    # Program IDs are case-sensitive base58 strings; stored as-is (not lowercased).
+    # The lookup at classify time must match the program ID exactly.
+    # =========================================================================
+    # ---- Raydium ----
+    _ServiceRecord(
+        protocol_id="raydium_amm",
+        display_name="Raydium AMM",
+        service_type="dex",
+        chains=["solana"],
+        contracts={
+            "solana": [
+                "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",  # AMM v4
+                "5quBtoiQqxF9Jv6KYKctB59NT3gtJD2Y65kdnB1Uev3h",  # AMM stable
+            ],
+        },
+    ),
+    # ---- Raydium CLMM ----
+    _ServiceRecord(
+        protocol_id="raydium_clmm",
+        display_name="Raydium CLMM",
+        service_type="dex",
+        chains=["solana"],
+        contracts={
+            "solana": [
+                "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK",  # CLMM
+            ],
+        },
+    ),
+    # ---- Orca ----
+    _ServiceRecord(
+        protocol_id="orca_whirlpool",
+        display_name="Orca Whirlpool",
+        service_type="dex",
+        chains=["solana"],
+        contracts={
+            "solana": [
+                "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc",  # Whirlpool
+            ],
+        },
+    ),
+    _ServiceRecord(
+        protocol_id="orca_v2",
+        display_name="Orca V2",
+        service_type="dex",
+        chains=["solana"],
+        contracts={
+            "solana": [
+                "9W959DqEETiGZocYWCQPaJ6sBmUzgfxXfqGeTEdp3aQP",  # Orca v2
+            ],
+        },
+    ),
+    # ---- Jupiter ----
+    _ServiceRecord(
+        protocol_id="jupiter",
+        display_name="Jupiter Aggregator",
+        service_type="aggregator",
+        chains=["solana"],
+        contracts={
+            "solana": [
+                "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4",  # v6
+                "JUP4Fb2cqiRUcaTHdrPC8h2gNsA2ETXiPDD33WcGuJB",  # v4
+                "JUP3c2Uh3WA4Ng34tw6kPd2G4LFfwhV3IwZ9JHfKq4e",  # v3
+            ],
+        },
+    ),
+    # ---- OpenBook (Serum successor) ----
+    _ServiceRecord(
+        protocol_id="openbook",
+        display_name="OpenBook DEX",
+        service_type="dex",
+        chains=["solana"],
+        contracts={
+            "solana": [
+                "srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX",  # Serum DEX v3
+                "opnb2LAfJYbRMAHHvqjCwQxanZn7ReEHp1k81EohpZb",  # OpenBook v2
+            ],
+        },
+    ),
+    # ---- Meteora ----
+    _ServiceRecord(
+        protocol_id="meteora",
+        display_name="Meteora",
+        service_type="dex",
+        chains=["solana"],
+        contracts={
+            "solana": [
+                "Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB",  # DLMM
+                "M2mx93ekt1fmXSVkTrUL9xVFHkmME8HTUi5Cyc5aF7K",  # Meteora Pools
+            ],
+        },
+    ),
+    # ---- Phoenix ----
+    _ServiceRecord(
+        protocol_id="phoenix",
+        display_name="Phoenix DEX",
+        service_type="dex",
+        chains=["solana"],
+        contracts={
+            "solana": [
+                "PhoeNiXZ8ByJGLkxNfZRnkUfjvmuYqLR89jjFHGqdXY",
+            ],
+        },
+    ),
 ]
 
 

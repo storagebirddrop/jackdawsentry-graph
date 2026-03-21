@@ -38,10 +38,13 @@ from src.trace_compiler.lineage import edge_id as mk_edge_id
 from src.trace_compiler.lineage import lineage_id as mk_lineage
 from src.trace_compiler.lineage import node_id as mk_node_id
 from src.trace_compiler.lineage import path_id as mk_path
+from src.trace_compiler.lineage import swap_event_id as mk_swap_event_id
+from src.trace_compiler.models import ActivitySummary
 from src.trace_compiler.models import AddressNodeData
 from src.trace_compiler.models import ExpandOptions
 from src.trace_compiler.models import InvestigationEdge
 from src.trace_compiler.models import InvestigationNode
+from src.trace_compiler.models import SwapEventData
 
 logger = logging.getLogger(__name__)
 
@@ -415,6 +418,225 @@ class SolanaChainCompiler(BaseChainCompiler):
             return []
 
     # ------------------------------------------------------------------
+    # Swap event helpers
+    # ------------------------------------------------------------------
+
+    async def _fetch_tx_spl_transfers(
+        self, tx_hash: str
+    ) -> List[Dict[str, Any]]:
+        """Fetch all SPL token transfers for a transaction from the event store.
+
+        Used by ``_maybe_build_solana_swap_event`` to find the input and
+        output legs of a DEX swap — both sides are SPL transfers (or wSOL)
+        in the same transaction.
+
+        Returns an empty list when the pool is unavailable or the query fails.
+        """
+        if self._pg is None:
+            return []
+        try:
+            sql = """
+                SELECT
+                    from_address,
+                    to_address,
+                    amount_normalized,
+                    asset_symbol,
+                    canonical_asset_id
+                FROM raw_token_transfers
+                WHERE blockchain = 'solana'
+                  AND tx_hash   = $1
+            """
+            async with self._pg.acquire() as conn:
+                rows = await conn.fetch(sql, tx_hash)
+            return [dict(r) for r in rows]
+        except Exception as exc:
+            logger.debug(
+                "SolanaChainCompiler._fetch_tx_spl_transfers failed for %s: %s",
+                tx_hash, exc,
+            )
+            return []
+
+    async def _maybe_build_solana_swap_event(
+        self,
+        *,
+        tx_hash: str,
+        seed_address: str,
+        seed_node_id: str,
+        program_address: str,
+        protocol_id: str,
+        protocol_label: str,
+        protocol_type: str,
+        session_id: str,
+        branch_id: str,
+        path_id: str,
+        depth: int,
+        timestamp: Optional[str],
+        ata_map: Dict[str, str],
+    ) -> Optional[Tuple[List[InvestigationNode], List[InvestigationEdge]]]:
+        """Promote a Solana DEX program interaction into a swap_event node.
+
+        Fetches all SPL token transfers in the transaction, resolves ATAs to
+        their owner wallets, and identifies the outgoing leg (seed sends a
+        token) and the incoming leg (seed receives a token).  Returns None
+        when both legs cannot be confirmed from the event store — in that
+        case the caller falls back to a generic service node.
+
+        The canonical SOL mint (wSOL) is treated like any other SPL token;
+        native SOL transfers appear in ``raw_transactions`` but are not
+        considered here because the SPL transfer legs are sufficient to
+        characterise the swap direction and amounts.
+
+        Args:
+            tx_hash:         Solana transaction signature.
+            seed_address:    The wallet address being expanded.
+            seed_node_id:    Node ID for the seed address.
+            program_address: DEX / AMM program address that triggered this row.
+            protocol_id:     Stable protocol identifier from the service registry.
+            protocol_label:  Human-readable protocol name.
+            protocol_type:   ``"dex"`` or ``"aggregator"``.
+            session_id:      Investigation session UUID.
+            branch_id:       Branch ID for lineage.
+            path_id:         Path ID for lineage.
+            depth:           Current hop depth.
+            timestamp:       ISO-8601 timestamp string, or None.
+            ata_map:         ATA → owner wallet mapping from the current expansion.
+
+        Returns:
+            (nodes, edges) on success, or None when both swap legs are absent.
+        """
+        spl_legs = await self._fetch_tx_spl_transfers(tx_hash)
+        if not spl_legs:
+            return None
+
+        # Resolve ATAs in the transfer legs so comparisons are against owner wallets.
+        seed_lc = seed_address.lower()
+
+        outgoing_asset: Optional[str] = None
+        outgoing_amount: float = 0.0
+        incoming_asset: Optional[str] = None
+        incoming_amount: float = 0.0
+
+        for leg in spl_legs:
+            from_addr = (
+                ata_map.get(leg.get("from_address", ""), leg.get("from_address", ""))
+            ).lower()
+            to_addr = (
+                ata_map.get(leg.get("to_address", ""), leg.get("to_address", ""))
+            ).lower()
+            amount = leg.get("amount_normalized")
+            if not amount:
+                continue
+            amount = float(amount)
+            symbol = (leg.get("asset_symbol") or leg.get("canonical_asset_id") or "").upper()
+            if not symbol:
+                continue
+
+            if from_addr == seed_lc and amount > 0:
+                # Pick the largest outgoing leg (ignore dust/fee legs).
+                if amount > outgoing_amount:
+                    outgoing_asset = symbol
+                    outgoing_amount = amount
+
+            if to_addr == seed_lc and amount > 0:
+                if amount > incoming_amount:
+                    incoming_asset = symbol
+                    incoming_amount = amount
+
+        if outgoing_asset is None or incoming_asset is None:
+            return None
+
+        # Reject identity swaps (same asset in and out, same amount — not a swap).
+        if (
+            outgoing_asset == incoming_asset
+            and abs(outgoing_amount - incoming_amount) < 1e-9
+        ):
+            return None
+
+        swap_id = mk_swap_event_id("solana", tx_hash, 0)
+        swap_node_id = mk_node_id("solana", "swap_event", swap_id)
+        lineage = mk_lineage(session_id, branch_id, path_id, depth)
+        route_summary = f"{outgoing_asset} → {incoming_asset}"
+        exchange_rate = (
+            incoming_amount / outgoing_amount if outgoing_amount > 0 else None
+        )
+
+        swap_node = InvestigationNode(
+            node_id=swap_node_id,
+            lineage_id=lineage,
+            node_type="swap_event",
+            branch_id=branch_id,
+            path_id=path_id,
+            depth=depth + 1,
+            display_label=protocol_label,
+            display_sublabel=route_summary,
+            chain="solana",
+            expandable_directions=[],
+            swap_event_data=SwapEventData(
+                swap_id=swap_id,
+                protocol_id=protocol_id,
+                chain="solana",
+                input_asset=outgoing_asset,
+                input_amount=outgoing_amount,
+                output_asset=incoming_asset,
+                output_amount=incoming_amount,
+                exchange_rate=exchange_rate,
+                route_summary=route_summary,
+                tx_hash=tx_hash,
+                timestamp=timestamp,
+            ),
+            activity_summary=ActivitySummary(
+                activity_type=(
+                    "router_interaction" if protocol_type == "aggregator"
+                    else "dex_interaction"
+                ),
+                title=f"{protocol_label} swap",
+                protocol_id=protocol_id,
+                protocol_type=protocol_type,
+                tx_hash=tx_hash,
+                tx_chain="solana",
+                timestamp=timestamp,
+                source_asset=outgoing_asset,
+                destination_asset=incoming_asset,
+                source_amount=outgoing_amount,
+                destination_amount=incoming_amount,
+                route_summary=route_summary,
+            ),
+        )
+
+        ingress_edge = InvestigationEdge(
+            edge_id=mk_edge_id(seed_node_id, swap_node_id, branch_id, tx_hash),
+            source_node_id=seed_node_id,
+            target_node_id=swap_node_id,
+            branch_id=branch_id,
+            path_id=path_id,
+            edge_type="swap_input",
+            value_native=outgoing_amount,
+            value_fiat=None,
+            asset_symbol=outgoing_asset,
+            tx_hash=tx_hash,
+            tx_chain="solana",
+            timestamp=timestamp,
+            direction="forward",
+        )
+        egress_edge = InvestigationEdge(
+            edge_id=mk_edge_id(swap_node_id, seed_node_id, branch_id, tx_hash + ":out"),
+            source_node_id=swap_node_id,
+            target_node_id=seed_node_id,
+            branch_id=branch_id,
+            path_id=path_id,
+            edge_type="swap_output",
+            value_native=incoming_amount,
+            value_fiat=None,
+            asset_symbol=incoming_asset,
+            tx_hash=tx_hash,
+            tx_chain="solana",
+            timestamp=timestamp,
+            direction="forward",
+        )
+
+        return [swap_node], [ingress_edge, egress_edge]
+
+    # ------------------------------------------------------------------
     # Graph construction
     # ------------------------------------------------------------------
 
@@ -509,7 +731,37 @@ class SolanaChainCompiler(BaseChainCompiler):
                     edges.extend(bridge_result[1])
                     continue
 
-            # --- Service classification ---
+            # --- Service classification + swap_event promotion ---
+            service_record = self._service.get_record("solana", counterparty)
+
+            if service_record is not None and service_record.service_type in {
+                "dex", "aggregator"
+            }:
+                # Attempt swap_event promotion first (ADR-017 / ADR-020 parity).
+                # Only honoured when both SPL legs are present in the event store.
+                swap_result = await self._maybe_build_solana_swap_event(
+                    tx_hash=tx_hash,
+                    seed_address=seed_address,
+                    seed_node_id=seed_node_id,
+                    program_address=counterparty,
+                    protocol_id=service_record.protocol_id,
+                    protocol_label=service_record.display_name,
+                    protocol_type=service_record.service_type,
+                    session_id=session_id,
+                    branch_id=branch_id,
+                    path_id=_path,
+                    depth=depth,
+                    timestamp=_ts_str,
+                    ata_map=ata_map,
+                )
+                if swap_result is not None:
+                    swap_nodes, swap_edges = swap_result
+                    for sn in swap_nodes:
+                        seen_nodes.setdefault(sn.node_id, sn)
+                    edges.extend(swap_edges)
+                    continue
+                # Fall through to generic service node when legs are missing.
+
             svc_result = await self._service.process_row(
                 tx_hash=tx_hash,
                 to_address=counterparty,
