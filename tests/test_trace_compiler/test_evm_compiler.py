@@ -325,7 +325,7 @@ async def test_expand_next_annotates_edge_value_fiat():
     compiler = _make_compiler(pg=pg)
 
     with patch(
-        "src.trace_compiler.chains.evm.price_oracle.get_prices_bulk",
+        "src.trace_compiler.chains._transfer_base.price_oracle.get_prices_bulk",
         new_callable=AsyncMock,
         return_value={"ethereum": 3000.0},
     ):
@@ -357,7 +357,7 @@ async def test_expand_next_no_price_leaves_value_fiat_none():
     compiler = _make_compiler(pg=pg)
 
     with patch(
-        "src.trace_compiler.chains.evm.price_oracle.get_prices_bulk",
+        "src.trace_compiler.chains._transfer_base.price_oracle.get_prices_bulk",
         new_callable=AsyncMock,
         return_value={"ethereum": None},
     ):
@@ -396,7 +396,7 @@ async def test_expand_next_min_value_fiat_filters_low_transfers():
     compiler = _make_compiler(pg=pg)
 
     with patch(
-        "src.trace_compiler.chains.evm.price_oracle.get_prices_bulk",
+        "src.trace_compiler.chains._transfer_base.price_oracle.get_prices_bulk",
         new_callable=AsyncMock,
         return_value={"ethereum": 3000.0},
     ):
@@ -427,7 +427,7 @@ async def test_expand_next_min_value_fiat_skips_filter_when_no_price():
     compiler = _make_compiler(pg=pg)
 
     with patch(
-        "src.trace_compiler.chains.evm.price_oracle.get_prices_bulk",
+        "src.trace_compiler.chains._transfer_base.price_oracle.get_prices_bulk",
         new_callable=AsyncMock,
         return_value={"ethereum": None},
     ):

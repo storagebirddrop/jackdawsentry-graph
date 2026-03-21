@@ -27,6 +27,8 @@ from typing import Optional
 from src.trace_compiler.chains.bitcoin import UTXOChainCompiler
 from src.trace_compiler.chains.evm import EVMChainCompiler
 from src.trace_compiler.chains.solana import SolanaChainCompiler
+from src.trace_compiler.chains.tron import TronChainCompiler
+from src.trace_compiler.chains.xrp import XRPChainCompiler
 from src.trace_compiler.lineage import edge_id as mk_edge_id
 from src.trace_compiler.lineage import lineage_id as mk_lineage_id
 from src.trace_compiler.lineage import new_operation_id
@@ -166,6 +168,8 @@ class TraceCompiler:
         _evm = EVMChainCompiler(postgres_pool, neo4j_driver, redis_client)
         _btc = UTXOChainCompiler(postgres_pool, neo4j_driver, redis_client)
         _sol = SolanaChainCompiler(postgres_pool, neo4j_driver, redis_client)
+        _tron = TronChainCompiler(postgres_pool, neo4j_driver, redis_client)
+        _xrp = XRPChainCompiler(postgres_pool, neo4j_driver, redis_client)
         self._chain_compilers: Dict[str, Any] = {
             chain: _evm for chain in _evm.supported_chains
         }
@@ -174,6 +178,12 @@ class TraceCompiler:
         )
         self._chain_compilers.update(
             {chain: _sol for chain in _sol.supported_chains}
+        )
+        self._chain_compilers.update(
+            {chain: _tron for chain in _tron.supported_chains}
+        )
+        self._chain_compilers.update(
+            {chain: _xrp for chain in _xrp.supported_chains}
         )
 
     async def create_session(
