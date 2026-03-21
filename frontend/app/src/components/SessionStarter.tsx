@@ -9,7 +9,9 @@ import { useGraphStore } from '../store/graphStore';
 
 const CHAINS = [
   'ethereum', 'bitcoin', 'solana', 'bsc', 'polygon', 'arbitrum',
-  'optimism', 'base', 'avalanche', 'tron', 'xrp', 'litecoin',
+  'optimism', 'base', 'avalanche', 'injective', 'starknet',
+  'tron', 'xrp', 'cosmos', 'sui',
+  'litecoin', 'bitcoin_cash', 'dogecoin',
 ];
 
 interface Props {
