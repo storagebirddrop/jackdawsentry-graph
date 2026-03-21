@@ -260,6 +260,15 @@ class TraceCompiler:
                     "graph_sessions: failed to persist session %s: %s", session_id, exc
                 )
 
+        # Enrich the seed node immediately — callers need sanctions/entity
+        # data visible on the root node before any expansion is attempted.
+        try:
+            from src.trace_compiler.attribution.enricher import enrich_nodes
+            enriched = await enrich_nodes([root_node])
+            root_node = enriched[0]
+        except Exception as exc:
+            logger.debug("Seed node enrichment failed: %s", exc)
+
         return SessionCreateResponse(
             session_id=session_id,
             root_node=root_node,
@@ -312,6 +321,9 @@ class TraceCompiler:
                         edges=cached_edges,
                     )
                     await self._register_bridge_hops(session_id, added_nodes)
+                    # Re-enrich on cache hit so sanctions are always current.
+                    from src.trace_compiler.attribution.enricher import enrich_nodes
+                    added_nodes = await enrich_nodes(added_nodes)
                     # Override session-scoped fields so the caller receives
                     # IDs that match their current session, not the session
                     # that originally populated the cache.
@@ -491,6 +503,11 @@ class TraceCompiler:
             )
 
         await self._register_bridge_hops(session_id, added_nodes)
+
+        # Enrich address nodes with sanctions and entity labels.
+        if added_nodes:
+            from src.trace_compiler.attribution.enricher import enrich_nodes
+            added_nodes = await enrich_nodes(added_nodes)
 
         # Cache successful non-empty results in Redis (15-minute TTL).
         if added_nodes and self._redis is not None:
