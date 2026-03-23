@@ -1417,21 +1417,85 @@ class BridgeTracer:
         tx_hash: str,
         blockchain: str,
     ) -> Optional[BridgeCorrelation]:
-        """Resolve a Chainflip hop by decoding the Vault SwapNative/SwapToken event.
+        """Resolve a Chainflip hop via vault event decode + swap-service API.
 
-        Extracts ``dstChain`` (Chainflip internal chain ID) from indexed topic1.
-        The broker status endpoint requires a ``swap_id`` (channel/deposit ID)
-        which is not emitted as an EVM event topic and is not currently derivable
-        from on-chain data alone, so the hop is marked pending with dest chain
-        populated from the decoded vault event.
+        Two-phase resolution:
+
+        1. **Vault event decode** — fetches the EVM tx receipt and decodes the
+           Chainflip SwapNative / SwapToken event to extract ``dstChain``.  This
+           always runs and is used as the fallback when the API call fails.
+
+        2. **Chainflip swap-service API** —
+           ``GET https://chainflip-swap.chainflip.io/v2/swaps/{tx_hash}`` accepts
+           the source vault transaction hash directly and returns full swap
+           lifecycle data including egress tx hash, destination address, and
+           completion status.  Requires no swap_id.
+
+        Args:
+            protocol:   BridgeProtocol registry entry for Chainflip.
+            tx_hash:    Source EVM vault transaction hash.
+            blockchain: Source chain name (e.g. ``"ethereum"``).
+
+        Returns:
+            BridgeCorrelation with status ``"completed"`` when egress tx is
+            confirmed, ``"pending"`` otherwise (dest chain still populated
+            from vault event if the API is unreachable).
         """
         from src.tracing.bridge_log_decoder import decode_bridge_deposit
 
+        # Phase 1: vault event decode for dest_chain label.
         decoded = await decode_bridge_deposit("chainflip", blockchain, tx_hash)
-        if decoded is None:
-            return None
+        dest_chain_from_log: Optional[str] = (decoded or {}).get("dest_chain")
 
-        dest_chain: Optional[str] = decoded.get("dest_chain")
+        # Phase 2: query the Chainflip swap-service API by source tx hash.
+        _CHAINFLIP_API = "https://chainflip-swap.chainflip.io"
+        dest_chain: Optional[str] = dest_chain_from_log
+        dest_tx_hash: Optional[str] = None
+        dest_address: Optional[str] = None
+        dest_asset: Optional[str] = None
+        status = "pending"
+        confidence = 0.65 if dest_chain else 0.35
+        resolution_method = "chainflip_log_decode"
+
+        try:
+            async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
+                resp = await client.get(
+                    f"{_CHAINFLIP_API}/v2/swaps/{tx_hash}",
+                    headers={"Accept": "application/json"},
+                )
+            if resp.status_code == 200:
+                data = resp.json()
+                # Chainflip API response shape (v2):
+                # {swap: {destChain, destAsset, egressTransactionRef,
+                #         destinationAddress, state, ...}}
+                swap = data.get("swap") or data  # top-level or nested
+                state = swap.get("state", "").lower()
+
+                # Destination fields
+                api_dest_chain: Optional[str] = swap.get("destChain")
+                if api_dest_chain:
+                    dest_chain = api_dest_chain.lower()
+                dest_address = swap.get("destinationAddress") or swap.get(
+                    "egressAddress"
+                )
+                dest_asset = swap.get("destAsset")
+                dest_tx_hash = swap.get("egressTransactionRef") or swap.get(
+                    "egressHash"
+                )
+
+                if state in {"complete", "completed", "egress_scheduled"} or dest_tx_hash:
+                    status = "completed"
+                    confidence = 0.95
+                    resolution_method = "chainflip_api"
+                else:
+                    status = "pending"
+                    confidence = 0.80
+                    resolution_method = "chainflip_api"
+        except Exception as exc:
+            logger.debug("Chainflip API lookup failed for %s: %s", tx_hash, exc)
+
+        if dest_chain is None and dest_tx_hash is None:
+            return None
 
         return BridgeCorrelation(
             protocol=protocol.protocol_id,
@@ -1443,18 +1507,16 @@ class BridgeTracer:
             source_amount=None,
             source_fiat_value=None,
             destination_chain=dest_chain,
-            destination_tx_hash=None,
-            destination_address=None,
-            destination_asset=None,
+            destination_tx_hash=dest_tx_hash,
+            destination_address=dest_address,
+            destination_asset=dest_asset,
             destination_amount=None,
             destination_fiat_value=None,
             time_delta_seconds=None,
-            # Dest chain is confirmed from vault event; swap_id needed for
-            # full resolution via broker API — leave as pending.
-            status="pending",
-            correlation_confidence=0.65 if dest_chain else 0.35,
+            status=status,
+            correlation_confidence=confidence,
             order_id=None,
-            resolution_method="chainflip_log_decode",
+            resolution_method=resolution_method,
         )
 
 
