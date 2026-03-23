@@ -102,3 +102,66 @@ Acceptance criteria:
       Cosmos Hub has minimal DEX activity (Osmosis is separate chain).
       Requires tx-type detection (AMMSwap tx type on XRP, IBC MsgSwap on
       Osmosis), not address lookup. Tracked for future pass.
+
+## Bridge Log-Decode Resolution Pass [COMPLETE]
+
+Goal:
+- resolve the 6 bridge protocols that stay `status=pending` because they require
+  an intermediate ID extracted from decoded event logs, not the tx hash alone
+
+Context:
+- `BridgeHopCompiler.process_row()` now calls `BridgeTracer.detect_bridge_hop()`
+  inline on first encounter and caches results in `bridge_correlations`
+- 9 of 15 protocols resolve immediately via tx hash (THORChain, Wormhole,
+  Allbridge, Synapse, LI.FI, Squid, Mayan, deBridge, Symbiosis)
+- 6 protocols now resolved:
+  - Across: log-decode V3FundsDeposited → depositId → status API (completed/pending)
+  - Celer: log-decode Send → transferId → POST status API (completed/pending)
+  - Stargate: log-decode Swap → LayerZero chainId → dest chain labelled (no dest tx)
+  - Rango: txId-based status API (no log decode needed)
+  - Relay: originTxHash-based API search (no log decode needed)
+  - Chainflip: log-decode SwapNative/SwapToken → dest chain labelled (swap_id unavailable)
+
+Acceptance criteria:
+- [x] `src/tracing/bridge_log_decoder.py` — fetches tx receipt via aiohttp,
+      decodes Across V3FundsDeposited, Celer Send, Stargate Swap, Chainflip
+      SwapNative/SwapToken using topic0 signatures computed via pycryptodome keccak256
+- [x] extracted IDs written to `bridge_correlations.order_id` (depositId / transferId)
+- [x] destination chain populated from decoded events for Stargate and Chainflip
+- [x] `BridgeTracer._resolve_liquidity`, `_resolve_burn_release`,
+      `_resolve_solver`, `_resolve_native_amm` all dispatch to new resolvers
+- [x] `EthereumCollector._extract_dex_logs` extended to also store bridge events
+      (Across, Celer, Stargate, Chainflip) in `raw_evm_logs` for future txs
+- [~] Chainflip: dest chain labelled but status stays `pending` — swap_id (broker
+      deposit channel ID) is not emitted as an EVM event and requires broker API
+      integration to fully resolve; noted for future pass
+
+## Attribution & Sanctions Data Pass [COMPLETE — ADR-021]
+
+Goal:
+- make address enrichment real: every newly discovered address in a session
+  should be screened against a sanctions list and labelled with entity/VASP
+  identity where known, using free or open data sources where possible
+
+Acceptance criteria:
+- [x] `src/services/sanctions.py` — `screen_address(address, chain)` against
+      OFAC SDN public XML; covers ETH/XBT/XMR/LTC/etc. crypto address entries;
+      JSON file cache at `/tmp/jackdaw_ofac_cache.json`, refreshed daily;
+      ETH addresses matched across all EVM chains
+- [x] `src/services/entity_attribution.py` — `lookup_addresses_bulk` backed by
+      21-entry hardcoded CEX/VASP seed (Binance ×7, Coinbase ×4, Kraken ×3,
+      OKX ×2, Bybit, Lido, RocketPool, Compound V3, MakerDAO) + optional
+      Etherscan v2 label lookup when `ETHERSCAN_API_KEY` is set
+- [x] `graph_dependencies.py` hooks now resolve to real implementations
+      (ImportError stubs only fire when running in private-only mode)
+- [x] `InvestigationNode.sanctioned` (top-level) now recognised by frontend:
+      `graphVisuals.tsx` `semanticMetaForNode`, `nodeGlyphKind`, `semanticBadges`
+      all check `node.sanctioned || address.is_sanctioned`
+- [x] `node.entity_category` (enricher-set) now shown as category badge;
+      `node.risk_score` (enricher-set) now drives AddressNode risk pill
+- [x] sanctioned addresses render with red `#dc2626` accent + Sanctioned badge
+      + sanction glyph (existing frontend logic now fires correctly)
+- [~] service_classifier lending/staking entries already present (Aave V3);
+      Compound/Lido/RocketPool covered via entity_attribution seed instead
+- [~] Solana/Tron/XRP/Cosmos attribution: no seed data currently; OFAC XBT
+      entries cover Bitcoin only; future pass needed for other chains

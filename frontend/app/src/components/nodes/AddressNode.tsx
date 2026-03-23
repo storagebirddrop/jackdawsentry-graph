@@ -84,7 +84,8 @@ export default function AddressNode({ data, selected }: NodeProps) {
   const valueLabel = appearance.showValues ? formatUsd(addr.fiat_value_usd) : null;
   const badges = semanticBadges(d);
   const hasEntityName = !!(d.entity_name ?? addr.entity_name);
-  const risk = addr.risk_score;
+  // Prefer node-level risk_score (set by enricher) over address_data copy.
+  const risk = d.risk_score ?? addr.risk_score;
   const isUnknownRisk = risk === null || risk === undefined;
 
   return (

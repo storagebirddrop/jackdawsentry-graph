@@ -708,24 +708,50 @@ class EthereumCollector(BaseCollector):
 
         return transfers
 
-    # keccak256 event signatures for DEX Swap events written to raw_evm_logs.
-    # Keep in sync with src/trace_compiler/chains/evm_log_decoder.py.
-    _DEX_SWAP_SIGS: frozenset = frozenset({
-        "0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822",  # Uniswap V2
-        "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67",  # Uniswap V3
-        "0x19b47279256b2a23a1665c810c8d55a1758940ee09377d4f8d26497a3577dc83",  # Uniswap V4
-    })
+    # keccak256 event signatures stored to raw_evm_logs.
+    # Includes DEX Swap events (sync'd with evm_log_decoder.py) and bridge
+    # deposit events (used by bridge_log_decoder.py for intermediate-ID resolution).
+    # Bridge sigs are computed lazily so the import cost is paid at first use.
+    @staticmethod
+    def _build_relevant_log_sigs() -> frozenset:
+        """Build the combined set of relevant event signatures for log storage."""
+        dex_sigs = {
+            "0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822",  # Uniswap V2
+            "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67",  # Uniswap V3
+            "0x19b47279256b2a23a1665c810c8d55a1758940ee09377d4f8d26497a3577dc83",  # Uniswap V4
+        }
+        try:
+            from src.tracing.bridge_log_decoder import (
+                ACROSS_V3_FUNDS_DEPOSITED,
+                CELER_SEND,
+                STARGATE_SWAP,
+                CHAINFLIP_SWAP_NATIVE,
+                CHAINFLIP_SWAP_TOKEN,
+            )
+            bridge_sigs = {
+                ACROSS_V3_FUNDS_DEPOSITED,
+                CELER_SEND,
+                STARGATE_SWAP,
+                CHAINFLIP_SWAP_NATIVE,
+                CHAINFLIP_SWAP_TOKEN,
+            }
+        except Exception:
+            bridge_sigs = set()
+        return frozenset(dex_sigs | bridge_sigs)
+
+    # Populated once on first call to _extract_dex_logs.
+    _DEX_SWAP_SIGS: frozenset = frozenset()
 
     def _extract_dex_logs(self, receipt: Dict) -> List[Dict]:
-        """Extract DEX Swap event logs from a transaction receipt.
+        """Extract relevant event logs from a transaction receipt for dual-write.
 
-        Iterates through the receipt log list and returns raw log data for
-        any log whose ``topics[0]`` matches a known DEX Swap event signature.
-        The returned dicts are ready for dual-write to ``raw_evm_logs`` via
+        Matches DEX Swap events (Uniswap V2/V3/V4) and bridge deposit events
+        (Across V3FundsDeposited, Celer Send, Stargate Swap, Chainflip Swap*).
+        The returned dicts are written to ``raw_evm_logs`` via
         ``base.py._insert_raw_evm_logs()``.
 
-        Only the raw log fields are returned — the ``decoded`` column is left
-        null and populated on-demand in ``EVMChainCompiler._fetch_dex_swap_log``.
+        The ``decoded`` column is left null and populated on-demand in
+        ``EVMChainCompiler._fetch_dex_swap_log``.
 
         Args:
             receipt: Transaction receipt dict as returned by
@@ -734,8 +760,12 @@ class EthereumCollector(BaseCollector):
         Returns:
             List of dicts with keys: ``log_index``, ``contract``,
             ``event_sig``, ``topic1``, ``topic2``, ``topic3``, ``data``.
-            Empty list if no DEX Swap logs are found.
+            Empty list if no relevant logs are found.
         """
+        # Lazily build the signature set on first call (avoids import at class-def time).
+        if not self._DEX_SWAP_SIGS:
+            EthereumCollector._DEX_SWAP_SIGS = self._build_relevant_log_sigs()
+
         result = []
         try:
             for log in receipt.get("logs", []):

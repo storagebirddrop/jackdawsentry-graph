@@ -58,8 +58,13 @@ export default function SessionStarter({ onSessionCreated }: Props) {
         gap: 16,
       }}
     >
+      <img
+        src="/favicon.svg"
+        alt="Jackdaw Sentry"
+        style={{ width: 56, height: 56, marginBottom: 4 }}
+      />
       <h1 style={{ fontSize: 24, margin: 0, color: '#60a5fa' }}>Jackdaw Sentry</h1>
-      <p style={{ color: '#94a3b8', margin: 0 }}>Investigation Graph v2</p>
+      <p style={{ color: '#94a3b8', margin: 0 }}>Investigation Graph — open source</p>
 
       <form
         onSubmit={handleSubmit}
@@ -146,6 +151,23 @@ export default function SessionStarter({ onSessionCreated }: Props) {
           the current event-store dataset.
         </div>
       </form>
+
+      <div style={{ marginTop: 24, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
+        <a
+          href="https://github.com/storagebirddrop"
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{ color: '#60a5fa', fontSize: 12, textDecoration: 'none' }}
+        >
+          github.com/storagebirddrop
+        </a>
+        <div style={{ color: '#64748b', fontSize: 11, textAlign: 'center' }}>
+          Support via Lightning / Nostr:{' '}
+          <span style={{ color: '#94a3b8', whiteSpace: 'nowrap' }}>
+            npub1p0jkd532p3c0za2s7fugq0tx30xm2e4v03n6udkqze6ercyf5fesgsy9fv@npub.cash
+          </span>
+        </div>
+      </div>
     </div>
   );
 }

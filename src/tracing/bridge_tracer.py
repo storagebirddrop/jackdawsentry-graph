@@ -372,12 +372,18 @@ class BridgeTracer:
         tx_hash: str,
         blockchain: str,
     ) -> Optional[BridgeCorrelation]:
-        """Resolve native_amm hops. Only THORChain supports direct tx_hash lookup."""
+        """Resolve native_amm hops.
+
+        THORChain: direct tx_hash API lookup.
+        Chainflip: decode vault SwapNative/SwapToken event to get dstChain,
+                   then attempt broker status lookup by swap_id when available.
+        """
         if protocol.protocol_id == "thorchain":
             return await self._thorchain_lookup(protocol, tx_hash, blockchain)
-        # Chainflip requires a swap_id extracted from tx calldata; skip for now.
+        if protocol.protocol_id == "chainflip":
+            return await self._chainflip_lookup(protocol, tx_hash, blockchain)
         logger.debug(
-            "_resolve_native_amm: %s requires intermediate ID — returning None",
+            "_resolve_native_amm: %s not handled — returning None",
             protocol.protocol_id,
         )
         return None
@@ -604,12 +610,17 @@ class BridgeTracer:
         tx_hash: str,
         blockchain: str,
     ) -> Optional[BridgeCorrelation]:
-        """Resolve burn_release hops. Only Synapse supports direct tx_hash lookup."""
+        """Resolve burn_release hops.
+
+        Synapse: direct tx_hash API lookup.
+        Celer: decode Send event to extract transferId, then call POST status API.
+        """
         if protocol.protocol_id == "synapse":
             return await self._synapse_lookup(protocol, tx_hash, blockchain)
-        # Celer needs transfer_id from decoded event logs.
+        if protocol.protocol_id == "celer":
+            return await self._celer_lookup(protocol, tx_hash, blockchain)
         logger.debug(
-            "_resolve_burn_release: %s requires decoded event logs — returning None",
+            "_resolve_burn_release: %s not handled — returning None",
             protocol.protocol_id,
         )
         return None
@@ -700,18 +711,25 @@ class BridgeTracer:
         tx_hash: str,
         blockchain: str,
     ) -> Optional[BridgeCorrelation]:
-        """Dispatch solver-mechanism protocols to their specific resolvers."""
+        """Dispatch solver-mechanism protocols to their specific resolvers.
+
+        LI.FI, Squid, Mayan, deBridge, Symbiosis: direct tx_hash API lookup.
+        Rango: status API supports txId parameter — no log decode required.
+        Relay: status API supports originTxHash search — no log decode required.
+        """
         resolvers = {
             "lifi": self._lifi_lookup,
             "squid": self._squid_lookup,
             "mayan": self._mayan_lookup,
             "debridge": self._debridge_lookup,
             "symbiosis": self._symbiosis_lookup,
+            "rango": self._rango_lookup,
+            "relay": self._relay_lookup,
         }
         resolver = resolvers.get(protocol.protocol_id)
         if resolver is None:
             logger.debug(
-                "_resolve_solver: %s requires intermediate request ID — returning None",
+                "_resolve_solver: %s not handled — returning None",
                 protocol.protocol_id,
             )
             return None
@@ -995,7 +1013,8 @@ class BridgeTracer:
         )
 
     # ------------------------------------------------------------------
-    # liquidity — Stargate (no public status API), Across (needs depositId)
+    # liquidity — Across (depositId from logs → status API)
+    #             Stargate (destChain from logs, no public status API)
     # ------------------------------------------------------------------
 
     async def _resolve_liquidity(
@@ -1004,17 +1023,439 @@ class BridgeTracer:
         tx_hash: str,
         blockchain: str,
     ) -> Optional[BridgeCorrelation]:
-        """Liquidity-pool bridges require IDs extracted from event logs.
+        """Resolve liquidity-pool bridge hops via on-chain event log decoding.
 
-        Neither Stargate nor Across exposes a public tx_hash → status API
-        that does not require the depositId / send-token ID from decoded logs.
-        Return None until a log-decoding layer is in place.
+        Across:   Fetch receipt → decode V3FundsDeposited → depositId →
+                  GET /deposit/status?depositId={id}&originChainId={chainId}.
+        Stargate: Fetch receipt → decode Swap → LayerZero destChainId →
+                  mark completed with destination chain (no public status API).
         """
+        if protocol.protocol_id == "across":
+            return await self._across_lookup(protocol, tx_hash, blockchain)
+        if protocol.protocol_id == "stargate":
+            return await self._stargate_lookup(protocol, tx_hash, blockchain)
         logger.debug(
-            "_resolve_liquidity: %s requires decoded event logs — returning None",
+            "_resolve_liquidity: %s not handled — returning None",
             protocol.protocol_id,
         )
         return None
+
+    async def _across_lookup(
+        self,
+        protocol: BridgeProtocol,
+        tx_hash: str,
+        blockchain: str,
+    ) -> Optional[BridgeCorrelation]:
+        """Resolve an Across V3 deposit by decoding the V3FundsDeposited event.
+
+        Extracts ``depositId`` and ``destinationChainId`` from indexed topics,
+        then queries ``/deposit/status?depositId={id}&originChainId={chainId}``.
+        """
+        from src.tracing.bridge_log_decoder import decode_bridge_deposit
+        from src.tracing.bridge_log_decoder import CHAIN_TO_EVM_ID
+        from src.tracing.bridge_log_decoder import _LZ_V1_CHAIN_MAP  # noqa: F401
+
+        decoded = await decode_bridge_deposit("across", blockchain, tx_hash)
+        if decoded is None:
+            return None
+
+        deposit_id: int = decoded["deposit_id"]
+        dest_chain_evm: int = decoded["dest_chain_id_evm"]
+        origin_chain_id = CHAIN_TO_EVM_ID.get(blockchain)
+
+        # Build status URL; originChainId required by Across API
+        params = f"depositId={deposit_id}"
+        if origin_chain_id:
+            params += f"&originChainId={origin_chain_id}"
+        url = f"{protocol.api_base}/deposit/status?{params}"
+
+        data = await self._make_http_request(url)
+        if data is None:
+            # Log decode succeeded but API not yet ready; store order_id as pending
+            dest_chain = _evm_chain_id_to_name(dest_chain_evm)
+            return BridgeCorrelation(
+                protocol=protocol.protocol_id,
+                mechanism=protocol.mechanism,
+                source_chain=blockchain,
+                source_tx_hash=tx_hash,
+                source_address="",
+                source_asset="",
+                source_amount=None,
+                source_fiat_value=None,
+                destination_chain=dest_chain,
+                destination_tx_hash=None,
+                destination_address=None,
+                destination_asset=None,
+                destination_amount=None,
+                destination_fiat_value=None,
+                time_delta_seconds=None,
+                status="pending",
+                correlation_confidence=0.75,
+                order_id=str(deposit_id),
+                resolution_method="across_log_decode",
+            )
+
+        status_raw = (data.get("status") or "").upper()
+        is_filled = status_raw in ("FILLED", "RELAYED")
+
+        dest_chain = (data.get("destinationChainId") and _evm_chain_id_to_name(data["destinationChainId"])) \
+            or _evm_chain_id_to_name(dest_chain_evm)
+        dest_address = data.get("depositor") or data.get("recipient")
+        dest_tx_hash = data.get("fillTxHash")
+        src_asset = data.get("inputToken")
+        dest_asset = data.get("outputToken")
+        src_amount = _safe_float(data.get("inputAmount"))
+        dest_amount = _safe_float(data.get("outputAmount"))
+
+        return BridgeCorrelation(
+            protocol=protocol.protocol_id,
+            mechanism=protocol.mechanism,
+            source_chain=blockchain,
+            source_tx_hash=tx_hash,
+            source_address="",
+            source_asset=src_asset or "",
+            source_amount=src_amount,
+            source_fiat_value=None,
+            destination_chain=dest_chain,
+            destination_tx_hash=dest_tx_hash,
+            destination_address=dest_address,
+            destination_asset=dest_asset,
+            destination_amount=dest_amount,
+            destination_fiat_value=None,
+            time_delta_seconds=None,
+            status="completed" if is_filled else "pending",
+            correlation_confidence=0.93 if is_filled else 0.75,
+            order_id=str(deposit_id),
+            resolution_method="across_log_decode",
+        )
+
+    async def _stargate_lookup(
+        self,
+        protocol: BridgeProtocol,
+        tx_hash: str,
+        blockchain: str,
+    ) -> Optional[BridgeCorrelation]:
+        """Resolve a Stargate V1 hop by decoding the Router Swap event.
+
+        Extracts the LayerZero destination chain ID from indexed topic1.
+        Stargate has no public REST status API so the destination tx hash and
+        address cannot be resolved here — the hop is marked ``completed`` with
+        only destination chain populated (confidence 0.70).
+        """
+        from src.tracing.bridge_log_decoder import decode_bridge_deposit
+
+        decoded = await decode_bridge_deposit("stargate", blockchain, tx_hash)
+        if decoded is None:
+            return None
+
+        dest_chain: Optional[str] = decoded.get("dest_chain")
+
+        return BridgeCorrelation(
+            protocol=protocol.protocol_id,
+            mechanism=protocol.mechanism,
+            source_chain=blockchain,
+            source_tx_hash=tx_hash,
+            source_address="",
+            source_asset="",
+            source_amount=None,
+            source_fiat_value=None,
+            destination_chain=dest_chain,
+            destination_tx_hash=None,
+            destination_address=None,
+            destination_asset=None,
+            destination_amount=None,
+            destination_fiat_value=None,
+            time_delta_seconds=None,
+            # Destination chain is confirmed from event; tx hash unknown without
+            # LayerZero scan API — mark completed at reduced confidence.
+            status="completed" if dest_chain else "pending",
+            correlation_confidence=0.70 if dest_chain else 0.40,
+            order_id=str(decoded.get("lz_chain_id", "")),
+            resolution_method="stargate_log_decode",
+        )
+
+    # ------------------------------------------------------------------
+    # Celer cBridge — Send event log decode + POST status API
+    # ------------------------------------------------------------------
+
+    async def _celer_lookup(
+        self,
+        protocol: BridgeProtocol,
+        tx_hash: str,
+        blockchain: str,
+    ) -> Optional[BridgeCorrelation]:
+        """Resolve a Celer cBridge hop by decoding the Send event.
+
+        Extracts ``transferId`` (indexed bytes32 in topic1) and ``dstChainId``
+        (from ABI-encoded log data word 2), then calls the POST status endpoint.
+        """
+        from src.tracing.bridge_log_decoder import decode_bridge_deposit
+
+        decoded = await decode_bridge_deposit("celer", blockchain, tx_hash)
+        if decoded is None:
+            return None
+
+        transfer_id: str = decoded["transfer_id"]
+        dst_chain_id: int = decoded["dst_chain_id_evm"]
+        dest_chain = _evm_chain_id_to_name(dst_chain_id)
+
+        # Celer status API is a POST endpoint
+        url = f"{protocol.api_base}/v2/getTransferStatus"
+        try:
+            async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
+                resp = await client.post(url, json={"transfer_id": transfer_id})
+            if resp.status_code == 404:
+                # Known transfer_id but not yet indexed — store as pending
+                return BridgeCorrelation(
+                    protocol=protocol.protocol_id,
+                    mechanism=protocol.mechanism,
+                    source_chain=blockchain,
+                    source_tx_hash=tx_hash,
+                    source_address="",
+                    source_asset="",
+                    source_amount=None,
+                    source_fiat_value=None,
+                    destination_chain=dest_chain,
+                    destination_tx_hash=None,
+                    destination_address=None,
+                    destination_asset=None,
+                    destination_amount=None,
+                    destination_fiat_value=None,
+                    time_delta_seconds=None,
+                    status="pending",
+                    correlation_confidence=0.72,
+                    order_id=transfer_id,
+                    resolution_method="celer_log_decode",
+                )
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as exc:
+            logger.debug("_celer_lookup POST failed for %s: %s", tx_hash[:16], exc)
+            # Return partial result with decoded transfer_id and dest chain
+            return BridgeCorrelation(
+                protocol=protocol.protocol_id,
+                mechanism=protocol.mechanism,
+                source_chain=blockchain,
+                source_tx_hash=tx_hash,
+                source_address="",
+                source_asset="",
+                source_amount=None,
+                source_fiat_value=None,
+                destination_chain=dest_chain,
+                destination_tx_hash=None,
+                destination_address=None,
+                destination_asset=None,
+                destination_amount=None,
+                destination_fiat_value=None,
+                time_delta_seconds=None,
+                status="pending",
+                correlation_confidence=0.72,
+                order_id=transfer_id,
+                resolution_method="celer_log_decode",
+            )
+
+        # Celer transfer statuses: 0=unknown, 1=submitting, 2=failed, 3=waiting_for_sgn_confirmation,
+        # 4=waiting_for_fund_release, 5=completed, 6=to_be_refunded, 7=requesting_refund,
+        # 8=refund_to_be_confirmed, 9=confirming_your_refund, 10=refunded
+        status_code: int = (data.get("status") or {}).get("code") if isinstance(data.get("status"), dict) \
+            else int(data.get("status") or 0)
+        is_complete = status_code == 5
+        dest_tx_hash = data.get("dst_block_tx_link") or data.get("dst_transfer_tx_hash")
+        dest_address = data.get("dst_transfer") and (data["dst_transfer"].get("receiver"))
+
+        return BridgeCorrelation(
+            protocol=protocol.protocol_id,
+            mechanism=protocol.mechanism,
+            source_chain=blockchain,
+            source_tx_hash=tx_hash,
+            source_address="",
+            source_asset="",
+            source_amount=None,
+            source_fiat_value=None,
+            destination_chain=dest_chain,
+            destination_tx_hash=dest_tx_hash,
+            destination_address=dest_address,
+            destination_asset=None,
+            destination_amount=None,
+            destination_fiat_value=None,
+            time_delta_seconds=None,
+            status="completed" if is_complete else "pending",
+            correlation_confidence=0.90 if is_complete else 0.72,
+            order_id=transfer_id,
+            resolution_method="celer_log_decode",
+        )
+
+    # ------------------------------------------------------------------
+    # Rango — tx-hash-based API query (no log decode required)
+    # ------------------------------------------------------------------
+
+    async def _rango_lookup(
+        self,
+        protocol: BridgeProtocol,
+        tx_hash: str,
+        blockchain: str,
+    ) -> Optional[BridgeCorrelation]:
+        """Resolve a Rango Exchange hop using their txId-based status endpoint.
+
+        Rango's ``/basic/status`` supports a ``txId`` query parameter that
+        accepts the source transaction hash without requiring a pre-fetched
+        ``requestId``.  An API key is recommended but the endpoint is reachable
+        without one for basic status lookups.
+        """
+        url = f"{protocol.api_base}/basic/status?txId={tx_hash}"
+
+        data = await self._make_http_request(url)
+        if data is None:
+            return None
+
+        rango_status = (data.get("status") or "").upper()
+        is_complete = rango_status in ("SUCCESS",)
+
+        dest_chain = (data.get("output") or {}).get("blockchainType", "").lower() or None
+        dest_address = (data.get("output") or {}).get("address")
+        dest_asset = (data.get("output") or {}).get("token", {}).get("symbol") if data.get("output") else None
+        request_id = data.get("requestId")
+
+        return BridgeCorrelation(
+            protocol=protocol.protocol_id,
+            mechanism=protocol.mechanism,
+            source_chain=blockchain,
+            source_tx_hash=tx_hash,
+            source_address="",
+            source_asset=(data.get("input") or {}).get("token", {}).get("symbol", "") if data.get("input") else "",
+            source_amount=_safe_float((data.get("input") or {}).get("amount")),
+            source_fiat_value=None,
+            destination_chain=dest_chain,
+            destination_tx_hash=None,
+            destination_address=dest_address,
+            destination_asset=dest_asset,
+            destination_amount=_safe_float((data.get("output") or {}).get("amount")),
+            destination_fiat_value=None,
+            time_delta_seconds=None,
+            status="completed" if is_complete else "pending",
+            correlation_confidence=0.85 if is_complete else 0.55,
+            order_id=request_id,
+            resolution_method="rango_api",
+        )
+
+    # ------------------------------------------------------------------
+    # Relay Bridge — tx-hash-based API query (no log decode required)
+    # ------------------------------------------------------------------
+
+    async def _relay_lookup(
+        self,
+        protocol: BridgeProtocol,
+        tx_hash: str,
+        blockchain: str,
+    ) -> Optional[BridgeCorrelation]:
+        """Resolve a Relay Bridge hop by searching requests by origin tx hash.
+
+        Relay's API supports ``GET /requests?originChainId={id}&originTxHash={hash}``
+        which returns matching requests without requiring the internal requestId.
+        """
+        from src.tracing.bridge_log_decoder import CHAIN_TO_EVM_ID
+
+        origin_chain_id = CHAIN_TO_EVM_ID.get(blockchain)
+        if not origin_chain_id:
+            return None
+
+        url = (
+            f"{protocol.api_base}/requests"
+            f"?originChainId={origin_chain_id}&originTxHash={tx_hash}"
+        )
+        data = await self._make_http_request(url)
+        if data is None:
+            return None
+
+        # Relay returns a list or a dict with a requests array
+        requests = data if isinstance(data, list) else (data.get("requests") or [])
+        if not requests:
+            return None
+
+        req = requests[0]
+        request_id = req.get("id")
+        relay_status = (req.get("status") or "").lower()
+        is_complete = relay_status in ("success", "fulfilled")
+
+        dest_chain_id = req.get("destinationChainId")
+        dest_chain = _evm_chain_id_to_name(dest_chain_id)
+        dest_address = req.get("recipient")
+        dest_tx_hash = req.get("destinationTxHash") or req.get("fillTxHash")
+        dest_asset = (req.get("currency") or {}).get("symbol") if req.get("currency") else None
+        src_amount = _safe_float(req.get("requestedAmount") or req.get("value"))
+        dest_amount = _safe_float(req.get("fillAmount"))
+
+        return BridgeCorrelation(
+            protocol=protocol.protocol_id,
+            mechanism=protocol.mechanism,
+            source_chain=blockchain,
+            source_tx_hash=tx_hash,
+            source_address=req.get("from", ""),
+            source_asset="",
+            source_amount=src_amount,
+            source_fiat_value=None,
+            destination_chain=dest_chain,
+            destination_tx_hash=dest_tx_hash,
+            destination_address=dest_address,
+            destination_asset=dest_asset,
+            destination_amount=dest_amount,
+            destination_fiat_value=None,
+            time_delta_seconds=None,
+            status="completed" if is_complete else "pending",
+            correlation_confidence=0.88 if is_complete else 0.60,
+            order_id=request_id,
+            resolution_method="relay_api",
+        )
+
+    # ------------------------------------------------------------------
+    # Chainflip — vault event log decode
+    # ------------------------------------------------------------------
+
+    async def _chainflip_lookup(
+        self,
+        protocol: BridgeProtocol,
+        tx_hash: str,
+        blockchain: str,
+    ) -> Optional[BridgeCorrelation]:
+        """Resolve a Chainflip hop by decoding the Vault SwapNative/SwapToken event.
+
+        Extracts ``dstChain`` (Chainflip internal chain ID) from indexed topic1.
+        The broker status endpoint requires a ``swap_id`` (channel/deposit ID)
+        which is not emitted as an EVM event topic and is not currently derivable
+        from on-chain data alone, so the hop is marked pending with dest chain
+        populated from the decoded vault event.
+        """
+        from src.tracing.bridge_log_decoder import decode_bridge_deposit
+
+        decoded = await decode_bridge_deposit("chainflip", blockchain, tx_hash)
+        if decoded is None:
+            return None
+
+        dest_chain: Optional[str] = decoded.get("dest_chain")
+
+        return BridgeCorrelation(
+            protocol=protocol.protocol_id,
+            mechanism=protocol.mechanism,
+            source_chain=blockchain,
+            source_tx_hash=tx_hash,
+            source_address="",
+            source_asset="",
+            source_amount=None,
+            source_fiat_value=None,
+            destination_chain=dest_chain,
+            destination_tx_hash=None,
+            destination_address=None,
+            destination_asset=None,
+            destination_amount=None,
+            destination_fiat_value=None,
+            time_delta_seconds=None,
+            # Dest chain is confirmed from vault event; swap_id needed for
+            # full resolution via broker API — leave as pending.
+            status="pending",
+            correlation_confidence=0.65 if dest_chain else 0.35,
+            order_id=None,
+            resolution_method="chainflip_log_decode",
+        )
 
 
 # ---------------------------------------------------------------------------

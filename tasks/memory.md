@@ -104,6 +104,32 @@ Read this file before touching graph schema, graph API, trace compiler semantics
   Keep the logic honest: when the transaction context is incomplete, fall back
   to a generic `service` node rather than inventing swap semantics.
 
+### ADR-022 (COMPLETE — Bridge Log-Decode Resolution Pass)
+- `src/tracing/bridge_log_decoder.py` added: fetches tx receipt via aiohttp,
+  decodes bridge events using keccak256 topic0 sigs (pycryptodome / eth_hash fallback).
+- All 6 previously-pending protocols now resolve in `BridgeTracer`:
+  - Across: V3FundsDeposited → depositId → `/deposit/status` API
+  - Celer: Send → transferId → POST `/v2/getTransferStatus`
+  - Stargate: Swap → LayerZero V1 chainId → dest chain labelled (no REST API)
+  - Rango: txId param on `/basic/status` (no log decode)
+  - Relay: originTxHash search on `/requests` (no log decode)
+  - Chainflip: SwapNative/SwapToken → dest chain labelled; stays `pending` —
+    swap_id (broker deposit channel) not emitted in EVM events
+- `EthereumCollector._extract_dex_logs` extended: also stores Across/Celer/
+  Stargate/Chainflip events in `raw_evm_logs` for future transactions.
+
+### ADR-021 (COMPLETE — Attribution & Sanctions Data Pass)
+- `src/services/sanctions.py` implemented: OFAC SDN XML fetch + JSON file cache
+  (`/tmp/jackdaw_ofac_cache.json`, 24h TTL). ETH addresses match all EVM chains.
+- `src/services/entity_attribution.py` implemented: 21-entry hardcoded CEX/VASP
+  seed (Binance, Coinbase, Kraken, OKX, Bybit, Lido, RocketPool, Compound, Maker)
+  + Etherscan v2 label API when `ETHERSCAN_API_KEY` is configured.
+- Frontend field-name mismatches fixed in `graphVisuals.tsx`:
+  - `node.sanctioned` now checked alongside `address.is_sanctioned`
+  - `node.entity_category` now drives category badge (enricher sets top-level)
+  - `node.risk_score` now drives risk pill in `AddressNode.tsx`
+- Remaining gap: no attribution seed for Solana/Tron/XRP/Cosmos/Sui.
+
 ## Guardrails
 
 - Do not widen this repo into the private compliance dashboard.

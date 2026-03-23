@@ -252,6 +252,8 @@ export interface InvestigationNode {
   entity_name?: string;
   entity_category?: string;
   risk_score?: number;
+  // Top-level sanctioned flag set by the enricher (mirrors address_data.is_sanctioned).
+  sanctioned?: boolean;
   balance_fiat?: number;
   address_data?: AddressNodeData;  // shorthand alias used by some compilers
   entity_data?: EntityNodeData;

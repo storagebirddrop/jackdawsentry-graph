@@ -410,7 +410,8 @@ export function semanticMetaForNode(node: InvestigationNode): NodeSemanticMeta |
     if (address.is_coinjoin_halt) {
       return { key: 'bitcoin:coinjoin', label: 'CoinJoin', family: 'Bitcoin', color: '#b45309' };
     }
-    if (address.is_sanctioned) {
+    // Check both address_data.is_sanctioned (legacy) and top-level node.sanctioned (enricher).
+    if (address.is_sanctioned || node.sanctioned) {
       return { key: 'exposure:sanctioned', label: 'Sanctioned', family: 'Exposure', color: '#dc2626' };
     }
   }
@@ -436,7 +437,7 @@ export function nodeSemanticAccentColor(
 export function nodeGlyphKind(node: InvestigationNode): GlyphKind {
   if (node.node_type === 'address') {
     const address = (node.address_data ?? node.node_data) as AddressNodeData;
-    if (address.is_sanctioned) return 'sanction';
+    if (address.is_sanctioned || node.sanctioned) return 'sanction';
     if (address.is_mixer) return 'mixer';
     if (address.is_coinjoin_halt) return 'coinjoin';
     return 'address';
@@ -464,10 +465,11 @@ export function semanticBadges(node: InvestigationNode): Array<{ label: string; 
   if (node.node_type === 'address') {
     const address = (node.address_data ?? node.node_data) as AddressNodeData;
     return [
-      ...(address.is_sanctioned ? [{ label: 'Sanctioned', tone: '#dc2626' }] : []),
+      ...((address.is_sanctioned || node.sanctioned) ? [{ label: 'Sanctioned', tone: '#dc2626' }] : []),
       ...(address.is_mixer ? [{ label: 'Mixer', tone: '#7c3aed' }] : []),
       ...(address.is_coinjoin_halt ? [{ label: 'CoinJoin', tone: '#b45309' }] : []),
-      ...(address.entity_category ? [{ label: address.entity_category, tone: '#2563eb' }] : []),
+      // entity_category set by enricher lives on node; address_data copy is a fallback.
+      ...((node.entity_category ?? address.entity_category) ? [{ label: (node.entity_category ?? address.entity_category)!, tone: '#2563eb' }] : []),
     ];
   }
   if (node.node_type === 'entity' || node.node_type === 'service') {
