@@ -122,6 +122,11 @@ class Transaction:
     # as a CoinJoin candidate.  Taint analysis MUST halt at CoinJoin txs and
     # flag as AMBIGUOUS — never silently propagate through.
     is_coinjoin: bool = False
+    # Chain-native transaction type string, populated by chain-specific collectors.
+    # XRP Ledger: TransactionType field (e.g. "AMMSwap", "OfferCreate", "Payment").
+    # Cosmos:     First message @type short name (e.g. "MsgSwapExactAmountIn").
+    # Other chains: None — not populated.
+    tx_type: Optional[str] = None
     # Bridge flags set by the collector when a bridge contract interaction is detected.
     is_bridge_ingress: bool = False
     is_bridge_egress: bool = False
@@ -789,13 +794,15 @@ class BaseCollector(ABC):
                 from_address, to_address,
                 value_native,
                 gas_used, gas_price, status,
+                tx_type,
                 is_bridge_ingress, is_bridge_egress, bridge_protocol
             ) VALUES (
                 $1, $2, $3, $4,
                 $5, $6,
                 $7,
                 $8, $9, $10,
-                $11, $12, $13
+                $11,
+                $12, $13, $14
             )
             ON CONFLICT (blockchain, tx_hash) DO NOTHING
         """
@@ -813,6 +820,7 @@ class BaseCollector(ABC):
                     tx.gas_used,
                     tx.gas_price,
                     tx.status,
+                    tx.tx_type,
                     tx.is_bridge_ingress,
                     tx.is_bridge_egress,
                     tx.bridge_protocol,

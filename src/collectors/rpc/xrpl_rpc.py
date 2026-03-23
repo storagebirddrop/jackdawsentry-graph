@@ -124,6 +124,7 @@ class XrplRpcClient(BaseRPCClient):
             block_number=ledger_index,
             fee=fee_xrp,
             status=status,
+            tx_type=result.get("TransactionType"),
         )
 
     # ------------------------------------------------------------------

@@ -151,6 +151,52 @@ class _GenericTransferChainCompiler(BaseChainCompiler):
         """
         return None
 
+    async def _try_tx_type_swap_promotion(
+        self,
+        *,
+        tx_hash: str,
+        seed_node_id: str,
+        seed_address: str,
+        counterparty: str,
+        chain: str,
+        session_id: str,
+        branch_id: str,
+        path_id: str,
+        depth: int,
+        direction: str,
+        timestamp: Optional[str],
+        tx_type: Optional[str],
+    ) -> Optional[Tuple[List[InvestigationNode], List[InvestigationEdge]]]:
+        """Attempt swap promotion based on the transaction's native type field.
+
+        Fires before the service-classifier-based ``_try_swap_promotion`` hook,
+        allowing chains where DEX activity is identified by transaction type
+        rather than contract address (XRP AMM ``AMMSwap``, Cosmos
+        ``MsgSwapExactAmountIn`` / ``MsgSwapExactAmountOut``) to promote the
+        row to a ``swap_event`` node without a service registry entry.
+
+        Default implementation returns None (no promotion).  XRP and Cosmos
+        compilers override this hook.
+
+        Args:
+            tx_hash:        Transaction hash.
+            seed_node_id:   Node ID of the address being expanded.
+            seed_address:   Normalized address being expanded.
+            counterparty:   Normalized counterparty address.
+            chain:          Blockchain name.
+            session_id:     Investigation session UUID.
+            branch_id:      Branch ID for lineage.
+            path_id:        Path ID for lineage.
+            depth:          Current hop depth.
+            direction:      ``"forward"`` or ``"backward"``.
+            timestamp:      ISO-8601 string or None.
+            tx_type:        Chain-native transaction type string, or None.
+
+        Returns:
+            (nodes, edges) on success, or None to fall through.
+        """
+        return None
+
     # ------------------------------------------------------------------
     # Event store queries — identical SQL to EVMChainCompiler
     # ------------------------------------------------------------------
@@ -183,7 +229,8 @@ class _GenericTransferChainCompiler(BaseChainCompiler):
                     value_native,
                     NULL          AS asset_symbol,
                     NULL          AS canonical_asset_id,
-                    timestamp
+                    timestamp,
+                    tx_type
                 FROM raw_transactions
                 WHERE blockchain = $1
                   AND from_address = $2
@@ -242,7 +289,8 @@ class _GenericTransferChainCompiler(BaseChainCompiler):
                     value_native,
                     NULL          AS asset_symbol,
                     NULL          AS canonical_asset_id,
-                    timestamp
+                    timestamp,
+                    tx_type
                 FROM raw_transactions
                 WHERE blockchain = $1
                   AND to_address = $2
@@ -593,6 +641,32 @@ class _GenericTransferChainCompiler(BaseChainCompiler):
                         if bn.node_id not in seen_nodes:
                             seen_nodes[bn.node_id] = bn
                     edges.extend(bridge_edges)
+                    continue
+
+            tx_type: Optional[str] = row.get("tx_type")
+
+            # --- Tx-type swap promotion (XRP AMM / Cosmos DEX; default no-op) ---
+            if tx_type is not None:
+                tx_type_swap_result = await self._try_tx_type_swap_promotion(
+                    tx_hash=tx_hash,
+                    seed_node_id=seed_node_id,
+                    seed_address=seed_address,
+                    counterparty=counterparty,
+                    chain=chain,
+                    session_id=session_id,
+                    branch_id=branch_id,
+                    path_id=_path,
+                    depth=depth,
+                    direction=direction,
+                    timestamp=_ts_str,
+                    tx_type=tx_type,
+                )
+                if tx_type_swap_result is not None:
+                    tt_nodes, tt_edges = tx_type_swap_result
+                    for tt_node in tt_nodes:
+                        seen_nodes.setdefault(tt_node.node_id, tt_node)
+                    edges.extend(tt_edges)
+                    handled_swap_txs.add(tx_hash)
                     continue
 
             service_record = self._service.get_record(chain, counterparty)

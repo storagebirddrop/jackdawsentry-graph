@@ -196,6 +196,13 @@ class CosmosCollector(BaseCollector):
             except (TypeError, ValueError):
                 fee_value = 0.0
 
+        # Extract the short message type name from the first message's @type
+        # field (e.g. "/osmosis.gamm.v1beta1.MsgSwapExactAmountIn" →
+        # "MsgSwapExactAmountIn").  Used by CosmosChainCompiler for swap
+        # detection without needing a separate RPC round-trip.
+        raw_type = first_message.get("@type", "")
+        msg_type = raw_type.rsplit(".", 1)[-1] if raw_type else None
+
         return Transaction(
             hash=tx_response.get("txhash", tx_hash),
             blockchain=self.blockchain,
@@ -206,6 +213,7 @@ class CosmosCollector(BaseCollector):
             block_number=int(tx_response.get("height", 0) or 0),
             fee=fee_value,
             status="confirmed" if str(tx_response.get("code", 0)) == "0" else "failed",
+            tx_type=msg_type or None,
         )
 
     async def get_address_balance(self, address: str) -> float:
