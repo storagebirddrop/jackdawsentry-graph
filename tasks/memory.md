@@ -128,7 +128,11 @@ Read this file before touching graph schema, graph API, trace compiler semantics
   - `node.sanctioned` now checked alongside `address.is_sanctioned`
   - `node.entity_category` now drives category badge (enricher sets top-level)
   - `node.risk_score` now drives risk pill in `AddressNode.tsx`
-- Remaining gap: no attribution seed for Solana/Tron/XRP/Cosmos/Sui.
+- Tron seed added: Binance ×2, OKX, Huobi/HTX ×2, Bybit (6 entries)
+- Bitcoin seed added: Binance cold ×2, Coinbase cold, Kraken cold (4 entries)
+- `entity_attribution.py` refactored to per-chain `_CHAIN_SEEDS` dispatch;
+  `_build_seed` lowercases all keys; EVM/Tron/Bitcoin now active
+- Remaining gap: no attribution seed for Solana/XRP/Cosmos/Sui
 
 ## Guardrails
 

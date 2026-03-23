@@ -163,5 +163,8 @@ Acceptance criteria:
       + sanction glyph (existing frontend logic now fires correctly)
 - [~] service_classifier lending/staking entries already present (Aave V3);
       Compound/Lido/RocketPool covered via entity_attribution seed instead
-- [~] Solana/Tron/XRP/Cosmos attribution: no seed data currently; OFAC XBT
-      entries cover Bitcoin only; future pass needed for other chains
+- [x] Tron + Bitcoin attribution seeds added: `entity_attribution.py` refactored
+      to per-chain `_CHAIN_SEEDS` dispatch; `_SEED_TRON` (Binance ×2, OKX,
+      Huobi/HTX ×2, Bybit) and `_SEED_BITCOIN` (Binance cold ×2, Coinbase
+      cold, Kraken cold) now active; `_build_seed` lowercases all keys uniformly
+- [~] Solana/XRP/Cosmos attribution: no seed data; future pass needed

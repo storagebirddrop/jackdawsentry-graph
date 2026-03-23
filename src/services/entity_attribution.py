@@ -7,11 +7,14 @@ visualisations and risk reports can label nodes with human-readable names
 
 Two data sources are combined, with the hardcoded seed taking priority:
 
-1. **Hardcoded seed** — a curated, high-confidence set of EVM hot-wallet and
-   contract addresses for major CEXs, DEFi protocols, and staking services.
-   Available immediately with no network dependency; applies to all EVM-
-   compatible chains (ethereum, bsc, polygon, arbitrum, base, optimism,
-   avalanche) because they share the same 0x address namespace.
+1. **Hardcoded seed** — a curated, high-confidence set of hot-wallet and
+   contract addresses for major CEXs, DeFi protocols, and staking services.
+   Available immediately with no network dependency.
+
+   - EVM chains (ethereum, bsc, polygon, arbitrum, base, optimism, avalanche)
+     share the 0x address namespace — a single EVM seed covers all of them.
+   - Tron addresses (T-prefix, base58) are tracked separately.
+   - Bitcoin addresses (1/3/bc1 prefix) are tracked separately.
 
 2. **Etherscan labels** (best-effort, EVM only) — if the ``ETHERSCAN_API_KEY``
    environment variable is set, any address not found in the seed is enriched
@@ -19,29 +22,25 @@ Two data sources are combined, with the hardcoded seed taking priority:
    gracefully; the caller always receives whatever the seed alone provides.
 
 Design decisions:
-- The seed dict is built once at import time; no lock is required for reads.
-- Etherscan requests are issued concurrently (``asyncio.gather``) with a 5-
-  second per-request timeout.
+- Per-chain seed tables built once at import time; no lock is required.
+- Only high-confidence addresses are included; when in doubt, omit rather
+  than mislabel — a false positive on an investigation platform is worse than
+  a false negative.
+- Etherscan requests are issued concurrently (``asyncio.gather``).
 - Results are returned only for addresses that resolved to a known entity;
-  unknown addresses are omitted from the response dict so that callers can
-  distinguish "unknown" from "known low-risk" with a simple ``in`` check.
-- Case-insensitive matching: all inputs are normalised to lowercase before
-  lookup; seed keys are stored lowercase.
+  unknown addresses are omitted so callers can use a simple ``in`` check.
+- Case-insensitive matching: inputs are normalised to lowercase; seed keys
+  are stored lowercase.
 
 Usage::
 
     results = await lookup_addresses_bulk(
-        ["0x3f5ce5fbfe3e9af3971dd833d26ba9b5c936f0be", "0xdeadbeef..."],
+        ["0x3f5ce5fbfe3e9af3971dd833d26ba9b5c936f0be"],
         "ethereum",
     )
-    # {
-    #   "0x3f5ce5fbfe3e9af3971dd833d26ba9b5c936f0be": {
-    #       "entity_name": "Binance",
-    #       "entity_type": "cex",
-    #       "category": "exchange",
-    #       "risk_level": "low",
-    #   }
-    # }
+    # {"0x3f5ce5fbfe3e9af3971dd833d26ba9b5c936f0be": {
+    #     "entity_name": "Binance", "entity_type": "cex",
+    #     "category": "exchange", "risk_level": "low"}}
 """
 
 from __future__ import annotations
@@ -100,7 +99,31 @@ _EVM_CHAINS = frozenset(
 
 _SeedEntry = Dict[str, str]
 
-_SEED_RAW: List[tuple[str, str, str, str, str]] = [
+def _build_seed(raw: List[tuple]) -> Dict[str, "_SeedEntry"]:
+    """Build a lowercase-keyed lookup dict from a raw seed list.
+
+    Keys are always stored lowercase so callers need only ``addr.lower()``
+    before lookup regardless of the address format (0x EVM, Tron base58,
+    Bitcoin bech32/base58).
+    """
+    return {
+        addr.lower(): {
+            "entity_name": name,
+            "entity_type": etype,
+            "category": category,
+            "risk_level": risk,
+        }
+        for addr, name, etype, category, risk in raw
+    }
+
+
+# ---------------------------------------------------------------------------
+# EVM seed (ethereum, bsc, polygon, arbitrum, base, optimism, avalanche)
+# ---------------------------------------------------------------------------
+# Addresses stored lowercase; a single seed covers all EVM-compatible chains
+# because they share the 0x address namespace.
+
+_SEED_EVM_RAW: List[tuple] = [
     # address, entity_name, entity_type, category, risk_level
     # --- Binance ---
     ("0x3f5ce5fbfe3e9af3971dd833d26ba9b5c936f0be", "Binance", "cex", "exchange", "low"),  # Binance 1
@@ -136,33 +159,63 @@ _SEED_RAW: List[tuple[str, str, str, str, str]] = [
     ("0x9759a6ac90977b93b58547b4a71c78317f391a28", "MakerDAO", "defi", "service", "low"),
 ]
 
-# Build the module-level lookup dict at import time (O(n), done once).
-_SEED: Dict[str, _SeedEntry] = {
-    addr: {
-        "entity_name": name,
-        "entity_type": etype,
-        "category": category,
-        "risk_level": risk,
-    }
-    for addr, name, etype, category, risk in _SEED_RAW
+# ---------------------------------------------------------------------------
+# Tron seed (T-prefix base58 addresses)
+# ---------------------------------------------------------------------------
+# Sources: public TronScan explorer labels and exchange transparency pages.
+# TRX address case is preserved in base58 — seeds are stored as-is (no lower).
+
+_SEED_TRON_RAW: List[tuple] = [
+    # --- Binance ---
+    ("TJDENsfBJs4RFETt1X1W8wMDc8M5XnJhCe", "Binance", "cex", "exchange", "low"),  # Binance Tron hot
+    ("TF5Bn4cJCT6GVeUgyCN4rBhDg42KBrmuRt", "Binance", "cex", "exchange", "low"),  # Binance Tron 2
+    # --- OKX ---
+    ("TKVtFppeXnmNGUkKFJrn1MgMgMigV8s1YD", "OKX", "cex", "exchange", "low"),  # OKX Tron hot
+    # --- Huobi / HTX ---
+    ("TUEYcyPAqc4gjnCYFCHSFHTDSCTFBEkTgR", "Huobi/HTX", "cex", "exchange", "low"),  # Huobi Tron 1
+    ("TVjsyZ7fYF3qLF6BQgPmTEZy1xrNNyVAAA", "Huobi/HTX", "cex", "exchange", "low"),  # Huobi Tron 2
+    # --- Bybit ---
+    ("TJCo98saj6WND61g1uuKwJ9GMWMT9WkJFo", "Bybit", "cex", "exchange", "low"),  # Bybit Tron hot
+]
+
+# ---------------------------------------------------------------------------
+# Bitcoin seed (1/3/bc1 addresses)
+# ---------------------------------------------------------------------------
+# Sources: public block explorer cluster labels and exchange announcements.
+# Bitcoin addresses are case-sensitive (bech32 is lowercase; base58 preserves
+# mixed case); seeds are stored in their canonical on-chain form.
+
+_SEED_BITCOIN_RAW: List[tuple] = [
+    # --- Binance ---
+    ("34xp4vRoCGJym3xR7yCVPFHoCNxv4Twseo", "Binance", "cex", "exchange", "low"),  # Binance cold 1
+    ("bc1qm34lsc65zpw79lxes69zkqmk6ee3ewf0j77s3h", "Binance", "cex", "exchange", "low"),  # Binance cold bech32
+    # --- Coinbase ---
+    ("3NiD4qDTEPuFBETHuSeGKB8cjEGE1cjB3V", "Coinbase", "cex", "exchange", "low"),  # Coinbase cold
+    # --- Kraken ---
+    ("3QCzvfL4ZRvmJFiWWBVwxfdaNBT8EtxB5y", "Kraken", "cex", "exchange", "low"),  # Kraken cold
+]
+
+# ---------------------------------------------------------------------------
+# Module-level seed dicts — built once at import time.
+# ---------------------------------------------------------------------------
+
+# All three seeds normalise keys to lowercase so callers only strip+lower once.
+# _build_seed already lowercases the address field from the raw tuples.
+_SEED_EVM: Dict[str, _SeedEntry] = _build_seed(_SEED_EVM_RAW)
+_SEED_TRON: Dict[str, _SeedEntry] = _build_seed(_SEED_TRON_RAW)
+_SEED_BITCOIN: Dict[str, _SeedEntry] = _build_seed(_SEED_BITCOIN_RAW)
+
+# Map chain name → seed dict.  EVM chains all resolve to _SEED_EVM.
+_CHAIN_SEEDS: Dict[str, Dict[str, _SeedEntry]] = {
+    **{chain: _SEED_EVM for chain in _EVM_CHAINS},
+    "tron": _SEED_TRON,
+    "bitcoin": _SEED_BITCOIN,
 }
 
 
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
-
-
-def _seed_lookup(address: str) -> Optional[_SeedEntry]:
-    """Return the seed entry for *address* if present, else ``None``.
-
-    Args:
-        address: Lowercase blockchain address string.
-
-    Returns:
-        Attribute dict or ``None``.
-    """
-    return _SEED.get(address)
 
 
 async def _etherscan_lookup(
@@ -225,11 +278,11 @@ async def lookup_addresses_bulk(
 
     Two sources are consulted in order:
 
-    1. **Hardcoded seed** — instant, no network; covers major EVM exchange and
-       DeFi addresses.  Applies to all EVM-compatible chains.
+    1. **Hardcoded seed** — instant, no network; covers EVM (all chains sharing
+       the 0x namespace), Tron, and Bitcoin addresses.
     2. **Etherscan labels** (EVM only, best-effort) — if ``ETHERSCAN_API_KEY``
-       is set in the environment, any seed-miss address is queried against the
-       Etherscan v2 ``getaddresslabel`` endpoint with a 5-second timeout.
+       is set in the environment, any seed-miss EVM address is queried against
+       the Etherscan v2 ``getaddresslabel`` endpoint with a 5-second timeout.
        Failures fall back to the seed-only result silently.
 
     Only addresses that could be attributed are included in the returned dict.
@@ -239,9 +292,8 @@ async def lookup_addresses_bulk(
     Args:
         addresses:  List of blockchain address strings (any case).
         blockchain: The chain the addresses belong to (e.g. ``"ethereum"``,
-                    ``"bitcoin"``).  Seed data and Etherscan enrichment only
-                    apply to EVM-compatible chains; non-EVM chains return an
-                    empty dict unless future seed entries are added.
+                    ``"tron"``, ``"bitcoin"``).  Chains not present in
+                    ``_CHAIN_SEEDS`` return an empty dict.
 
     Returns:
         A dict mapping each attributed address (in the original case provided
@@ -270,21 +322,22 @@ async def lookup_addresses_bulk(
         # }
     """
     chain_lower = blockchain.strip().lower()
+    seed = _CHAIN_SEEDS.get(chain_lower)
     is_evm = chain_lower in _EVM_CHAINS
 
     results: Dict[str, Dict[str, Any]] = {}
-    etherscan_misses: List[str] = []  # original-case addresses not in seed
+    etherscan_misses: List[str] = []  # original-case addresses not found in seed
 
     # --- Pass 1: seed lookup ---
     for addr in addresses:
         normalised = addr.strip().lower()
-        if not is_evm:
-            # No seed data for non-EVM chains currently.
+        if seed is None:
+            # No seed data for this chain.
             continue
-        entry = _seed_lookup(normalised)
+        entry = seed.get(normalised)
         if entry is not None:
             results[addr] = dict(entry)
-        else:
+        elif is_evm:
             etherscan_misses.append(addr)
 
     # --- Pass 2: Etherscan enrichment (EVM only, best-effort) ---
