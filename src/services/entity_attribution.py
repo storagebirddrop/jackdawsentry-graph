@@ -15,6 +15,10 @@ Two data sources are combined, with the hardcoded seed taking priority:
      share the 0x address namespace — a single EVM seed covers all of them.
    - Tron addresses (T-prefix, base58) are tracked separately.
    - Bitcoin addresses (1/3/bc1 prefix) are tracked separately.
+   - Solana addresses (base58, ~44 chars) are tracked separately.
+   - XRP Ledger addresses (r-prefix, base58, ~34 chars) are tracked separately.
+   - Cosmos and Sui seeds are pending — JS-gated explorers prevented
+     verification of candidate addresses; omitted per false-positive policy.
 
 2. **Etherscan labels** (best-effort, EVM only) — if the ``ETHERSCAN_API_KEY``
    environment variable is set, any address not found in the seed is enriched
@@ -196,20 +200,70 @@ _SEED_BITCOIN_RAW: List[tuple] = [
 ]
 
 # ---------------------------------------------------------------------------
+# Solana seed (base58 addresses, ~44 chars)
+# ---------------------------------------------------------------------------
+# Sources: Solscan labeled accounts (verified exchange labels).
+# Solana base58 addresses are case-sensitive; stored as-is, then lowercased
+# by _build_seed for consistent lookup.
+
+_SEED_SOLANA_RAW: List[tuple] = [
+    # --- Binance ---
+    ("5tzFkiKscXHK5ZXCGbXZxdw7gTjjD1mBwuoFbhUvuAi9", "Binance", "cex", "exchange", "low"),   # Binance 2
+    ("DNWwqgkLZfRXgCJ2B3HE5SJKSJACu4jWNfDrhQecAkiQ", "Binance", "cex", "exchange", "low"),   # Binance 3
+    ("53unSgGWqEWANcPYRF35B2Bgf8BkszUtcccKiXwGGLyr", "Binance.US", "cex", "exchange", "low"), # Binance.US hot
+    # --- Coinbase ---
+    ("GJRs4FwHtemZ5ZE9x3FNvJ8TMwitKTh21yxdRPqn7npE", "Coinbase", "cex", "exchange", "low"),  # Coinbase 1
+    ("H8sMJSCQxfKiFTCfDR3DUMLPwcRbM61LGFJ8N4dK3WjS", "Coinbase", "cex", "exchange", "low"),  # Coinbase 2
+    ("D89hHJT5Aqyx1trP6EnGY9jJUB3whgnq3aUvvCqedvzf", "Coinbase", "cex", "exchange", "low"),  # Coinbase 3
+    # --- Kraken ---
+    ("FWznbcNXWQuHTawe9RxvQ2LdCENssh12dsznf4RiouN5", "Kraken", "cex", "exchange", "low"),     # Kraken hot
+    # --- OKX ---
+    ("is6MTRHEgyFLNTfYcuV4QBWLjrZBfmhVNYR6ccgr8KV", "OKX", "cex", "exchange", "low"),        # OKX 1
+    ("C68a6RCGLiPskbPYtAcsCjhG8tfTWYcoB4JjCrXFdqyo", "OKX", "cex", "exchange", "low"),       # OKX 2
+    ("5VCwKtCXgCJ6kit5FybXjvriW3xELsFDhYrPSqtJNmcD", "OKX", "cex", "exchange", "low"),       # OKX 3
+    # --- Bybit ---
+    ("AC5RDfQFmDS1deWZos921JfqscXdByf8BKHs5ACWjtW2", "Bybit", "cex", "exchange", "low"),      # Bybit hot
+]
+
+# ---------------------------------------------------------------------------
+# XRP Ledger seed (r-prefix base58 addresses, ~34 chars)
+# ---------------------------------------------------------------------------
+# Sources: Bithomp and XRPSCAN verified exchange labels.
+# Exchanges typically use a single deposit address with destination tags to
+# route to individual customer accounts.
+# Note: inactive Binance XRP address (rEb8TK3gBgk5auZkwc6sHnwrGVJH8DuaLh)
+# excluded — marked high-risk/deleted on Bithomp; unverified Binance addresses
+# omitted per false-positive policy.
+
+_SEED_XRP_RAW: List[tuple] = [
+    # --- Kraken ---
+    ("rLHzPsX6oXkzU2qL12kHCH8G8cnZv1rBJh", "Kraken", "cex", "exchange", "low"),   # Kraken main (since 2014)
+    # --- Coinbase ---
+    ("rw2ciyaNshpHe7bCHo4bRWq6pqqynnWKQg", "Coinbase", "cex", "exchange", "low"), # Coinbase hot
+    # --- Bitstamp ---
+    ("rvYAfWj5gh67oV6fW32ZzP3Aw4Eubs59B", "Bitstamp", "cex", "exchange", "low"),  # Bitstamp hot
+]
+
+# ---------------------------------------------------------------------------
 # Module-level seed dicts — built once at import time.
 # ---------------------------------------------------------------------------
 
-# All three seeds normalise keys to lowercase so callers only strip+lower once.
-# _build_seed already lowercases the address field from the raw tuples.
+# All seeds normalise keys to lowercase so callers only strip+lower once.
+# _build_seed lowercases the address field from each raw tuple.
 _SEED_EVM: Dict[str, _SeedEntry] = _build_seed(_SEED_EVM_RAW)
 _SEED_TRON: Dict[str, _SeedEntry] = _build_seed(_SEED_TRON_RAW)
 _SEED_BITCOIN: Dict[str, _SeedEntry] = _build_seed(_SEED_BITCOIN_RAW)
+_SEED_SOLANA: Dict[str, _SeedEntry] = _build_seed(_SEED_SOLANA_RAW)
+_SEED_XRP: Dict[str, _SeedEntry] = _build_seed(_SEED_XRP_RAW)
 
 # Map chain name → seed dict.  EVM chains all resolve to _SEED_EVM.
+# Cosmos and Sui seeds are pending (no verifiable data yet).
 _CHAIN_SEEDS: Dict[str, Dict[str, _SeedEntry]] = {
     **{chain: _SEED_EVM for chain in _EVM_CHAINS},
     "tron": _SEED_TRON,
     "bitcoin": _SEED_BITCOIN,
+    "solana": _SEED_SOLANA,
+    "xrp": _SEED_XRP,
 }
 
 

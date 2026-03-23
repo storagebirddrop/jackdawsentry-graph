@@ -167,4 +167,9 @@ Acceptance criteria:
       to per-chain `_CHAIN_SEEDS` dispatch; `_SEED_TRON` (Binance ×2, OKX,
       Huobi/HTX ×2, Bybit) and `_SEED_BITCOIN` (Binance cold ×2, Coinbase
       cold, Kraken cold) now active; `_build_seed` lowercases all keys uniformly
-- [~] Solana/XRP/Cosmos attribution: no seed data; future pass needed
+- [x] Solana seed added: Binance ×2, Binance.US, Coinbase ×3, Kraken, OKX ×3,
+      Bybit (11 entries; verified via Solscan labels)
+- [x] XRP seed added: Kraken, Coinbase, Bitstamp (3 entries; verified via
+      Bithomp/XRPSCAN labels); inactive Binance address omitted (high-risk flag)
+- [~] Cosmos/Sui attribution: JS-gated explorers blocked verification;
+      no confirmed addresses added — future pass needed

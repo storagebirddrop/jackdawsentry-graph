@@ -132,7 +132,9 @@ Read this file before touching graph schema, graph API, trace compiler semantics
 - Bitcoin seed added: Binance cold ×2, Coinbase cold, Kraken cold (4 entries)
 - `entity_attribution.py` refactored to per-chain `_CHAIN_SEEDS` dispatch;
   `_build_seed` lowercases all keys; EVM/Tron/Bitcoin now active
-- Remaining gap: no attribution seed for Solana/XRP/Cosmos/Sui
+- Solana seed: Binance ×2, Binance.US, Coinbase ×3, Kraken, OKX ×3, Bybit (11 entries; Solscan)
+- XRP seed: Kraken, Coinbase, Bitstamp (3 entries; Bithomp/XRPSCAN); inactive Binance omitted
+- Remaining gap: Cosmos and Sui (JS-gated explorers blocked address verification)
 
 ## Guardrails
 
