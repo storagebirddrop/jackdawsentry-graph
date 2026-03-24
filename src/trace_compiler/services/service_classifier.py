@@ -62,6 +62,10 @@ class _ServiceRecord:
     chains: List[str] = field(default_factory=list)
     # Contract addresses per chain: chain -> [lowercase addr, ...]
     contracts: Dict[str, List[str]] = field(default_factory=dict)
+    # True when the protocol is on a sanctions list (e.g. OFAC SDN).
+    # Service nodes built from sanctioned records carry sanctioned=True and
+    # risk_score=1.0, and connected address nodes inherit a risk signal.
+    sanctioned: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -158,11 +162,16 @@ _SEED_SERVICES: List[_ServiceRecord] = [
             "optimism":  ["0x1111111254eeb25477b68fb85ed929f73a960582"],
         },
     ),
-    # ---- Tornado Cash (mixer — high compliance relevance) ----
+    # ---- Tornado Cash (mixer — OFAC SDN listed August 2022) ----
+    # All Tornado Cash pool and router contracts were added to the OFAC SDN
+    # list on 2022-08-08 (Notice OFAC-2022-0001).  The sanctioned=True flag
+    # causes service nodes built from this record to carry sanctioned=True and
+    # risk_score=1.0, and connected address nodes to inherit a risk signal.
     _ServiceRecord(
         protocol_id="tornado_cash",
         display_name="Tornado Cash",
         service_type="mixer",
+        sanctioned=True,
         chains=["ethereum"],
         contracts={
             "ethereum": [
@@ -532,6 +541,21 @@ class ServiceClassifier:
         if normalized_addr not in known:
             known = [normalized_addr] + known
 
+        # Derive risk signals from the service record.
+        # Mixer nodes are inherently high-risk; sanctioned nodes carry maximum
+        # risk and the sanctioned flag so frontend can apply distinct styling.
+        node_risk_score: float = 0.0
+        node_risk_factors: List[str] = []
+        node_sanctioned: bool = False
+        if record.service_type == "mixer":
+            node_risk_score = 0.9
+            node_risk_factors = ["mixer"]
+        if record.sanctioned:
+            node_risk_score = 1.0
+            node_sanctioned = True
+            if "sanctions" not in node_risk_factors:
+                node_risk_factors.append("sanctions")
+
         return InvestigationNode(
             node_id=node_id,
             lineage_id=lineage,
@@ -543,6 +567,9 @@ class ServiceClassifier:
             display_sublabel=f"{record.service_type.upper()} · {tx_hash[:10]}…",
             chain=chain,
             expandable_directions=[],  # Service nodes are not expanded further.
+            risk_score=node_risk_score,
+            risk_factors=node_risk_factors,
+            sanctioned=node_sanctioned,
             service_data=ServiceNodeData(
                 protocol_id=record.protocol_id,
                 service_type=record.service_type,

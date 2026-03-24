@@ -342,8 +342,13 @@ class TraceCompiler:
                     )
                     await self._register_bridge_hops(session_id, added_nodes)
                     # Re-enrich on cache hit so sanctions are always current.
-                    from src.trace_compiler.attribution.enricher import enrich_nodes
-                    added_nodes = await enrich_nodes(added_nodes)
+                    # Pass edges so taint propagation can fire even on cache hits.
+                    try:
+                        from src.trace_compiler.attribution.enricher import enrich_nodes
+                        added_nodes = await enrich_nodes(added_nodes, edges=added_edges)
+                    except Exception as enrich_exc:
+                        logger.warning("Failed to re-enrich cached nodes: %s", enrich_exc)
+                        # Continue without enrichment - the cached data is still usable
                     # Override session-scoped fields so the caller receives
                     # IDs that match their current session, not the session
                     # that originally populated the cache.
@@ -475,10 +480,14 @@ class TraceCompiler:
         # on-demand ingest so future expansions are served from live data.
         ingest_pending = False
         if not added_nodes and node_type == "address":
-            from src.trace_compiler.ingest.trigger import maybe_trigger_address_ingest
-            ingest_pending = await maybe_trigger_address_ingest(
-                identifier, chain, self._pg
-            )
+            try:
+                from src.trace_compiler.ingest.trigger import maybe_trigger_address_ingest
+                ingest_pending = await maybe_trigger_address_ingest(
+                    identifier, chain, self._pg
+                )
+            except Exception as ingest_exc:
+                logger.warning("Failed to trigger address ingest for %s: %s", identifier, ingest_exc)
+                ingest_pending = False
 
         # Build the response
         response = ExpansionResponseV2(
@@ -534,23 +543,18 @@ class TraceCompiler:
 
         await self._register_bridge_hops(session_id, added_nodes)
 
-        # Enrich address nodes with sanctions and entity labels.
+        # Enrich nodes with sanctions, entity labels, and risk taint propagation.
+        # Pass all nodes + edges so the enricher can propagate risk from mixer/
+        # sanctioned service nodes to directly connected address nodes.
         if added_nodes:
             import time
             start_time = time.time()
             from src.trace_compiler.attribution.enricher import enrich_nodes
-            # Only enrich address nodes to avoid unnecessary work
-            address_nodes = [n for n in added_nodes if n.node_type == "address"]
-            if address_nodes:
-                enriched_address_nodes = await enrich_nodes(address_nodes)
-                # Replace the original address nodes with enriched ones
-                enriched_map = {n.id: n for n in enriched_address_nodes}
-                added_nodes = [
-                    enriched_map.get(n.id, n) if n.node_type == "address" else n
-                    for n in added_nodes
-                ]
+            added_nodes = await enrich_nodes(added_nodes, edges=added_edges)
             enrichment_time = time.time() - start_time
-            logger.debug("Enriched %d address nodes in %.3fs", len(address_nodes), enrichment_time)
+            logger.debug(
+                "Enriched %d nodes in %.3fs", len(added_nodes), enrichment_time
+            )
 
         # Cache successful non-empty results in Redis (15-minute TTL).
         if added_nodes and self._redis is not None:

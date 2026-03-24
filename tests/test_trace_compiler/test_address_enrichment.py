@@ -9,6 +9,11 @@ Covers:
 - Best-effort: service errors are swallowed
 - Risk score is never lowered by enrichment
 - Multi-chain expansions group correctly
+- Mixer taint propagation: address connected to mixer service node gets
+  mixer_interaction risk factor and risk_score floored at 0.75
+- Sanctioned-counterparty propagation: address connected to sanctioned node
+  gets sanctioned_counterparty risk factor and risk_score floored at 0.65
+- Mixer service nodes carry risk_score=0.9 and sanctioned flag when applicable
 """
 
 from __future__ import annotations
@@ -19,6 +24,7 @@ import pytest
 
 from src.trace_compiler.models import (
     AddressNodeData,
+    InvestigationEdge,
     InvestigationNode,
     ServiceNodeData,
 )
@@ -313,3 +319,175 @@ async def test_empty_list_returns_empty():
     from src.trace_compiler.attribution.enricher import enrich_nodes
     result = await enrich_nodes([])
     assert result == []
+
+
+# ---------------------------------------------------------------------------
+# Taint propagation helpers
+# ---------------------------------------------------------------------------
+
+
+def _mixer_svc_node(node_id: str = "ethereum:service:tc") -> InvestigationNode:
+    """Mixer service node with risk signals already set (as build_service_node does)."""
+    return InvestigationNode(
+        node_id=node_id,
+        node_type="service",
+        lineage_id="lin",
+        branch_id="br",
+        path_id="pa",
+        depth=1,
+        chain="ethereum",
+        display_label="Tornado Cash",
+        expandable_directions=[],
+        risk_score=1.0,
+        risk_factors=["mixer", "sanctions"],
+        sanctioned=True,
+        service_data=ServiceNodeData(
+            protocol_id="tornado_cash",
+            service_type="mixer",
+            known_contracts=["0xpool"],
+        ),
+    )
+
+
+def _edge(src: str, tgt: str) -> InvestigationEdge:
+    return InvestigationEdge(
+        edge_id=f"{src}->{tgt}",
+        source_node_id=src,
+        target_node_id=tgt,
+        branch_id="br",
+        path_id="pa",
+        edge_type="transfer",
+        direction="forward",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Mixer taint propagation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_mixer_taint_propagates_to_connected_address():
+    """Address connected to a mixer service node gets mixer_interaction risk."""
+    wallet = _addr_node("0xwallet", node_id="ethereum:address:0xwallet")
+    mixer = _mixer_svc_node()
+    edge = _edge("ethereum:address:0xwallet", "ethereum:service:tc")
+
+    with (
+        patch("src.api.graph_dependencies.lookup_addresses_bulk", new=AsyncMock(return_value={})),
+        patch("src.api.graph_dependencies.screen_address", new=AsyncMock(return_value={"matched": False})),
+    ):
+        from src.trace_compiler.attribution.enricher import enrich_nodes
+        result = await enrich_nodes([wallet, mixer], edges=[edge])
+
+    wallet_result = next(n for n in result if n.node_id == "ethereum:address:0xwallet")
+    assert "mixer_interaction" in wallet_result.risk_factors
+    assert wallet_result.risk_score >= 0.75
+
+
+@pytest.mark.asyncio
+async def test_mixer_taint_applies_regardless_of_edge_direction():
+    """Taint propagates even when the mixer is the edge source (withdrawal)."""
+    wallet = _addr_node("0xrecv", node_id="ethereum:address:0xrecv")
+    mixer = _mixer_svc_node()
+    # Edge goes mixer → wallet (withdrawal direction)
+    edge = _edge("ethereum:service:tc", "ethereum:address:0xrecv")
+
+    with (
+        patch("src.api.graph_dependencies.lookup_addresses_bulk", new=AsyncMock(return_value={})),
+        patch("src.api.graph_dependencies.screen_address", new=AsyncMock(return_value={"matched": False})),
+    ):
+        from src.trace_compiler.attribution.enricher import enrich_nodes
+        result = await enrich_nodes([wallet, mixer], edges=[edge])
+
+    wallet_result = next(n for n in result if n.node_id == "ethereum:address:0xrecv")
+    assert "mixer_interaction" in wallet_result.risk_factors
+
+
+@pytest.mark.asyncio
+async def test_no_taint_without_edges():
+    """Without edges, no taint propagation occurs (backwards compatible)."""
+    wallet = _addr_node("0xclean", node_id="ethereum:address:0xclean")
+    mixer = _mixer_svc_node()
+
+    with (
+        patch("src.api.graph_dependencies.lookup_addresses_bulk", new=AsyncMock(return_value={})),
+        patch("src.api.graph_dependencies.screen_address", new=AsyncMock(return_value={"matched": False})),
+    ):
+        from src.trace_compiler.attribution.enricher import enrich_nodes
+        result = await enrich_nodes([wallet, mixer])  # no edges kwarg
+
+    wallet_result = next(n for n in result if n.node_id == "ethereum:address:0xclean")
+    assert "mixer_interaction" not in wallet_result.risk_factors
+    assert wallet_result.risk_score == pytest.approx(0.0)
+
+
+# ---------------------------------------------------------------------------
+# Sanctioned-counterparty taint propagation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_sanctioned_address_taints_counterparty():
+    """Address connected to a sanctioned address gets sanctioned_counterparty risk."""
+    clean = _addr_node("0xclean", node_id="ethereum:address:0xclean")
+    bad = _addr_node("0xbad", node_id="ethereum:address:0xbad")
+    edge = _edge("ethereum:address:0xbad", "ethereum:address:0xclean")
+
+    async def mock_screen(addr, chain):
+        return {"matched": True, "list_name": "OFAC SDN"} if addr == "0xbad" else {"matched": False}
+
+    with (
+        patch("src.api.graph_dependencies.lookup_addresses_bulk", new=AsyncMock(return_value={})),
+        patch("src.api.graph_dependencies.screen_address", new=AsyncMock(side_effect=mock_screen)),
+    ):
+        from src.trace_compiler.attribution.enricher import enrich_nodes
+        result = await enrich_nodes([clean, bad], edges=[edge])
+
+    clean_result = next(n for n in result if n.node_id == "ethereum:address:0xclean")
+    bad_result = next(n for n in result if n.node_id == "ethereum:address:0xbad")
+
+    assert bad_result.sanctioned is True
+    assert "sanctioned_counterparty" in clean_result.risk_factors
+    assert clean_result.risk_score >= 0.65
+
+
+@pytest.mark.asyncio
+async def test_sanctioned_service_node_taints_counterparty():
+    """Address connected to a sanctioned service node also gets the taint."""
+    wallet = _addr_node("0xsender", node_id="ethereum:address:0xsender")
+    mixer = _mixer_svc_node()  # sanctioned=True
+    edge = _edge("ethereum:address:0xsender", "ethereum:service:tc")
+
+    with (
+        patch("src.api.graph_dependencies.lookup_addresses_bulk", new=AsyncMock(return_value={})),
+        patch("src.api.graph_dependencies.screen_address", new=AsyncMock(return_value={"matched": False})),
+    ):
+        from src.trace_compiler.attribution.enricher import enrich_nodes
+        result = await enrich_nodes([wallet, mixer], edges=[edge])
+
+    wallet_result = next(n for n in result if n.node_id == "ethereum:address:0xsender")
+    # Gets both mixer_interaction (from service_type=mixer) AND
+    # sanctioned_counterparty (from sanctioned=True) signals.
+    assert "mixer_interaction" in wallet_result.risk_factors
+    assert "sanctioned_counterparty" in wallet_result.risk_factors
+    assert wallet_result.risk_score >= 0.75
+
+
+# ---------------------------------------------------------------------------
+# Mixer service node risk signals (set at build time, not enricher)
+# ---------------------------------------------------------------------------
+
+
+def test_mixer_service_node_risk_signals():
+    """Mixer service node carries risk_score >= 0.9 and mixer risk factor."""
+    mixer = _mixer_svc_node()
+    assert mixer.risk_score >= 0.9
+    assert "mixer" in mixer.risk_factors
+
+
+def test_sanctioned_service_node_flags():
+    """Sanctioned mixer service node has sanctioned=True and risk_score=1.0."""
+    mixer = _mixer_svc_node()
+    assert mixer.sanctioned is True
+    assert mixer.risk_score == pytest.approx(1.0)
