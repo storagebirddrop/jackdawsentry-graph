@@ -731,6 +731,7 @@ class EthereumCollector(BaseCollector):
             "0x2170c741c41531aec20e7c107c24eecfdd15e69c9bb0a8dd37b1840b9e0b207b",  # Balancer V2 Vault Swap
             "0x8b3e96f2b889fa771c53c981b40daf005f63f637f1869f707052d15a3dd97140",  # Curve TokenExchange
             "0xd013ca23e77a65003c2c659c5442c00c805371b7fc1ebd4c206c41d1536bd90b",  # Curve TokenExchangeUnderlying
+            "0xb3e2773606abfd36b5bd91394b3a54d1398336c65005baf7bf7a05efeffaf75b",  # Solidly/Velodrome/Aerodrome Swap
         }
         try:
             from src.tracing.bridge_log_decoder import (

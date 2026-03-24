@@ -40,6 +40,14 @@ Supported event signatures (keccak256 of the ABI signature):
   Emitted by Curve meta-pools on underlying-token exchanges. Same data
   layout as TokenExchange (sold_id, tokens_sold, bought_id, tokens_bought).
 
+- Solidly V2 / Velodrome / Aerodrome Swap:
+  ``0xb3e2773606abfd36b5bd91394b3a54d1398336c65005baf7bf7a05efeffaf75b``
+  Emitted by Solidly-fork pools (Velodrome on Optimism, Aerodrome on Base,
+  Thena on BSC, etc.). Event signature differs from Uniswap V2 because the
+  indexed argument order is ``(sender, to)`` first, then four uint256 data
+  values — data layout is identical to V2:
+  (amount0In, amount1In, amount0Out, amount1Out).
+
 All decoded values are normalised to ``float`` using the standard ERC-20
 decimal divisor (``10**decimals``).  Since we don't store token decimals in
 raw_evm_logs, we use ``1e18`` as the default for unknown tokens and rely on
@@ -110,6 +118,16 @@ CURVE_TOKEN_EXCHANGE_UNDERLYING_SIG = (
     "0xd013ca23e77a65003c2c659c5442c00c805371b7fc1ebd4c206c41d1536bd90b"
 )
 
+#: Solidly V2 / Velodrome / Aerodrome pool —
+#: ``Swap(address indexed sender, address indexed to,
+#: uint256 amount0In, uint256 amount1In,
+#: uint256 amount0Out, uint256 amount1Out)``
+#: keccak256("Swap(address,address,uint256,uint256,uint256,uint256)")
+#: Non-indexed data layout is identical to Uniswap V2 (four uint256 values).
+SOLIDLY_SWAP_SIG = (
+    "0xb3e2773606abfd36b5bd91394b3a54d1398336c65005baf7bf7a05efeffaf75b"
+)
+
 #: Frozenset of all known DEX Swap event signatures used to filter
 #: ``raw_evm_logs`` during collection and query.  Keep in sync with
 #: ``EthereumCollector._build_relevant_log_sigs()``.
@@ -120,6 +138,7 @@ DEX_SWAP_SIGS = frozenset({
     BALANCER_V2_SWAP_SIG,
     CURVE_TOKEN_EXCHANGE_SIG,
     CURVE_TOKEN_EXCHANGE_UNDERLYING_SIG,
+    SOLIDLY_SWAP_SIG,
 })
 
 # ---------------------------------------------------------------------------
@@ -257,6 +276,26 @@ def decode_v4_swap(data_hex: str) -> Optional[Dict[str, Any]]:
         return None
 
 
+def decode_solidly_swap(data_hex: str) -> Optional[Dict[str, Any]]:
+    """Decode Solidly V2 / Velodrome / Aerodrome Swap event non-indexed data.
+
+    Non-indexed data encodes four uint256 values identical to Uniswap V2:
+    amount0In, amount1In, amount0Out, amount1Out.
+
+    The two indexed addresses (sender, to) appear in topics[1] and topics[2]
+    and are not present in the data field.
+
+    Args:
+        data_hex: Hex-encoded non-indexed log data (with or without 0x prefix).
+
+    Returns:
+        Dict with keys ``amount0In``, ``amount1In``, ``amount0Out``,
+        ``amount1Out`` (all int), or None on decode failure.
+    """
+    # Data layout is identical to Uniswap V2 — reuse the same decoder.
+    return decode_v2_swap(data_hex)
+
+
 def decode_balancer_v2_swap(data_hex: str) -> Optional[Dict[str, Any]]:
     """Decode Balancer V2 Vault Swap event non-indexed data.
 
@@ -337,7 +376,9 @@ def decode_swap_log(event_sig: str, data_hex: str) -> Optional[Dict[str, Any]]:
     """Dispatch to the correct decoder based on event signature.
 
     Args:
-        event_sig: topics[0] (keccak256 of ABI event signature) - already lowercase.
+        event_sig: topics[0] (keccak256 of ABI event signature). The code
+                   defensively normalizes the signature with .lower() before
+                   use via the sig variable.
         data_hex:  Hex-encoded non-indexed log data.
 
     Returns:
@@ -356,6 +397,8 @@ def decode_swap_log(event_sig: str, data_hex: str) -> Optional[Dict[str, Any]]:
         return decode_balancer_v2_swap(data_hex)
     if sig in (CURVE_TOKEN_EXCHANGE_SIG, CURVE_TOKEN_EXCHANGE_UNDERLYING_SIG):
         return decode_curve_token_exchange(data_hex)
+    if sig == SOLIDLY_SWAP_SIG:
+        return decode_solidly_swap(data_hex)
     return None
 
 
@@ -444,6 +487,17 @@ def extract_swap_amounts(
                 decoded["tokens_bought"] / (10 ** decimals1),
                 True,
             )
+
+        elif sig == SOLIDLY_SWAP_SIG:
+            # Data layout is identical to Uniswap V2 — reuse the same branch.
+            a0_in = decoded["amount0In"]
+            a1_in = decoded["amount1In"]
+            a0_out = decoded["amount0Out"]
+            a1_out = decoded["amount1Out"]
+            if a0_in > 0 and a1_out > 0:
+                return (a0_in / (10 ** decimals0), a1_out / (10 ** decimals1), True)
+            if a1_in > 0 and a0_out > 0:
+                return (a1_in / (10 ** decimals1), a0_out / (10 ** decimals0), False)
 
     except (KeyError, ZeroDivisionError) as exc:
         logger.debug("extract_swap_amounts failed: %s", exc)

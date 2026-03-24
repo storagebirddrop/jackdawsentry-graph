@@ -122,16 +122,23 @@ _SEED_SERVICES: List[_ServiceRecord] = [
         },
     ),
     # ---- Curve Finance ----
+    # Router NG (curve-router-ng) — routes swaps through pools; pools emit
+    # TokenExchange events directly, but investigators encounter the Router
+    # as the tx counterparty.  Addresses verified from curvefi/curve-router-ng.
     _ServiceRecord(
         protocol_id="curve",
         display_name="Curve Finance",
         service_type="dex",
-        chains=["ethereum", "arbitrum", "optimism", "polygon"],
+        chains=["ethereum", "arbitrum", "optimism", "polygon", "base", "avalanche", "bsc"],
         contracts={
-            "ethereum": [
-                "0x99a58482bd75cbab83b27ec03ca68ff489b5788f",  # Router
-                "0xd9e68a3f5f4b3b8b5db9f9a3e0f8e1d0a5b3c7d4",  # Dispatcher
-            ],
+            "ethereum":  ["0x45312ea0eFf7E09C83CBE249fa1d7598c4C8cd4e",   # Router NG
+                          "0x99a58482bd75cbab83b27ec03ca68ff489b5788f"],  # Router v1 (legacy)
+            "arbitrum":  ["0x2191718CD32d02B8E60BAdFFeA33E4B5DD9A0A0D"],   # Router NG
+            "optimism":  ["0x0DCDED3545D565bA3B19E683431381007245d983"],   # Router NG
+            "polygon":   ["0x0DCDED3545D565bA3B19E683431381007245d983"],   # Router NG
+            "base":      ["0x4f37A9d177470499A2dD084621020b023fcffc1F"],   # Router NG
+            "avalanche": ["0x0DCDED3545D565bA3B19E683431381007245d983"],   # Router NG
+            "bsc":       ["0xA72C85C258A81761433B4e8da60505Fe3Dd551CC"],   # Router NG
         },
     ),
     # ---- 1inch ----
@@ -180,16 +187,23 @@ _SEED_SERVICES: List[_ServiceRecord] = [
             ],
         },
     ),
-    # ---- Balancer ----
+    # ---- Balancer V2 ----
+    # The V2 Vault is intentionally deployed at the same address on every chain.
+    # All single-hop swaps pass through this one contract; it emits the
+    # Swap(bytes32,address,address,uint256,uint256) event decoded by
+    # BALANCER_V2_SWAP_SIG.  Addresses verified from balancer-labs/balancer-v2-monorepo.
     _ServiceRecord(
-        protocol_id="balancer",
-        display_name="Balancer",
+        protocol_id="balancer_v2",
+        display_name="Balancer V2",
         service_type="dex",
-        chains=["ethereum", "polygon", "arbitrum"],
+        chains=["ethereum", "polygon", "arbitrum", "optimism", "base", "avalanche"],
         contracts={
-            "ethereum": ["0xba12222222228d8ba445958a75a0704d566bf2c8"],  # Vault
-            "polygon":  ["0xba12222222228d8ba445958a75a0704d566bf2c8"],
-            "arbitrum": ["0xba12222222228d8ba445958a75a0704d566bf2c8"],
+            "ethereum":  ["0xba12222222228d8ba445958a75a0704d566bf2c8"],  # Vault
+            "polygon":   ["0xba12222222228d8ba445958a75a0704d566bf2c8"],
+            "arbitrum":  ["0xba12222222228d8ba445958a75a0704d566bf2c8"],
+            "optimism":  ["0xba12222222228d8ba445958a75a0704d566bf2c8"],
+            "base":      ["0xba12222222228d8ba445958a75a0704d566bf2c8"],
+            "avalanche": ["0xba12222222228d8ba445958a75a0704d566bf2c8"],
         },
     ),
     # ---- Aave (lending — relevant for DeFi tracing) ----
@@ -204,6 +218,52 @@ _SEED_SERVICES: List[_ServiceRecord] = [
             "arbitrum":  ["0x794a61358d6845594f94dc1db02a252b5b4814ad"],
             "optimism":  ["0x794a61358d6845594f94dc1db02a252b5b4814ad"],
             "avalanche": ["0x794a61358d6845594f94dc1db02a252b5b4814ad"],
+        },
+    ),
+    # ---- Velodrome (Optimism) ----
+    # Solidly V2 fork; pools emit Swap(address indexed sender, address indexed to,
+    # uint256 amount0In, uint256 amount1In, uint256 amount0Out, uint256 amount1Out)
+    # captured by SOLIDLY_SWAP_SIG.  Router address verified from
+    # velodrome-finance/contracts deployment-addresses/optimism.json.
+    _ServiceRecord(
+        protocol_id="velodrome_v2",
+        display_name="Velodrome V2",
+        service_type="dex",
+        chains=["optimism"],
+        contracts={
+            "optimism": ["0xa062ae8a9c5e11aaa026fc2670b0d65ccc8b2858"],  # Router V2
+        },
+    ),
+    # ---- Aerodrome (Base) ----
+    # Velodrome fork on Base; same Solidly Swap event signature.
+    # Router address verified from aerodrome-finance/contracts README.
+    _ServiceRecord(
+        protocol_id="aerodrome",
+        display_name="Aerodrome",
+        service_type="dex",
+        chains=["base"],
+        contracts={
+            "base": ["0xcf77a3ba9a5ca399b7c97c74d54e5b1beb874e43"],  # Router V2
+        },
+    ),
+    # ---- Trader Joe / LFJ (Avalanche, Arbitrum) ----
+    # Liquidity Book DEX; routers verified from developers.lfj.gg/deployment-addresses.
+    # V1 JoeRouter02 (classic AMM) + LBRouter V2.1 + V2.2 registered.
+    _ServiceRecord(
+        protocol_id="traderjoe",
+        display_name="Trader Joe",
+        service_type="dex",
+        chains=["avalanche", "arbitrum"],
+        contracts={
+            "avalanche": [
+                "0x60ae616a2155ee3d9a68541ba4544862310933d4",  # JoeRouter V1 (classic AMM)
+                "0xb4315e873dbcf96ffd0acd8ea43f689d8c20fb30",  # LBRouter V2.1
+                "0x18556da13313f3532c54711497a8fedac273220e",  # LBRouter V2.2
+            ],
+            "arbitrum": [
+                "0xb4315e873dbcf96ffd0acd8ea43f689d8c20fb30",  # LBRouter V2.1
+                "0x18556da13313f3532c54711497a8fedac273220e",  # LBRouter V2.2
+            ],
         },
     ),
     # =========================================================================
@@ -405,21 +465,27 @@ class ServiceClassifier:
                 chain_bucket = self._lookup.setdefault(chain, {})
                 excl = bridge_addrs.get(chain, set())
                 for addr in addrs:
-                    addr_lc = addr.lower()
-                    if addr_lc not in excl:
-                        chain_bucket[addr_lc] = record
+                    # Preserve case for Solana addresses, lowercase for others
+                    normalized_addr = addr if chain == "solana" else addr.lower()
+                    excl_addr = addr if chain == "solana" else addr.lower()
+                    if excl_addr not in excl:
+                        chain_bucket[normalized_addr] = record
 
         self._loaded = True
 
     def is_service_contract(self, chain: str, address: str) -> bool:
         """Return True when ``address`` is a known service contract on ``chain``."""
         self._ensure_registry()
-        return address.lower() in self._lookup.get(chain, {})
+        # Preserve case for Solana addresses, lowercase for others
+        normalized_addr = address if chain == "solana" else address.lower()
+        return normalized_addr in self._lookup.get(chain, {})
 
     def get_record(self, chain: str, address: str) -> Optional[_ServiceRecord]:
         """Return the ``_ServiceRecord`` for ``address`` on ``chain``, or None."""
         self._ensure_registry()
-        return self._lookup.get(chain, {}).get(address.lower())
+        # Preserve case for Solana addresses, lowercase for others
+        normalized_addr = address if chain == "solana" else address.lower()
+        return self._lookup.get(chain, {}).get(normalized_addr)
 
     # ------------------------------------------------------------------
     # Node / edge construction
@@ -461,8 +527,10 @@ class ServiceClassifier:
 
         # Aggregate all known contract addresses for this protocol on this chain.
         known = record.contracts.get(chain, [])
-        if contract_address.lower() not in known:
-            known = [contract_address.lower()] + known
+        # Preserve case for Solana addresses, lowercase for others
+        normalized_addr = contract_address if chain == "solana" else contract_address.lower()
+        if normalized_addr not in known:
+            known = [normalized_addr] + known
 
         return InvestigationNode(
             node_id=node_id,
@@ -489,7 +557,8 @@ class ServiceClassifier:
                 tx_chain=chain,
                 timestamp=timestamp,
                 direction=direction,
-                contract_address=contract_address.lower(),
+                # Preserve case for Solana addresses, lowercase for others
+                contract_address=contract_address if chain == "solana" else contract_address.lower(),
                 asset_symbol=asset_symbol,
                 canonical_asset_id=canonical_asset_id,
                 value_native=value_native,

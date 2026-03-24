@@ -23,11 +23,13 @@ from src.trace_compiler.chains.evm_log_decoder import (
     CURVE_TOKEN_EXCHANGE_SIG,
     CURVE_TOKEN_EXCHANGE_UNDERLYING_SIG,
     DEX_SWAP_SIGS,
+    SOLIDLY_SWAP_SIG,
     UNISWAP_V2_SWAP_SIG,
     UNISWAP_V3_SWAP_SIG,
     UNISWAP_V4_SWAP_SIG,
     decode_balancer_v2_swap,
     decode_curve_token_exchange,
+    decode_solidly_swap,
     decode_swap_log,
     decode_v2_swap,
     decode_v3_swap,
@@ -527,6 +529,58 @@ class TestExtractSwapAmountsCurve:
         assert abs(out - 99.0) < 1e-9
 
 
+class TestDecodeSolidlySwap:
+    """Tests for decode_solidly_swap() — shares data layout with Uniswap V2."""
+
+    def test_token0_to_token1(self):
+        """amount0In > 0, amount1Out > 0 → standard forward swap."""
+        data = _v2_data(int(1e18), 0, 0, int(2000e6))
+        result = decode_solidly_swap(data)
+        assert result is not None
+        assert result["amount0In"] == int(1e18)
+        assert result["amount1Out"] == int(2000e6)
+        assert result["amount1In"] == 0
+        assert result["amount0Out"] == 0
+
+    def test_token1_to_token0(self):
+        """amount1In > 0, amount0Out > 0 → reverse swap direction."""
+        data = _v2_data(0, int(2000e6), int(1e18), 0)
+        result = decode_solidly_swap(data)
+        assert result is not None
+        assert result["amount1In"] == int(2000e6)
+        assert result["amount0Out"] == int(1e18)
+
+    def test_short_data_returns_none(self):
+        """Less than 128 bytes → None."""
+        assert decode_solidly_swap("0x" + "aa" * 64) is None
+
+
+class TestExtractSwapAmountsSolidly:
+    """Tests for extract_swap_amounts with Solidly events."""
+
+    def test_solidly_token0_to_token1(self):
+        """Returns amounts and token0_is_input=True for solidly forward swap."""
+        data = _v2_data(int(1e18), 0, 0, int(2000e6))
+        decoded = decode_solidly_swap(data)
+        result = extract_swap_amounts(decoded, SOLIDLY_SWAP_SIG, decimals0=18, decimals1=6)
+        assert result is not None
+        inp, out, token0_is_input = result
+        assert abs(inp - 1.0) < 1e-9
+        assert abs(out - 2000.0) < 1e-3
+        assert token0_is_input is True
+
+    def test_solidly_token1_to_token0(self):
+        """Returns token0_is_input=False for reverse direction."""
+        data = _v2_data(0, int(2000e6), int(1e18), 0)
+        decoded = decode_solidly_swap(data)
+        result = extract_swap_amounts(decoded, SOLIDLY_SWAP_SIG, decimals0=18, decimals1=6)
+        assert result is not None
+        inp, out, token0_is_input = result
+        assert abs(inp - 2000.0) < 1e-3
+        assert abs(out - 1.0) < 1e-9
+        assert token0_is_input is False
+
+
 class TestDecodeSwapLogDispatcher:
     """Tests that decode_swap_log dispatches to the correct decoder."""
 
@@ -550,6 +604,13 @@ class TestDecodeSwapLogDispatcher:
         result = decode_swap_log(CURVE_TOKEN_EXCHANGE_UNDERLYING_SIG, data)
         assert result is not None
         assert "tokens_bought" in result
+
+    def test_solidly_dispatched(self):
+        """SOLIDLY_SWAP_SIG routes to decode_solidly_swap (V2 layout)."""
+        data = _v2_data(int(1e18), 0, 0, int(2000e6))
+        result = decode_swap_log(SOLIDLY_SWAP_SIG, data)
+        assert result is not None
+        assert "amount0In" in result
 
 
 # ---------------------------------------------------------------------------
@@ -589,6 +650,10 @@ class TestDexSwapSigs:
         """CURVE_TOKEN_EXCHANGE_UNDERLYING_SIG is a member of DEX_SWAP_SIGS."""
         assert CURVE_TOKEN_EXCHANGE_UNDERLYING_SIG in DEX_SWAP_SIGS
 
-    def test_frozenset_has_exactly_six_members(self):
-        """DEX_SWAP_SIGS contains exactly the six known sigs."""
-        assert len(DEX_SWAP_SIGS) == 6
+    def test_solidly_sig_in_frozenset(self):
+        """SOLIDLY_SWAP_SIG is a member of DEX_SWAP_SIGS."""
+        assert SOLIDLY_SWAP_SIG in DEX_SWAP_SIGS
+
+    def test_frozenset_has_exactly_seven_members(self):
+        """DEX_SWAP_SIGS contains exactly the seven known sigs."""
+        assert len(DEX_SWAP_SIGS) == 7
