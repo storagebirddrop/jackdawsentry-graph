@@ -97,6 +97,12 @@ class AddressNodeData(BaseModel):
     first_seen: Optional[str] = None
     last_seen: Optional[str] = None
     is_coinjoin_halt: Optional[bool] = None
+    # Contract / program deployment metadata.
+    is_contract: bool = False
+    deployer: Optional[str] = None          # Address that deployed the contract.
+    deployment_tx: Optional[str] = None     # Deployment transaction hash (EVM).
+    upgrade_authority: Optional[str] = None  # Solana upgradeable-loader authority.
+    deployer_entity: Optional[str] = None   # Resolved entity name for the deployer.
 
 
 class EntityNodeData(BaseModel):
@@ -630,3 +636,23 @@ class BridgeHopStatusResponse(BaseModel):
         validation_alias=AliasChoices("correlation_confidence", "correlation_conf"),
     )
     updated_at: datetime
+
+
+class IngestStatusResponse(BaseModel):
+    """Response for GET /api/v1/graph/sessions/{session_id}/ingest/status.
+
+    Returned by the frontend's ingest-pending poller.  The frontend calls this
+    endpoint every 5 seconds after expansion returns ``ingest_pending=True``.
+    When ``status`` transitions to ``"completed"``, the frontend retries the
+    expansion to load the newly-ingested activity.
+    """
+
+    address: str
+    blockchain: str
+    # "pending" | "running" | "completed" | "failed" | "not_found"
+    status: str
+    queued_at: Optional[datetime] = None
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    tx_count: Optional[int] = None
+    error: Optional[str] = None

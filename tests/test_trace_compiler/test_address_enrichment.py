@@ -14,6 +14,9 @@ Covers:
 - Sanctioned-counterparty propagation: address connected to sanctioned node
   gets sanctioned_counterparty risk factor and risk_score floored at 0.65
 - Mixer service nodes carry risk_score=0.9 and sanctioned flag when applicable
+- Contract info: is_contract, deployer, deployment_tx, address_type and
+  deployer_entity are applied to address nodes for supported chains
+- Contract info: redis_client is forwarded so results are cached
 """
 
 from __future__ import annotations
@@ -491,3 +494,186 @@ def test_sanctioned_service_node_flags():
     mixer = _mixer_svc_node()
     assert mixer.sanctioned is True
     assert mixer.risk_score == pytest.approx(1.0)
+
+
+# ---------------------------------------------------------------------------
+# Contract deployer / creator enrichment
+# ---------------------------------------------------------------------------
+
+
+class _FakeContractInfo:
+    """Minimal stand-in for ContractInfo dataclass."""
+
+    def __init__(self, is_contract, deployer=None, deployment_tx=None, upgrade_authority=None):
+        self.is_contract = is_contract
+        self.deployer = deployer
+        self.deployment_tx = deployment_tx
+        self.upgrade_authority = upgrade_authority
+
+
+@pytest.mark.asyncio
+async def test_contract_fields_applied_to_address_data():
+    """EVM contract: is_contract, deployer, deployment_tx, and address_type are set."""
+    node = _addr_node("0xcontract", chain="ethereum")
+
+    contract_info = _FakeContractInfo(
+        is_contract=True,
+        deployer="0xdeployer",
+        deployment_tx="0xtxhash",
+    )
+
+    with (
+        patch(
+            "src.api.graph_dependencies.lookup_addresses_bulk",
+            new=AsyncMock(return_value={}),
+        ),
+        patch(
+            "src.api.graph_dependencies.screen_address",
+            new=AsyncMock(return_value={"matched": False}),
+        ),
+        patch(
+            "src.api.graph_dependencies.get_contract_info",
+            new=AsyncMock(return_value=contract_info),
+        ),
+    ):
+        from src.trace_compiler.attribution.enricher import enrich_nodes
+        result = await enrich_nodes([node])
+
+    addr_data = result[0].address_data
+    assert addr_data is not None
+    assert addr_data.is_contract is True
+    assert addr_data.deployer == "0xdeployer"
+    assert addr_data.deployment_tx == "0xtxhash"
+    assert addr_data.address_type == "contract"
+
+
+@pytest.mark.asyncio
+async def test_solana_program_address_type_set_to_program():
+    """Solana executable program: address_type is set to 'program'."""
+    node = _addr_node("ProgramAddr1", chain="solana")
+
+    contract_info = _FakeContractInfo(
+        is_contract=True,
+        deployer="AuthAddr111",
+        upgrade_authority="AuthAddr111",
+    )
+
+    with (
+        patch(
+            "src.api.graph_dependencies.lookup_addresses_bulk",
+            new=AsyncMock(return_value={}),
+        ),
+        patch(
+            "src.api.graph_dependencies.screen_address",
+            new=AsyncMock(return_value={"matched": False}),
+        ),
+        patch(
+            "src.api.graph_dependencies.get_contract_info",
+            new=AsyncMock(return_value=contract_info),
+        ),
+    ):
+        from src.trace_compiler.attribution.enricher import enrich_nodes
+        result = await enrich_nodes([node])
+
+    addr_data = result[0].address_data
+    assert addr_data is not None
+    assert addr_data.address_type == "program"
+    assert addr_data.upgrade_authority == "AuthAddr111"
+
+
+@pytest.mark.asyncio
+async def test_deployer_entity_resolved():
+    """When the deployer address has a known entity, deployer_entity is populated."""
+    node = _addr_node("0xcontract", chain="ethereum")
+
+    contract_info = _FakeContractInfo(
+        is_contract=True,
+        deployer="0xdeployer",
+        deployment_tx="0xtx",
+    )
+
+    def _entity_side_effect(addresses, chain):
+        if "0xdeployer" in addresses:
+            return {"0xdeployer": {"entity_name": "Binance Hot Wallet", "risk_level": "low"}}
+        return {}
+
+    with (
+        patch(
+            "src.api.graph_dependencies.lookup_addresses_bulk",
+            new=AsyncMock(side_effect=_entity_side_effect),
+        ),
+        patch(
+            "src.api.graph_dependencies.screen_address",
+            new=AsyncMock(return_value={"matched": False}),
+        ),
+        patch(
+            "src.api.graph_dependencies.get_contract_info",
+            new=AsyncMock(return_value=contract_info),
+        ),
+    ):
+        from src.trace_compiler.attribution.enricher import enrich_nodes
+        result = await enrich_nodes([node])
+
+    assert result[0].address_data is not None
+    assert result[0].address_data.deployer_entity == "Binance Hot Wallet"
+
+
+@pytest.mark.asyncio
+async def test_eoa_leaves_address_data_unchanged():
+    """Non-contract address: address_data fields remain at defaults."""
+    node = _addr_node("0xeoa", chain="ethereum")
+
+    with (
+        patch(
+            "src.api.graph_dependencies.lookup_addresses_bulk",
+            new=AsyncMock(return_value={}),
+        ),
+        patch(
+            "src.api.graph_dependencies.screen_address",
+            new=AsyncMock(return_value={"matched": False}),
+        ),
+        patch(
+            "src.api.graph_dependencies.get_contract_info",
+            new=AsyncMock(return_value=_FakeContractInfo(is_contract=False)),
+        ),
+    ):
+        from src.trace_compiler.attribution.enricher import enrich_nodes
+        result = await enrich_nodes([node])
+
+    addr_data = result[0].address_data
+    assert addr_data is not None
+    assert addr_data.is_contract is False
+    assert addr_data.deployer is None
+    assert addr_data.address_type == "eoa"
+
+
+@pytest.mark.asyncio
+async def test_redis_client_forwarded_to_contract_info():
+    """The redis_client kwarg passed to enrich_nodes is forwarded to get_contract_info."""
+    node = _addr_node("0xcontract", chain="ethereum")
+    mock_redis = AsyncMock()
+
+    captured_kwargs = {}
+
+    async def _capture_contract_info(addr, chain, *, redis_client=None):
+        captured_kwargs["redis_client"] = redis_client
+        return _FakeContractInfo(is_contract=False)
+
+    with (
+        patch(
+            "src.api.graph_dependencies.lookup_addresses_bulk",
+            new=AsyncMock(return_value={}),
+        ),
+        patch(
+            "src.api.graph_dependencies.screen_address",
+            new=AsyncMock(return_value={"matched": False}),
+        ),
+        patch(
+            "src.api.graph_dependencies.get_contract_info",
+            new=_capture_contract_info,
+        ),
+    ):
+        from src.trace_compiler.attribution.enricher import enrich_nodes
+        await enrich_nodes([node], redis_client=mock_redis)
+
+    assert captured_kwargs.get("redis_client") is mock_redis

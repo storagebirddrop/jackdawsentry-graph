@@ -28,6 +28,7 @@ from src.trace_compiler.models import ExpandOptions
 
 SEED = "a" * 64  # Sui addresses are 64-character hex strings
 COUNTERPARTY = "b" * 64
+COUNTERPARTY2 = "c" * 64  # Second counterparty for multi-row tests
 TX_HASH_1 = "tx" + "a" * 62
 TX_HASH_2 = "tx" + "b" * 62
 
@@ -148,7 +149,7 @@ async def test_expand_prev_no_pg_returns_empty():
 async def test_expand_next_returns_node_per_unique_counterparty():
     """Two rows with different counterparties produce two address nodes."""
     raw_rows = [
-        _row(COUNTERPARTY, TX_HASH_1, 1.0),
+        _row(COUNTERPARTY2, TX_HASH_1, 1.0),
         _row(COUNTERPARTY + "c", TX_HASH_2, 2.0),
     ]
     pg = _pg_pool_returning(raw_rows)
@@ -266,7 +267,7 @@ async def test_token_transfer_rows_produce_nodes():
 @pytest.mark.asyncio
 async def test_bridge_detection_produces_bridge_node():
     """A counterparty matching a known bridge contract is promoted to bridge node."""
-    BRIDGE_ADDR = "0x" + "c" * 64
+    BRIDGE_ADDR = "c" * 64  # Sui addresses are 64-character hex strings without 0x prefix
     raw_rows = [_row(BRIDGE_ADDR)]
     pg = _pg_pool_returning(raw_rows)
     compiler = SuiChainCompiler(postgres_pool=pg)

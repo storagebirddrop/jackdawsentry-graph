@@ -336,6 +336,9 @@ export interface ExpansionResponseV2 {
   chain_context: ChainContext;
   pagination?: PaginationMeta;
   asset_context?: AssetContext;
+  /** True when expansion was empty because historical data is not yet in the
+   *  event store.  The frontend should poll /ingest/status and retry expand. */
+  ingest_pending?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -377,4 +380,15 @@ export interface BridgeHopStatusResponse {
   destination_chain?: string;
   destination_address?: string;
   correlation_confidence?: number;
+}
+
+export interface IngestStatusResponse {
+  address: string;
+  blockchain: string;
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'not_found';
+  queued_at?: string;
+  started_at?: string;
+  completed_at?: string;
+  tx_count?: number;
+  error?: string;
 }

@@ -181,7 +181,6 @@ class TestTHORChainLookup:
     @pytest.mark.asyncio
     async def test_completed_hop(self):
         tracer = BridgeTracer()
-        protocol = tracer  # placeholder; we call the private method directly
 
         from src.tracing.bridge_registry import BRIDGE_REGISTRY
         proto = BRIDGE_REGISTRY["thorchain"]
@@ -442,10 +441,15 @@ class TestIntermediateIDProtocols:
 
     @pytest.mark.asyncio
     async def test_relay_returns_none(self):
+        """_resolve_solver for relay returns None when the API finds no matching request."""
         tracer = BridgeTracer()
         from src.tracing.bridge_registry import BRIDGE_REGISTRY
+        from unittest.mock import AsyncMock, patch
         proto = BRIDGE_REGISTRY["relay"]
-        result = await tracer._resolve_solver(proto, "0xtx", "ethereum")
+        # Mock the HTTP layer so no live API call is made; empty list simulates
+        # the Relay API returning no requests for this tx hash.
+        with patch.object(tracer, "_make_http_request", new=AsyncMock(return_value=[])):
+            result = await tracer._resolve_solver(proto, "0xtx", "ethereum")
         assert result is None
 
     @pytest.mark.asyncio

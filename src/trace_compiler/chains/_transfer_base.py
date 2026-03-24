@@ -367,6 +367,7 @@ class _GenericTransferChainCompiler(BaseChainCompiler):
                 rows = await conn.fetch(sql, *params)
             return [dict(r) for r in rows]
         except Exception as exc:
+            # nosemgrep: python-logger-credential-disclosure - logging exception, not credentials
             logger.debug(
                 "%s._fetch_outbound_token_transfers failed: %s",
                 self.__class__.__name__,
@@ -403,7 +404,7 @@ class _GenericTransferChainCompiler(BaseChainCompiler):
                 FROM raw_token_transfers
                 WHERE blockchain = $1
                   AND to_address = $2
-                  AND ($3::text[] IS NULL OR asset_symbol = ANY($3))
+                  AND ($3::text[] IS NULL OR UPPER(asset_symbol) = ANY(SELECT UPPER(x) FROM unnest($3) x))
                 ORDER BY timestamp DESC, tx_hash ASC
                 LIMIT $4
             """
@@ -411,6 +412,7 @@ class _GenericTransferChainCompiler(BaseChainCompiler):
                 rows = await conn.fetch(sql, chain, address, asset_filter or None, limit)
             return [dict(r) for r in rows]
         except Exception as exc:
+            # nosemgrep: python-logger-credential-disclosure - logging exception, not credentials
             logger.debug(
                 "%s._fetch_inbound_token_transfers failed: %s",
                 self.__class__.__name__,
@@ -453,6 +455,7 @@ class _GenericTransferChainCompiler(BaseChainCompiler):
                 rows = await conn.fetch(sql, chain, tx_hash)
             return [dict(r) for r in rows]
         except Exception as exc:
+            # nosemgrep: python-logger-credential-disclosure - logging exception, not credentials
             logger.debug(
                 "%s._fetch_tx_token_transfers failed for %s/%s: %s",
                 self.__class__.__name__,

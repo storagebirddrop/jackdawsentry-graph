@@ -6,9 +6,11 @@ import { useCallback, useEffect, useState } from 'react';
 import SessionStarter from './components/SessionStarter';
 import InvestigationGraph from './components/InvestigationGraph';
 import { useGraphStore } from './store/graphStore';
+import { isAuthenticated, redirectToLogin } from './api/client';
 
 export default function App() {
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [authChecked, setAuthChecked] = useState(false);
   const resetGraph = useGraphStore((state) => state.reset);
 
   const handleStartNewInvestigation = useCallback(() => {
@@ -17,6 +19,11 @@ export default function App() {
   }, [resetGraph]);
 
   useEffect(() => {
+    if (!isAuthenticated()) {
+      redirectToLogin();
+      return; // Don't set up UI or mark auth as checked
+    }
+    setAuthChecked(true);
     document.body.classList.add('graph-app-body');
     document.body.classList.add('graph-app-boot-complete');
     return () => {
@@ -24,6 +31,11 @@ export default function App() {
       document.body.classList.remove('graph-app-boot-complete');
     };
   }, []);
+
+  // Gate rendering until auth is confirmed
+  if (!authChecked) {
+    return null; // or a loading spinner
+  }
 
   if (!sessionId) {
     return <SessionStarter onSessionCreated={setSessionId} />;

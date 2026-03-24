@@ -76,31 +76,35 @@ class AddressIngestWorker:
 
         async with get_postgres_connection() as conn:
             rows = await conn.fetch(
-                """
+                f"""
                 UPDATE address_ingest_queue
                 SET status = 'running', started_at = NOW()
                 WHERE id IN (
                     SELECT id FROM address_ingest_queue
                     WHERE status = 'pending'
                       AND (next_retry_at IS NULL OR next_retry_at <= NOW())
-                       OR (status = 'running' AND started_at <= NOW() - INTERVAL '%s seconds')
+                       OR (status = 'running' AND started_at <= NOW() - INTERVAL '{_RUNNING_STALE_INTERVAL} seconds')
                     ORDER BY priority DESC, requested_at ASC
                     LIMIT $1
                     FOR UPDATE SKIP LOCKED
                 )
                 RETURNING id, address, blockchain, retry_count
                 """,
-                _RUNNING_STALE_INTERVAL,
                 _BATCH_SIZE,
             )
 
         for row in rows:
-            await self._process_row(
-                queue_id=row["id"],
-                address=row["address"],
-                chain=row["blockchain"],
-                retry_count=row["retry_count"],
-            )
+            try:
+                await self._process_row(
+                    queue_id=row["id"],
+                    address=row["address"],
+                    chain=row["blockchain"],
+                    retry_count=row["retry_count"],
+                )
+            except Exception as e:
+                logger.exception(f"Failed to process address ingest row {row['id']}: {e}")
+                # Mark the row as failed so it can be retried
+                await self._mark_failed(row["id"], str(e), row["retry_count"])
 
     async def _process_row(
         self, queue_id: int, address: str, chain: str, retry_count: int

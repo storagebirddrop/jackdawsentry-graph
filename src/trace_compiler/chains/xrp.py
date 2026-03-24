@@ -53,8 +53,10 @@ class XRPChainCompiler(_GenericTransferChainCompiler):
     Handles native XRP transfers and XRPL issued asset transfers from the
     PostgreSQL event store.  No Neo4j fallback.
 
-    XRP addresses are base58check-encoded and case-sensitive — this compiler
-    preserves address casing rather than lowercasing (see ``_normalize_address``).
+    Detects DEX/AMM activity via transaction type (AMMSwap, OfferCreate) and
+    promotes to swap_event nodes.  XRP addresses are base58check-encoded and
+    case-sensitive — this compiler preserves address casing rather than 
+    lowercasing (see ``_normalize_address``).
 
     Args:
         postgres_pool: asyncpg pool for event store reads.

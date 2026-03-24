@@ -365,7 +365,7 @@ class EthereumCollector(BaseCollector):
                         timestamp=ts,
                         from_address=(item.get("from") or "").lower() or None,
                         to_address=(item.get("to") or "").lower() or None,
-                        value=float(item.get("value", 0)),
+                        value=float(item.get("value", 0)) / 1e18,  # Ethplorer returns wei
                         status="confirmed" if item.get("success", True) else "failed",
                     ))
                 except Exception as exc:
@@ -505,6 +505,20 @@ class EthereumCollector(BaseCollector):
                 timeout=_TIMEOUT,
             ) as resp:
                 data = await resp.json()
+                # Check for JSON-RPC error payload
+                if "error" in data:
+                    error = data["error"]
+                    # Sanitize URL to avoid logging credentials
+                    # Strip userinfo (user:pass@) and query/fragment
+                    from urllib.parse import urlparse
+                    parsed = urlparse(rpc_url)
+                    sanitized_url = f"{parsed.scheme}://{parsed.hostname}"
+                    if parsed.port:
+                        sanitized_url += f":{parsed.port}"
+                    raise RuntimeError(
+                        f"JSON-RPC error from {sanitized_url}: method={method}, "
+                        f"params={params}, req_id={req_id}, error={error}"
+                    )
                 return data.get("result")
 
         try:
@@ -758,8 +772,10 @@ class EthereumCollector(BaseCollector):
     def _extract_dex_logs(self, receipt: Dict) -> List[Dict]:
         """Extract relevant event logs from a transaction receipt for dual-write.
 
-        Matches DEX Swap events (Uniswap V2/V3/V4) and bridge deposit events
-        (Across V3FundsDeposited, Celer Send, Stargate Swap, Chainflip Swap*).
+        Matches DEX Swap events (Uniswap V2/V3/V4, PancakeSwap V3, Balancer V2,
+        Curve TokenExchange/TokenExchangeUnderlying, Solidly/Velodrome/Aerodrome/
+        Camelot V2) and bridge deposit events (Across V3FundsDeposited, Celer
+        Send, Stargate Swap, Chainflip Swap*).
         The returned dicts are written to ``raw_evm_logs`` via
         ``base.py._insert_raw_evm_logs()``.
 

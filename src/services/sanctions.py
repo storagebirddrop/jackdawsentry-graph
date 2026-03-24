@@ -17,8 +17,9 @@ Design decisions:
   issuing redundant HTTP requests.
 - Address matching is case-insensitive (both sides normalised to lowercase).
 - The ETH idType is treated as covering all EVM-compatible chains
-  (ethereum, bsc, polygon, arbitrum, base, optimism, avalanche, starknet,
-  injective) because OFAC does not distinguish between EVM networks.
+  (ethereum, bsc, polygon, arbitrum, base, optimism, avalanche, injective) 
+  because OFAC does not distinguish between EVM networks. Note: Starknet is not
+  included as it uses a different address format.
 
 Supported idType → chain mappings:
   "ETH" → all EVM chains
@@ -82,7 +83,6 @@ _EVM_CHAINS = frozenset(
         "base",
         "optimism",
         "avalanche",
-        "starknet",
         "injective",
     }
 )
@@ -291,7 +291,8 @@ async def screen_address(address: str, blockchain: str) -> Dict[str, Any]:
     OFAC uses a single "ETH" tag to cover all EVM-compatible addresses; this
     function therefore treats an ETH-tagged SDN entry as a match for any chain
     in the EVM family (ethereum, bsc, polygon, arbitrum, base, optimism,
-    avalanche, starknet, injective).
+    avalanche, injective). Note: Starknet is excluded as it uses a different
+    address format.
 
     Args:
         address:    The blockchain address to screen, in any case variant.

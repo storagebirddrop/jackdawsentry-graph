@@ -387,3 +387,112 @@ async def test_try_swap_promotion_calls_maybe_build_for_dex():
     call_kwargs = mock_build.call_args[1]
     assert call_kwargs["protocol_id"] == "justswap_v1"
     assert call_kwargs["chain"] == "tron"
+
+
+# ---------------------------------------------------------------------------
+# Tron swap event end-to-end
+# ---------------------------------------------------------------------------
+
+# JustSwap Router — 25-byte Tron hex (41 prefix + 20-byte body + 4-byte checksum).
+# Matches the address registered in the service classifier for "justswap_v1".
+_JUSTSWAP_ADDR = "41e95812d8d5b5412d2b9f3a4d5a87ca15c5c51f33366bfa2c"
+
+
+@pytest.mark.asyncio
+async def test_justswap_interaction_produces_swap_event_node():
+    """JustSwap counterparty with USDT→USDC token legs is promoted to swap_event node.
+
+    Verifies the full Tron swap promotion path end-to-end:
+    1. Event store row has JustSwap Router as counterparty.
+    2. Service classifier returns a DEX record (justswap_v1).
+    3. Token transfer legs show USDT outgoing and USDC incoming relative to seed.
+    4. _maybe_build_swap_event produces a swap_event node with correct attributes.
+    5. No plain address node is produced for the DEX contract.
+    """
+    justswap_row = {
+        "counterparty": _JUSTSWAP_ADDR,
+        "tx_hash": TX_HASH_1,
+        "value_native": 0.0,
+        "asset_symbol": "TRX",
+        "canonical_asset_id": None,
+        "timestamp": "2024-01-15T12:00:00",
+    }
+
+    justswap_record = MagicMock()
+    justswap_record.service_type = "dex"
+    justswap_record.protocol_id = "justswap_v1"
+    justswap_record.display_name = "JustSwap (SunSwap V1)"
+
+    # Token legs: seed sends USDT to JustSwap; JustSwap sends USDC back to seed.
+    token_legs = [
+        {
+            "from_address": SEED,
+            "to_address": _JUSTSWAP_ADDR,
+            "amount_normalized": 100.0,
+            "asset_symbol": "USDT",
+            "canonical_asset_id": "tether",
+        },
+        {
+            "from_address": _JUSTSWAP_ADDR,
+            "to_address": SEED,
+            "amount_normalized": 99.5,
+            "asset_symbol": "USDC",
+            "canonical_asset_id": "usd-coin",
+        },
+    ]
+
+    compiler = TronChainCompiler(postgres_pool=None)
+
+    with (
+        patch.object(
+            compiler, "_fetch_outbound_event_store",
+            new=AsyncMock(return_value=[justswap_row]),
+        ),
+        patch.object(compiler, "_prefetch_prices", new=AsyncMock(return_value={})),
+        patch.object(compiler._bridge, "is_bridge_contract", return_value=False),
+        patch.object(compiler._service, "get_record", return_value=justswap_record),
+        patch.object(
+            compiler, "_fetch_tx_token_transfers",
+            new=AsyncMock(return_value=token_legs),
+        ),
+        patch.object(
+            compiler, "_fetch_tx_native_leg", new=AsyncMock(return_value=None)
+        ),
+        patch.object(
+            compiler, "_fetch_dex_swap_log", new=AsyncMock(return_value=None)
+        ),
+    ):
+        nodes, edges = await compiler.expand_next(
+            session_id="s",
+            branch_id="b",
+            path_sequence=0,
+            depth=0,
+            seed_address=SEED,
+            chain="tron",
+            options=_opts(),
+        )
+
+    # Exactly one swap_event node — no plain address node for the DEX contract.
+    assert len(nodes) == 1, f"Expected 1 node, got {len(nodes)}: {nodes}"
+    swap_node = nodes[0]
+    assert swap_node.node_type == "swap_event"
+    assert swap_node.chain == "tron"
+
+    sd = swap_node.swap_event_data
+    assert sd is not None
+    assert sd.protocol_id == "justswap_v1"
+    assert sd.input_asset == "USDT"
+    assert sd.output_asset == "USDC"
+    assert sd.input_amount == 100.0
+    assert sd.output_amount == 99.5
+    assert sd.tx_hash == TX_HASH_1
+    assert sd.chain == "tron"
+
+    # Two edges: seed → swap (swap_input) and swap → seed (swap_output).
+    assert len(edges) == 2, f"Expected 2 edges, got {len(edges)}: {edges}"
+    edge_types = {e.edge_type for e in edges}
+    assert edge_types == {"swap_input", "swap_output"}
+    input_edge = next(e for e in edges if e.edge_type == "swap_input")
+    output_edge = next(e for e in edges if e.edge_type == "swap_output")
+    assert input_edge.asset_symbol == "USDT"
+    assert output_edge.asset_symbol == "USDC"

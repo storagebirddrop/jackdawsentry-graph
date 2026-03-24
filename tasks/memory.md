@@ -104,6 +104,38 @@ Read this file before touching graph schema, graph API, trace compiler semantics
   Keep the logic honest: when the transaction context is incomplete, fall back
   to a generic `service` node rather than inventing swap semantics.
 
+### ADR-024 (COMPLETE — Ingest-Pending Auto-Retry)
+- `GET /sessions/{session_id}/ingest/status?address=X&chain=Y` added to graph router.
+  Queries `address_ingest_queue` directly; inherits session ownership auth.
+  Returns `IngestStatusResponse` with `status` ∈ {pending, running, completed, failed, not_found}.
+- Frontend polling loop: `useIngestPoller` (5 s interval, 3-min timeout) via render-null
+  `<IngestPoller>` component. `IngestPendingContext` passes pending node set to `AddressNode`.
+- `handleExpand` now checks `response.ingest_pending`; adds to `ingestPendingMap` and stores
+  retry payload in `ingestRetryRef`. `handleIngestComplete` auto-re-calls `handleExpand`.
+- `AddressNode` renders a pulsing "Fetching data…" banner when `isIngestPending=true`.
+- 8 new backend tests in `tests/test_api/test_ingest_status.py`. 546 total tests pass.
+
+### ADR-023 (COMPLETE — Contract Info & Swap Depth Pass)
+- `src/services/contract_info.py` added: `get_contract_info(address, chain, *, redis_client)`
+  resolves EVM contract deployer/tx via Etherscan v2 unified API (chainid param covers
+  ETH/BSC/Polygon/Arbitrum/Base/Avalanche/Optimism with one key); Solana detection via
+  `getAccountInfo` executable flag + BPF Upgradeable Loader programData fetch for
+  upgrade_authority; 7-day Redis TTL (deployment data is immutable).
+- `AddressNodeData` extended: `is_contract`, `deployer`, `deployment_tx`,
+  `upgrade_authority`, `deployer_entity` — all optional, zero-default.
+- `enrich_nodes` (enricher.py) applies contract info concurrently per expansion;
+  `address_type` is flipped to "contract"/"program" on confirmed contracts; deployer
+  entity names resolved via secondary `lookup_addresses_bulk` pass; `redis_client`
+  forwarded at all three compiler call sites in `compiler.py`.
+- Service classifier broadened: PancakeSwap V2 (renamed from "pancakeswap"),
+  PancakeSwap V3 (BSC + ETH via SmartRouter V3 CREATE2 address), Camelot V2 (Arbitrum).
+  No new ABI decoder needed — all use existing Uniswap V2/V3 Swap event sigs.
+- `_extract_dex_logs_tron` address format bug fixed: was producing 21-byte hex
+  ("41" + raw_addr); now produces canonical 25-byte hex (41 prefix + 20-byte body +
+  4-byte double-SHA256 checksum) matching the service classifier and event store.
+- End-to-end Tron swap promotion test added: JustSwap USDT→USDC produces correct
+  `swap_event` node via patched `_fetch_outbound_event_store` + token transfer legs.
+
 ### ADR-022 (COMPLETE — Bridge Log-Decode Resolution Pass)
 - `src/tracing/bridge_log_decoder.py` added: fetches tx receipt via aiohttp,
   decodes bridge events using keccak256 topic0 sigs (pycryptodome / eth_hash fallback).
@@ -121,9 +153,10 @@ Read this file before touching graph schema, graph API, trace compiler semantics
 ### ADR-021 (COMPLETE — Attribution & Sanctions Data Pass)
 - `src/services/sanctions.py` implemented: OFAC SDN XML fetch + JSON file cache
   (`/tmp/jackdaw_ofac_cache.json`, 24h TTL). ETH addresses match all EVM chains.
-- `src/services/entity_attribution.py` implemented: 21-entry hardcoded CEX/VASP
+- `src/services/entity_attribution.py` implemented: hardcoded CEX/VASP
   seed (Binance, Coinbase, Kraken, OKX, Bybit, Lido, RocketPool, Compound, Maker)
   + Etherscan v2 label API when `ETHERSCAN_API_KEY` is configured.
+  See entity_attribution.py for current seed counts per chain.
 - Frontend field-name mismatches fixed in `graphVisuals.tsx`:
   - `node.sanctioned` now checked alongside `address.is_sanctioned`
   - `node.entity_category` now drives category badge (enricher sets top-level)
@@ -165,16 +198,9 @@ Read this file before touching graph schema, graph API, trace compiler semantics
 - Security-sensitive backend or nginx changes are not complete until the live stack is rebuilt and `python scripts/quality/live_abuse_probe.py ...` passes against the running deployment.
 - Performance claims are not credible without representative graph data. Run `python scripts/quality/live_perf_probe.py ...` and record the dataset footprint before treating local timings as meaningful.
 - For local performance work, `python scripts/dev/load_perf_fixture_dataset.py` is the supported way to create a deterministic high-degree plus bridge/cross-chain fixture set without relying on private-repo ingestion.
-- Near-term implementation priorities:
-  - deepen EVM `swap_event` detection from current tx-leg inference toward
-    fuller log-aware decoding
-  - decode Solana instructions into real `swap_event` nodes
-  - upgrade bridge handling to persist and surface destination address / asset /
-    chain directly
-  - run mandatory address enrichment during session create/expand so every
-    discovered address is screened and labeled immediately against sanctions,
-    AML / CFT, fraud, and entity datasets
-  - add on-demand address-targeted ingest when expansion hits an empty frontier
-  - add a graph-safe enrichment adapter that stamps `risk_score`,
-    `sanctioned`, `entity_*`, and fraud labels onto every newly discovered
-    address in the session flow
+- Known remaining gaps (deferred, low urgency for MVP):
+  - Chainflip full resolution: swap_id (broker deposit channel ID) not emitted
+    as an EVM event — requires broker API integration; stays `pending` for now
+  - Cosmos / Sui attribution seeds: JS-gated explorers blocked address
+    verification; no confirmed addresses added yet
+  - Graph session expiry cleanup job: operational hygiene, not a product blocker

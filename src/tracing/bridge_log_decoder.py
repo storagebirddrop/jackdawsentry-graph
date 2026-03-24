@@ -24,7 +24,12 @@ from typing import Dict
 from typing import List
 from typing import Optional
 
-import aiohttp
+try:
+    import aiohttp
+    _AIOHTTP_AVAILABLE = True
+except ImportError:
+    aiohttp = None  # type: ignore[assignment]
+    _AIOHTTP_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 

@@ -25,9 +25,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Dict
-from typing import List
-from typing import Optional
+from typing import Dict, List, Optional, Tuple, Union
 
 try:
     import aiohttp
@@ -42,6 +40,7 @@ _CACHE_TTL_SECONDS = 900          # 15 minutes — acceptable staleness for comp
 _COINGECKO_BASE = "https://api.coingecko.com/api/v3"
 _REQUEST_TIMEOUT = 8.0            # seconds per HTTP request
 _MAX_IDS_PER_CALL = 50            # CoinGecko returns up to 50 ids per call without pagination
+_CACHE_VERSION = 1                 # Schema version for cache invalidation
 
 
 class PriceOracle:
@@ -62,9 +61,12 @@ class PriceOracle:
     ) -> None:
         self._api_key = api_key
         self._base_url = base_url
-        # Flat cache: canonical_asset_id -> (price_usd, fetched_at_epoch)
-        self._cache: Dict[str, tuple[float, float]] = {}
+        # Flat cache: canonical_asset_id -> (price_usd, fetched_at_monotonic)
+        self._cache: Dict[str, Tuple[float, float]] = {}
+        # In-flight futures for deduplication: asset_id -> Future
+        self._inflight: Dict[str, asyncio.Future] = {}
         self._lock: Optional[asyncio.Lock] = None
+        self._session: Optional[aiohttp.ClientSession] = None
 
     @property
     def _lock(self) -> asyncio.Lock:
@@ -76,6 +78,22 @@ class PriceOracle:
     @_lock.setter
     def _lock(self, value):
         self.__lock = value
+
+    async def _get_session(self) -> aiohttp.ClientSession:
+        """Get or create a persistent aiohttp session."""
+        async with self._lock:
+            if self._session is None or self._session.closed:
+                headers: Dict[str, str] = {}
+                if self._api_key:
+                    headers["x-cg-pro-api-key"] = self._api_key
+                self._session = aiohttp.ClientSession(headers=headers)
+            return self._session
+
+    async def close(self) -> None:
+        """Close the persistent session."""
+        if self._session and not self._session.closed:
+            await self._session.close()
+            self._session = None
 
     async def get_prices_bulk(
         self,
@@ -99,22 +117,69 @@ class PriceOracle:
         now = time.monotonic()
         result: Dict[str, Optional[float]] = {}
         stale: List[str] = []
+        futures_to_await: List[Tuple[str, asyncio.Future]] = []
 
-        for aid in asset_ids:
-            entry = self._cache.get(aid)
-            if entry is not None and (now - entry[1]) < _CACHE_TTL_SECONDS:
-                result[aid] = entry[0]
-            else:
-                stale.append(aid)
-                result[aid] = None  # pre-populate with None; overwritten on hit
+        # Lock scope: check cache and register in-flight futures
+        async with self._lock:
+            for aid in asset_ids:
+                entry = self._cache.get(aid)
+                if entry is not None and (now - entry[1]) < _CACHE_TTL_SECONDS:
+                    result[aid] = entry[0]
+                elif aid in self._inflight:
+                    # Reuse existing in-flight request
+                    futures_to_await.append((aid, self._inflight[aid]))
+                    result[aid] = None  # placeholder, will be filled after await
+                else:
+                    stale.append(aid)
+                    result[aid] = None  # pre-populate with None; overwritten on hit
 
-        if stale:
-            fetched = await self._fetch_from_coingecko(stale)
-            now_refetch = time.monotonic()
-            for aid, price in fetched.items():
+        # Await any in-flight futures outside the lock
+        for aid, future in futures_to_await:
+            try:
+                price = await future
                 if price is not None:
                     result[aid] = price
-                    self._cache[aid] = (price, now_refetch)
+            except Exception as exc:
+                logger.debug("In-flight price fetch failed for %s: %s", aid, exc)
+
+        if stale:
+            # Create futures for stale assets and fetch outside lock
+            async with self._lock:
+                # Re-check in case another coroutine started fetching
+                to_fetch: List[str] = []
+                for aid in stale:
+                    if aid in self._inflight:
+                        futures_to_await.append((aid, self._inflight[aid]))
+                    else:
+                        to_fetch.append(aid)
+                        self._inflight[aid] = asyncio.get_event_loop().create_future()
+
+            # Fetch prices outside the lock
+            if to_fetch:
+                fetched = await self._fetch_from_coingecko(to_fetch)
+                now_refetch = time.monotonic()
+
+                # Update cache and resolve futures inside lock
+                async with self._lock:
+                    for aid in to_fetch:
+                        price = fetched.get(aid)
+                        if aid in self._inflight:
+                            future = self._inflight.pop(aid)
+                            if not future.done():
+                                future.set_result(price)
+                        if price is not None:
+                            result[aid] = price
+                            self._cache[aid] = (price, now_refetch)
+
+            # Await any newly discovered in-flight futures
+            for aid, future in futures_to_await:
+                if aid not in result or result[aid] is None:
+                    try:
+                        price = await future
+                        if price is not None:
+                            result[aid] = price
+                    except Exception as exc:
+                        logger.debug("In-flight price fetch failed for %s: %s", aid, exc)
 
         return result
 
@@ -138,39 +203,38 @@ class PriceOracle:
             return {}
 
         prices: Dict[str, Optional[float]] = {}
-        headers: Dict[str, str] = {}
-        if self._api_key:
-            headers["x-cg-pro-api-key"] = self._api_key
 
-        async with self._lock:
-            async with aiohttp.ClientSession(headers=headers) as session:
-                for batch_start in range(0, len(asset_ids), _MAX_IDS_PER_CALL):
-                    batch = asset_ids[batch_start: batch_start + _MAX_IDS_PER_CALL]
-                    ids_param = ",".join(batch)
-                    url = (
-                        f"{self._base_url}/simple/price"
-                        f"?ids={ids_param}&vs_currencies=usd"
-                    )
-                    try:
-                        async with session.get(
-                            url, timeout=aiohttp.ClientTimeout(total=_REQUEST_TIMEOUT)
-                        ) as resp:
-                            if resp.status != 200:
-                                logger.debug(
-                                    "CoinGecko returned HTTP %s for ids=%s",
-                                    resp.status,
-                                    ids_param[:80],
-                                )
-                                continue
-                            data = await resp.json()
-                            for aid in batch:
-                                entry = data.get(aid)
-                                if entry and isinstance(entry, dict):
-                                    usd = entry.get("usd")
-                                    if isinstance(usd, (int, float)):
-                                        prices[aid] = float(usd)
-                    except Exception as exc:
-                        logger.debug("CoinGecko fetch failed for batch starting %s: %s", batch_start, exc)
+        try:
+            session = await self._get_session()
+            for batch_start in range(0, len(asset_ids), _MAX_IDS_PER_CALL):
+                batch = asset_ids[batch_start: batch_start + _MAX_IDS_PER_CALL]
+                ids_param = ",".join(batch)
+                url = (
+                    f"{self._base_url}/simple/price"
+                    f"?ids={ids_param}&vs_currencies=usd"
+                )
+                try:
+                    async with session.get(
+                        url, timeout=aiohttp.ClientTimeout(total=_REQUEST_TIMEOUT)
+                    ) as resp:
+                        if resp.status != 200:
+                            logger.debug(
+                                "CoinGecko returned HTTP %s for ids=%s",
+                                resp.status,
+                                ids_param[:80],
+                            )
+                            continue
+                        data = await resp.json()
+                        for aid in batch:
+                            entry = data.get(aid)
+                            if entry and isinstance(entry, dict):
+                                usd = entry.get("usd")
+                                if isinstance(usd, (int, float)):
+                                    prices[aid] = float(usd)
+                except Exception as exc:
+                    logger.debug("CoinGecko fetch failed for batch starting %s: %s", batch_start, exc)
+        except Exception as exc:
+            logger.debug("CoinGecko session error: %s", exc)
 
         return prices
 

@@ -85,3 +85,29 @@ def get_known_dex_addresses() -> Set[str]:
     except ImportError:
         return set()
     return set(get_known_dex_addresses())
+
+
+async def get_contract_info(
+    address: str,
+    chain: str,
+    *,
+    redis_client: Any = None,
+) -> Any:
+    """Return contract deployer info when the contract_info service exists.
+
+    Args:
+        address:      Address to look up (EVM hex or Solana base58).
+        chain:        Chain identifier (e.g. ``"ethereum"``, ``"bsc"``,
+                      ``"solana"``).
+        redis_client: Optional async Redis client for caching.
+
+    Returns:
+        :class:`~src.services.contract_info.ContractInfo` or ``None``.
+    """
+    try:
+        from src.services.contract_info import (
+            get_contract_info as _get_contract_info,
+        )
+    except ImportError:
+        return None
+    return await _get_contract_info(address, chain, redis_client=redis_client)

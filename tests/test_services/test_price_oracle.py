@@ -33,23 +33,29 @@ def _make_oracle() -> PriceOracle:
 
 
 def _mock_aiohttp_response(data: dict, status: int = 200):
-    """Return a mock aiohttp context-manager response with JSON data."""
+    """Return a mock aiohttp.ClientSession with JSON response data.
+
+    The mock represents a *session* object (not an async context manager), matching
+    the usage in PriceOracle._get_session() which calls aiohttp.ClientSession()
+    directly and stores the result as self._session.
+
+    session.get(url) returns an async context manager that yields a response mock
+    with the given status code and JSON payload.
+    """
     resp = AsyncMock()
     resp.status = status
     resp.json = AsyncMock(return_value=data)
 
-    session_ctx = AsyncMock()
-    session_ctx.__aenter__ = AsyncMock(return_value=resp)
-    session_ctx.__aexit__ = AsyncMock(return_value=False)
+    resp_ctx = AsyncMock()
+    resp_ctx.__aenter__ = AsyncMock(return_value=resp)
+    resp_ctx.__aexit__ = AsyncMock(return_value=False)
 
-    session = AsyncMock()
-    session.get = MagicMock(return_value=session_ctx)
+    session = MagicMock()
+    session.get = MagicMock(return_value=resp_ctx)
+    # Explicitly set closed=False so _get_session() doesn't recreate the session.
+    session.closed = False
 
-    client_session_ctx = AsyncMock()
-    client_session_ctx.__aenter__ = AsyncMock(return_value=session)
-    client_session_ctx.__aexit__ = AsyncMock(return_value=False)
-
-    return client_session_ctx
+    return session
 
 
 # ---------------------------------------------------------------------------
@@ -131,12 +137,10 @@ async def test_network_exception_returns_none():
     oracle = _make_oracle()
 
     with patch("src.services.price_oracle.aiohttp") as mock_aiohttp:
-        session = AsyncMock()
+        session = MagicMock()
         session.get.side_effect = Exception("network error")
-        session_ctx = AsyncMock()
-        session_ctx.__aenter__ = AsyncMock(return_value=session)
-        session_ctx.__aexit__ = AsyncMock(return_value=False)
-        mock_aiohttp.ClientSession = MagicMock(return_value=session_ctx)
+        session.closed = False
+        mock_aiohttp.ClientSession = MagicMock(return_value=session)
         mock_aiohttp.ClientTimeout = MagicMock(return_value=None)
         result = await oracle.get_prices_bulk(["ethereum"])
 

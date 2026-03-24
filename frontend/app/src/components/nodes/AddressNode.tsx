@@ -2,7 +2,7 @@
  * AddressNode — custom React Flow node for blockchain addresses.
  */
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { Handle, Position, type NodeProps } from '@xyflow/react';
 
 import type { InvestigationNode, AddressNodeData } from '../../types/graph';
@@ -29,6 +29,8 @@ interface AddressNodeComponentData extends InvestigationNode {
   onExpandNext?: () => void;
   onExpandPrev?: () => void;
   isExpanding?: boolean;
+  /** True while a background ingest job is running for this address. */
+  isIngestPending?: boolean;
 }
 
 function shortAddr(addr: string): string {
@@ -44,27 +46,56 @@ export default function AddressNode({ data, selected }: NodeProps) {
   const [copied, setCopied] = useState(false);
   const [hoverPrev, setHoverPrev] = useState(false);
   const [hoverNext, setHoverNext] = useState(false);
+  const copyTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Cleanup timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (copyTimeoutRef.current) {
+        clearTimeout(copyTimeoutRef.current);
+        copyTimeoutRef.current = null;
+      }
+    };
+  }, []);
 
   const copyAddress = useCallback(() => {
     if (!addr?.address) return;
+    
+    // Clear any existing timeout
+    if (copyTimeoutRef.current) {
+      clearTimeout(copyTimeoutRef.current);
+      copyTimeoutRef.current = null;
+    }
+    
     navigator.clipboard.writeText(addr.address).then(() => {
       setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    }).catch((err) => {
-      console.error('Failed to copy address:', err);
+      copyTimeoutRef.current = setTimeout(() => {
+        setCopied(false);
+        copyTimeoutRef.current = null;
+      }, 1500);
+    }).catch(() => {
       // Fallback for browsers that don't support clipboard API
       const textArea = document.createElement('textarea');
       textArea.value = addr.address;
       document.body.appendChild(textArea);
       textArea.select();
+      let success = false;
       try {
-        document.execCommand('copy');
-        setCopied(true);
-        setTimeout(() => setCopied(false), 1500);
-      } catch (fallbackErr) {
-        console.error('Fallback copy failed:', fallbackErr);
+        success = document.execCommand('copy');
+      } catch {
+        success = false;
       }
       document.body.removeChild(textArea);
+      
+      if (success) {
+        setCopied(true);
+        copyTimeoutRef.current = setTimeout(() => {
+          setCopied(false);
+          copyTimeoutRef.current = null;
+        }, 1500);
+      } else {
+        console.error('Failed to copy address: both clipboard API and fallback failed');
+      }
     });
   }, [addr?.address]);
 
@@ -127,21 +158,37 @@ export default function AddressNode({ data, selected }: NodeProps) {
               </div>
 
               {/* Title: entity name or clickable address */}
-              <div
+              <button
+                type="button"
                 title={copied ? 'Copied!' : `Click to copy ${addr.address}`}
                 onClick={copyAddress}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    copyAddress();
+                  }
+                }}
                 style={{
                   ...titleStyle,
+                  background: 'none',
+                  border: 'none',
+                  padding: 0,
                   cursor: 'pointer',
                   userSelect: 'none',
                   color: copied ? accent : '#0f172a',
                   transition: 'color 0.15s',
+                  textAlign: 'left',
+                  fontFamily: 'inherit',
+                  fontSize: 'inherit',
+                  fontWeight: 'inherit',
+                  lineHeight: 'inherit',
+                  marginTop: 'inherit',
                 }}
               >
                 {hasEntityName
                   ? (d.entity_name ?? addr.entity_name)
                   : shortAddr(addr.address)}
-              </div>
+              </button>
 
               {/* Subtitle */}
               <div style={subtitleStyle}>
@@ -175,6 +222,14 @@ export default function AddressNode({ data, selected }: NodeProps) {
                   {badge.label}
                 </span>
               ))}
+            </div>
+          )}
+
+          {/* Ingest-pending banner */}
+          {d.isIngestPending && (
+            <div style={ingestPendingBannerStyle}>
+              <span style={pulseStyle}>●</span>
+              {' '}Fetching data…
             </div>
           )}
 
@@ -318,4 +373,18 @@ const actionButtonBase: React.CSSProperties = {
 const pulseStyle: React.CSSProperties = {
   display: 'inline-block',
   animation: 'pulse 1s ease-in-out infinite',
+};
+
+const ingestPendingBannerStyle: React.CSSProperties = {
+  marginTop: 10,
+  padding: '4px 10px',
+  borderRadius: 8,
+  background: '#eff6ff',
+  border: '1px solid #bfdbfe',
+  color: '#1d4ed8',
+  fontSize: 11,
+  fontWeight: 600,
+  display: 'flex',
+  alignItems: 'center',
+  gap: 5,
 };

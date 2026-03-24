@@ -11,6 +11,7 @@ import type {
   ExpandRequest,
   ExpansionResponseV2,
   BridgeHopStatusResponse,
+  IngestStatusResponse,
 } from '../types/graph';
 
 const API_BASE = '/api/v1';
@@ -121,4 +122,22 @@ export async function getBridgeHopStatus(
     { headers: authHeaders(), credentials: 'same-origin' },
   );
   return handleResponse<BridgeHopStatusResponse>(res);
+}
+
+/** Poll background address ingest job status.
+ *
+ * Called every 5 s when expansion returns ingest_pending=true.
+ * When status becomes 'completed', the caller should retry the expansion.
+ */
+export async function getIngestStatus(
+  sessionId: string,
+  address: string,
+  chain: string,
+): Promise<IngestStatusResponse> {
+  const params = new URLSearchParams({ address, chain });
+  const res = await fetch(
+    `${API_BASE}/graph/sessions/${sessionId}/ingest/status?${params.toString()}`,
+    { headers: authHeaders(), credentials: 'same-origin' },
+  );
+  return handleResponse<IngestStatusResponse>(res);
 }

@@ -97,13 +97,89 @@ Acceptance criteria:
       verified by parametrized tests (tron, xrp, cosmos, sui, partial-failure)
 - [x] price oracle wired for TRX, XRP, ATOM, SUI via _native_canonical_asset_id
       in each chain compiler; CoinGecko IDs: tron/ripple/cosmos/sui
-- [~] XRP AMM / Cosmos DEX service classifier DEFERRED — XRP Ledger DEX is
-      order-book-based (no fixed contract address; AMM pool IDs are dynamic),
-      Cosmos Hub has minimal DEX activity (Osmosis is separate chain).
-      Requires tx-type detection (AMMSwap tx type on XRP, IBC MsgSwap on
-      Osmosis), not address lookup. Tracked for future pass.
+- [x] XRP AMM / Cosmos DEX swap detection: migration 014 adds tx_type column;
+      XRPL collector stores TransactionType, Cosmos collector stores short
+      @type name; _try_tx_type_swap_promotion hook in both compilers promotes
+      AMMSwap/OfferCreate and Osmosis MsgSwap*/MsgSplitRoute* to swap_event
+      nodes; falls back to labelled dex service node when legs unavailable
 
-## Bridge Log-Decode Resolution Pass [COMPLETE]
+## Contract Info & Swap Depth Pass [COMPLETE — 2026-03-24]
+
+Goal:
+- fill the remaining semantic quality gaps identified at the close of the
+  Depth Quality Pass: contract deployer/creator resolution, broader DEX
+  service classifier coverage, Tron swap event address format bug, and
+  pre-existing test failures
+
+Acceptance criteria:
+- [x] `src/services/contract_info.py` — `get_contract_info(address, chain)`
+      resolves whether an address is a smart contract / Solana program;
+      Etherscan v2 unified API covers ETH/BSC/Polygon/Arbitrum/Base/
+      Avalanche/Optimism; Solana uses `getAccountInfo` + programData fetch
+      for upgradeable-loader authority; 7-day Redis TTL for immutable data
+- [x] `AddressNodeData` extended: `is_contract`, `deployer`, `deployment_tx`,
+      `upgrade_authority`, `deployer_entity` fields
+- [x] `enrich_nodes` applies contract info concurrently (asyncio.gather);
+      deployer entity resolved via secondary `lookup_addresses_bulk` pass;
+      `address_type` flipped to "contract" / "program" on confirmed contracts;
+      `redis_client` forwarded at all three compiler call sites
+- [x] `graph_dependencies.py` `get_contract_info` stub added
+- [x] 13 new tests in `tests/test_services/test_contract_info.py`; 5 new
+      enricher tests in `tests/test_trace_compiler/test_address_enrichment.py`
+- [x] PancakeSwap V2 renamed (was "pancakeswap"); PancakeSwap V3 registered
+      on BSC + ETH (SmartRouter V3 via CREATE2 same address); Camelot V2
+      registered on Arbitrum — no new ABI decoder needed (identical Swap
+      event sigs as Uniswap V2 / V3)
+- [x] `_extract_dex_logs_tron` address format bug fixed: was producing 21-byte
+      hex ("41" + raw_addr); now produces canonical 25-byte hex (41 prefix +
+      20-byte body + 4-byte double-SHA256 checksum) matching the service
+      classifier and `_fetch_dex_swap_log` query format
+- [x] End-to-end Tron swap promotion test added: JustSwap USDT→USDC swap
+      produces correct `swap_event` node with protocol_id, assets, amounts,
+      and swap_input/swap_output edges
+- [x] EVM int128 sign-extension fix in test helper `_encode_i128_abi` (was
+      zero-padding; now uses `.to_bytes(32, "big", signed=True)`)
+- [x] Pre-existing test failures repaired: Sui NameError (COUNTERPARTY2ASH_1
+      typo), relay bridge test (live API call made non-deterministic; now
+      mocked), price oracle mock pattern (ClientSession used directly, not
+      as async context manager)
+
+## Ingest-Pending Auto-Retry Pass [COMPLETE — 2026-03-24]
+
+Goal:
+- when expansion returns `ingest_pending=true` (empty frontier + new queue row),
+  the frontend should automatically poll and retry the expansion once ingestion
+  completes rather than leaving a silent dead end for the investigator
+
+Acceptance criteria:
+- [x] `src/trace_compiler/models.py` — `IngestStatusResponse` model added
+- [x] `GET /sessions/{session_id}/ingest/status?address=X&chain=Y` endpoint added
+      to `src/api/routers/graph.py`; inherits session ownership auth; queries
+      `address_ingest_queue` table; returns `not_found` when no row exists
+- [x] 8 backend tests in `tests/test_api/test_ingest_status.py` covering
+      not_found / pending / running / completed / failed / 503 / 400 / 404
+- [x] `frontend/app/src/types/graph.ts` — `ingest_pending?: boolean` added to
+      `ExpansionResponseV2`; `IngestStatusResponse` interface added
+- [x] `frontend/app/src/api/client.ts` — `getIngestStatus()` function added
+- [x] `frontend/app/src/context/IngestPendingContext.tsx` — React context
+      (`pendingNodeIds: ReadonlySet<string>`) for nodes with active ingest jobs
+- [x] `frontend/app/src/hooks/useIngestPoller.ts` — polls every 5 s, 3-min
+      timeout; calls `onComplete` on 'completed', `onTimeout` on 'failed'
+      or timeout; treats network errors as transient (keeps polling)
+- [x] `frontend/app/src/components/IngestPoller.tsx` — render-null component
+      that calls `useIngestPoller`; allows React-idiomatic per-node instances
+      from a dynamic list without violating rules-of-hooks
+- [x] `InvestigationGraph.tsx` — checks `response.ingest_pending` in
+      `handleExpand`; adds to `ingestPendingMap`; renders `<IngestPoller>` per
+      pending node; `handleIngestComplete` auto-retriggers the expansion;
+      `handleIngestTimeout` shows error notice; `<IngestPendingContext.Provider>`
+      wraps the return
+- [x] `AddressNode.tsx` — shows "Fetching data…" pulsing banner when
+      `isIngestPending=true` is injected into node data
+- [x] TypeScript: `npx tsc --noEmit` passes with 0 errors
+- [x] 546 unit tests pass (538 prior + 8 new)
+
+## Bridge Log-Decode Resolution Pass [IN PROGRESS]
 
 Goal:
 - resolve the 6 bridge protocols that stay `status=pending` because they require
@@ -114,13 +190,16 @@ Context:
   inline on first encounter and caches results in `bridge_correlations`
 - 9 of 15 protocols resolve immediately via tx hash (THORChain, Wormhole,
   Allbridge, Synapse, LI.FI, Squid, Mayan, deBridge, Symbiosis)
-- 6 protocols now resolved:
+- 5 protocols fully resolved:
   - Across: log-decode V3FundsDeposited → depositId → status API (completed/pending)
   - Celer: log-decode Send → transferId → POST status API (completed/pending)
   - Stargate: log-decode Swap → LayerZero chainId → dest chain labelled (no dest tx)
   - Rango: txId-based status API (no log decode needed)
   - Relay: originTxHash-based API search (no log decode needed)
+- 1 protocol partially resolved:
   - Chainflip: log-decode SwapNative/SwapToken → dest chain labelled (swap_id unavailable)
+    swap_id (broker deposit channel ID) is not emitted as an EVM event and
+    requires broker API integration to fully resolve; noted for future pass
 
 Acceptance criteria:
 - [x] `src/tracing/bridge_log_decoder.py` — fetches tx receipt via aiohttp,

@@ -28,8 +28,10 @@ class _NullBulkPriceOracle:
 try:
     from src.services.price_oracle import get_price_oracle as _get
     price_oracle = _get()
-except Exception:
+except ImportError:
+    logger.debug("src.services.price_oracle not available, trying fallback")
     try:
         from src.intelligence.price_oracle import price_oracle as price_oracle
     except ImportError:
+        logger.debug("src.intelligence.price_oracle not available, using null oracle")
         price_oracle = _NullBulkPriceOracle()

@@ -1,0 +1,185 @@
+name: Semgrep PR Security Scan
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  semgrep-scan:
+    name: Semgrep Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      
+      - name: Install Semgrep
+        run: pip install semgrep
+      
+      - name: Run Semgrep
+        id: semgrep
+        run: |
+          # Run semgrep and capture exit code
+          # Exit code 0 = no findings, 1 = findings found, >1 = actual error
+          set +e
+          semgrep --config p/security-audit \
+                  --config p/secrets \
+                  --config p/python \
+                  --json \
+                  --output semgrep-results.json \
+                  --exclude "frontend/app/node_modules" \
+                  --exclude "tests" \
+                  src/
+          SEMGREP_EXIT_CODE=$?
+          set -e
+          
+          echo "semgrep_exit_code=$SEMGREP_EXIT_CODE" >> $GITHUB_OUTPUT
+          
+          # Verify results file exists before parsing
+          if [ ! -f semgrep-results.json ]; then
+            echo "Error: semgrep-results.json not found"
+            exit 1
+          fi
+          
+          # Exit code 1 means findings found (acceptable), >1 means actual error
+          if [ $SEMGREP_EXIT_CODE -gt 1 ]; then
+            echo "Semgrep execution failed with exit code $SEMGREP_EXIT_CODE"
+            exit $SEMGREP_EXIT_CODE
+          fi
+          
+          # Parse results for PR comment
+          python -c "
+import json
+import sys
+
+with open('semgrep-results.json', 'r') as f:
+    data = json.load(f)
+
+findings = []
+for result in data.get('results', []):
+    severity = result.get('extra', {}).get('severity', 'INFO')
+    check_id = result.get('check_id', 'unknown')
+    path = result.get('path', 'unknown')
+    line = result.get('start', {}).get('line', 0)
+    message = result.get('extra', {}).get('message', 'No message')
+    
+    findings.append({
+        'severity': severity,
+        'check_id': check_id,
+        'path': path,
+        'line': line,
+        'message': message
+    })
+
+# Create summary
+total = len(findings)
+errors = sum(1 for f in findings if f['severity'] == 'ERROR')
+warnings = sum(1 for f in findings if f['severity'] == 'WARNING')
+info = sum(1 for f in findings if f['severity'] == 'INFO')
+
+print(f'Total findings: {total}')
+print(f'Errors: {errors}')
+print(f'Warnings: {warnings}')
+print(f'Info: {info}')
+
+# Write summary for next step
+with open('semgrep-summary.txt', 'w') as f:
+    f.write(f'Total findings: {total}\\n')
+    f.write(f'Errors: {errors}\\n')
+    f.write(f'Warnings: {warnings}\\n')
+    f.write(f'Info: {info}\\n')
+    
+    if findings:
+        f.write('\\n### Findings:\\n')
+        for finding in findings[:10]:  # Limit to 10 findings
+            f.write(f\"- **{finding['severity']}**: {finding['message']}\\n\")
+            f.write(f\"  - File: {finding['path']}:{finding['line']}\\n\")
+            f.write(f\"  - Rule: {finding['check_id']}\\n\\n\")
+        
+        if len(findings) > 10:
+            f.write(f'... and {len(findings) - 10} more findings\\n')
+"
+      
+      - name: Create PR Comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            
+            try {
+              const summary = fs.readFileSync('semgrep-summary.txt', 'utf8');
+              const lines = summary.split('\n');
+              
+              const total = lines[0].match(/Total findings: (\d+)/)?.[1] || '0';
+              const errors = lines[1].match(/Errors: (\d+)/)?.[1] || '0';
+              const warnings = lines[2].match(/Warnings: (\d+)/)?.[1] || '0';
+              const info = lines[3].match(/Info: (\d+)/)?.[1] || '0';
+              
+              const findings = lines.slice(5).join('\n');
+              
+              const comment = `## 🔒 Semgrep Security Scan Results
+              
+              **Summary:**
+              - 🔴 **Errors**: ${errors}
+              - 🟡 **Warnings**: ${warnings}
+              - 🔵 **Info**: ${info}
+              - 📊 **Total**: ${total}
+              
+              ${findings || '✅ No security findings detected!'}
+              
+              ---
+              <details>
+              <summary>View full report</summary>
+              
+              \`\`\`
+              ${summary}
+              \`\`\`
+              </details>
+              
+              📝 **Note**: Run \`semgrep --config p/security-audit --config p/secrets --config p/python src/\` locally to see detailed findings.`;
+              
+              // Check if we already commented
+              const { data: comments } = await github.rest.issues.listComments({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number
+              });
+              
+              const botComment = comments.find(c => 
+                c.user?.type === 'Bot' && 
+                c.body?.includes('Semgrep Security Scan Results')
+              );
+              
+              if (botComment) {
+                // Update existing comment
+                await github.rest.issues.updateComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: botComment.id,
+                  body: comment
+                });
+              } else {
+                // Create new comment
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.issue.number,
+                  body: comment
+                });
+              }
+            } catch (error) {
+              console.log('No Semgrep results found or error creating comment');
+              console.log(error);
+            }
+      
+      - name: Upload Semgrep Results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: semgrep-results
+          path: |
+            semgrep-results.json
+            semgrep-summary.txt

@@ -880,6 +880,7 @@ class BaseCollector(ABC):
                     ],
                 )
         except Exception as exc:
+            # nosemgrep: python-logger-credential-disclosure - logging exception, not credentials
             logger.warning(
                 "dual-write _insert_raw_token_transfers failed for %s/%s: %s — "
                 "event store parity loss; investigate before T1.15 cutover",
@@ -1079,11 +1080,18 @@ class BaseCollector(ABC):
                 # Validate and filter logs before insertion
                 valid_logs = []
                 for log in tx.dex_logs:
+                    # Type guard: ensure log is a dict
+                    if not isinstance(log, dict):
+                        logger.warning(
+                            f"Skipping malformed DEX log for tx {tx.hash}: log is not a dict (type: {type(log).__name__})"
+                        )
+                        continue
+                    
                     # Check required keys exist
                     if not all(key in log for key in ['log_index', 'contract', 'event_sig']):
                         logger.warning(
                             f"Skipping malformed DEX log for tx {tx.hash}: missing required keys. "
-                            f"Log keys: {list(log.keys()) if isinstance(log, dict) else 'not a dict'}"
+                            f"Log keys: {list(log.keys())}"
                         )
                         continue
                     valid_logs.append(

@@ -18,10 +18,12 @@ from src.trace_compiler.chains.evm import EVMChainCompiler
 from src.trace_compiler.models import ExpandOptions
 
 # Well-known contract fixtures
-UNISWAP_V3_ROUTER = "0xe592427a0aece92de3edee1f18e0157c05861564"
-TORNADO_10ETH     = "0x910cbd523d972eb0a6f4cae4618ad62622b39dbf"
-THORCHAIN_ETH     = "0xd37bbe5744d730a1d98d8dc97c42f0ca46ad7146"  # bridge — must be excluded
-RANDOM_ADDR       = "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+UNISWAP_V3_ROUTER    = "0xe592427a0aece92de3edee1f18e0157c05861564"
+TORNADO_10ETH        = "0x910cbd523d972eb0a6f4cae4618ad62622b39dbf"
+THORCHAIN_ETH        = "0xd37bbe5744d730a1d98d8dc97c42f0ca46ad7146"  # bridge — must be excluded
+RANDOM_ADDR          = "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+PANCAKESWAP_V3_BSC   = "0x13f4ea83d0bd40e75c8222255bc855a974568dd4"
+CAMELOT_ARBITRUM     = "0xc873fecbd354f5a56e00e710b90ef4201db2448d"
 TX_HASH           = "0x" + "ab" * 32
 SEED              = "0x" + "cc" * 20
 SEED_NODE_ID      = f"ethereum:address:{SEED}"
@@ -79,6 +81,62 @@ def test_wrong_chain_returns_none():
     """Uniswap V3 router on ethereum should not match on bitcoin."""
     c = ServiceClassifier()
     assert c.is_service_contract("bitcoin", UNISWAP_V3_ROUTER) is False
+
+
+def test_pancakeswap_v3_detected_on_bsc():
+    c = ServiceClassifier()
+    assert c.is_service_contract("bsc", PANCAKESWAP_V3_BSC) is True
+
+
+def test_pancakeswap_v3_detected_on_ethereum():
+    c = ServiceClassifier()
+    assert c.is_service_contract("ethereum", PANCAKESWAP_V3_BSC) is True
+
+
+def test_pancakeswap_v3_protocol_id():
+    c = ServiceClassifier()
+    r = c.get_record("bsc", PANCAKESWAP_V3_BSC)
+    assert r is not None
+    assert r.protocol_id == "pancakeswap_v3"
+    assert r.service_type == "dex"
+
+
+def test_pancakeswap_v3_not_on_wrong_chain():
+    """PancakeSwap V3 SmartRouter is not registered on Arbitrum."""
+    c = ServiceClassifier()
+    assert c.is_service_contract("arbitrum", PANCAKESWAP_V3_BSC) is False
+
+
+def test_pancakeswap_v2_and_v3_both_registered_on_bsc():
+    """Both PancakeSwap V2 and V3 routers are known on BSC with distinct protocol_ids."""
+    c = ServiceClassifier()
+    pancake_v2_bsc = "0x10ed43c718714eb63d5aa57b78b54704e256024e"
+    assert c.is_service_contract("bsc", pancake_v2_bsc) is True
+    assert c.is_service_contract("bsc", PANCAKESWAP_V3_BSC) is True
+    r_v2 = c.get_record("bsc", pancake_v2_bsc)
+    r_v3 = c.get_record("bsc", PANCAKESWAP_V3_BSC)
+    assert r_v2.protocol_id == "pancakeswap_v2"
+    assert r_v3.protocol_id == "pancakeswap_v3"
+    assert r_v2.display_name == "PancakeSwap V2"
+
+
+def test_camelot_detected_on_arbitrum():
+    c = ServiceClassifier()
+    assert c.is_service_contract("arbitrum", CAMELOT_ARBITRUM) is True
+
+
+def test_camelot_protocol_id():
+    c = ServiceClassifier()
+    r = c.get_record("arbitrum", CAMELOT_ARBITRUM)
+    assert r is not None
+    assert r.protocol_id == "camelot"
+    assert r.service_type == "dex"
+
+
+def test_camelot_not_on_ethereum():
+    """Camelot is Arbitrum-only; the router address must not match on Ethereum."""
+    c = ServiceClassifier()
+    assert c.is_service_contract("ethereum", CAMELOT_ARBITRUM) is False
 
 
 # ---------------------------------------------------------------------------

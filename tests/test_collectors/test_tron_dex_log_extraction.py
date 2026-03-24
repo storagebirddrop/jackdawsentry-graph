@@ -13,12 +13,13 @@ Covers:
 - Empty tx_info response → empty list
 - RPC call failure → empty list (no raise)
 - Log index assigned sequentially per entry
-- Contract address gets 41 prefix from 20-byte raw address
+- Contract address normalised to 25-byte hex (41 prefix + 20-byte addr + 4-byte checksum)
 - data and topic hex strings get 0x prefix
 """
 
 from __future__ import annotations
 
+import hashlib
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -33,8 +34,11 @@ _V2_SIG = "0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822"
 _V3_SIG = "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67"
 _UNKNOWN_SIG = "0x0000000000000000000000000000000000000000000000000000000000000000"
 
-_CONTRACT_RAW = "e95812d8d5b5412d2b9f3a4d5a87ca15c5c51f33"  # 20-byte hex
-_CONTRACT_FULL = "41" + _CONTRACT_RAW  # TRON address with 0x41 prefix
+_CONTRACT_RAW = "e95812d8d5b5412d2b9f3a4d5a87ca15c5c51f33"  # 20-byte hex, no prefix
+# Canonical 25-byte Tron hex: version byte (41) + 20-byte body + 4-byte double-SHA256 checksum.
+# Matches TronCollector.hex_to_base58 output and the service classifier's event-store format.
+_addr_21 = bytes.fromhex("41" + _CONTRACT_RAW)
+_CONTRACT_FULL = (_addr_21 + hashlib.sha256(hashlib.sha256(_addr_21).digest()).digest()[:4]).hex().lower()
 
 _TOPIC1 = "a" * 64
 _DATA = "b" * 128
@@ -165,15 +169,16 @@ async def test_rpc_exception_returns_empty():
 
 
 @pytest.mark.asyncio
-async def test_contract_address_gets_41_prefix():
-    """The 20-byte contract address is prefixed with '41' for Tron hex format."""
+async def test_contract_address_normalised_to_25_byte_hex():
+    """The 20-byte contract address is normalised to 25-byte Tron hex (41 prefix + 4-byte checksum)."""
     collector = _make_collector()
     tx_info = _tx_info([_log_entry(_V2_SIG)])
 
     with patch.object(collector, "rpc_call", new=AsyncMock(return_value=tx_info)):
         logs = await collector._extract_dex_logs_tron("txhashPFX")
 
-    assert logs[0]["contract"] == _CONTRACT_FULL.lower()
+    assert logs[0]["contract"] == _CONTRACT_FULL
+    assert len(logs[0]["contract"]) == 50  # 25 bytes × 2 hex chars each
 
 
 @pytest.mark.asyncio

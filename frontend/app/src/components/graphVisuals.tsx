@@ -549,6 +549,7 @@ export function isNodeVisibleInView(node: InvestigationNode, viewMode: GraphAppe
         address.entity_name ||
         address.label ||
         address.is_sanctioned ||
+        node.sanctioned ||
         address.is_mixer ||
         address.is_coinjoin_halt,
       );

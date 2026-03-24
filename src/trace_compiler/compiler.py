@@ -252,6 +252,7 @@ class TraceCompiler:
         if self._pg is not None:
             try:
                 async with self._pg.acquire() as conn:
+                    # nosemgrep: sql-injection-db-cursor-execute - uses parameterized query ($1, $2, ...)
                     await conn.execute(
                         """
                         INSERT INTO graph_sessions
@@ -284,8 +285,11 @@ class TraceCompiler:
         # data visible on the root node before any expansion is attempted.
         try:
             from src.trace_compiler.attribution.enricher import enrich_nodes
-            enriched = await enrich_nodes([root_node])
-            root_node = enriched[0]
+            enriched = await enrich_nodes([root_node], redis_client=self._redis)
+            if enriched:
+                root_node = enriched[0]
+            else:
+                logger.warning("Seed node enrichment returned empty list")
         except Exception as exc:
             logger.warning("Seed node enrichment failed: %s", exc)
 
@@ -345,7 +349,7 @@ class TraceCompiler:
                     # Pass edges so taint propagation can fire even on cache hits.
                     try:
                         from src.trace_compiler.attribution.enricher import enrich_nodes
-                        added_nodes = await enrich_nodes(added_nodes, edges=added_edges)
+                        added_nodes = await enrich_nodes(added_nodes, edges=added_edges, redis_client=self._redis)
                     except Exception as enrich_exc:
                         logger.warning("Failed to re-enrich cached nodes: %s", enrich_exc)
                         # Continue without enrichment - the cached data is still usable
@@ -550,11 +554,13 @@ class TraceCompiler:
             import time
             start_time = time.time()
             from src.trace_compiler.attribution.enricher import enrich_nodes
-            added_nodes = await enrich_nodes(added_nodes, edges=added_edges)
+            enriched_nodes = await enrich_nodes(added_nodes, edges=added_edges, redis_client=self._redis)
             enrichment_time = time.time() - start_time
             logger.debug(
-                "Enriched %d nodes in %.3fs", len(added_nodes), enrichment_time
+                "Enriched %d nodes in %.3fs", len(enriched_nodes), enrichment_time
             )
+            # Update response with enriched nodes
+            response = response.model_copy(update={"added_nodes": enriched_nodes})
 
         # Cache successful non-empty results in Redis (15-minute TTL).
         if added_nodes and self._redis is not None:

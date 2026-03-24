@@ -2005,6 +2005,7 @@ from src.trace_compiler.models import (  # noqa: E402
     BridgeHopStatusResponse,
     ExpandRequest,
     ExpansionResponseV2,
+    IngestStatusResponse,
     SessionCreateRequest,
     SessionCreateResponse,
     SessionSnapshotRequest,
@@ -2151,6 +2152,68 @@ async def get_bridge_hop_status(
     if not await compiler.is_bridge_hop_allowed(session_id, hop_id):
         raise HTTPException(status_code=404, detail="Bridge hop not found")
     return await compiler.get_bridge_hop_status(session_id, hop_id)
+
+
+@router.get(
+    "/sessions/{session_id}/ingest/status",
+    response_model=IngestStatusResponse,
+)
+async def get_session_ingest_status(
+    session_id: str,
+    address: str = Query(..., description="Blockchain address to check ingest status for"),
+    chain: str = Query(..., description="Blockchain name (e.g. 'ethereum', 'tron')"),
+    current_user: User = Depends(check_permissions([PERMISSIONS["read_blockchain"]])),
+):
+    """Poll the background ingest job status for a specific address.
+
+    Called by the frontend every 5 seconds when expansion returns
+    ``ingest_pending=True``.  When ``status`` transitions to ``"completed"``
+    the frontend retries the expansion to load newly-ingested activity.
+
+    The endpoint inherits session ownership auth via ``_get_owned_session_row``,
+    so an address is only queryable within a session that belongs to the
+    authenticated user.  Status ``"not_found"`` is returned when no queue row
+    exists (yet) for the address, which is safe to treat as still-pending.
+    """
+    await _get_owned_session_row(session_id, current_user)
+
+    try:
+        pg = get_postgres_pool()
+        async with pg.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT address, blockchain, status, requested_at,
+                       started_at, completed_at, tx_count, error
+                FROM address_ingest_queue
+                WHERE address = $1 AND blockchain = $2
+                ORDER BY requested_at DESC
+                LIMIT 1
+                """,
+                address,
+                chain,
+            )
+    except Exception as exc:
+        logger.warning(
+            "Failed to query ingest status for %s/%s: %s",
+            chain,
+            address,
+            exc,
+        )
+        raise HTTPException(status_code=503, detail="Ingest status lookup unavailable") from exc
+
+    if row is None:
+        return IngestStatusResponse(address=address, blockchain=chain, status="not_found")
+
+    return IngestStatusResponse(
+        address=row["address"],
+        blockchain=row["blockchain"],
+        status=row["status"],
+        queued_at=row["requested_at"],
+        started_at=row["started_at"],
+        completed_at=row["completed_at"],
+        tx_count=row["tx_count"],
+        error=row["error"],
+    )
 
 
 # =============================================================================

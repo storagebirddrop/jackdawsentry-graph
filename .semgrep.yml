@@ -1,0 +1,16 @@
+# Semgrep configuration for jackdawsentry-graph
+# Uses official rulesets for comprehensive security coverage
+
+# This file configures which rulesets to use
+# Run with: semgrep --config .semgrep.yml src/
+# Or use rulesets directly: semgrep --config p/security-audit --config p/secrets src/
+
+exclude:
+  - "**/node_modules/**"
+  - "**/frontend/app/node_modules/**"
+  - "**/tests/**"
+  - "**/__pycache__/**"
+  - "**/migrations/**"
+  - "**/venv/**"
+  - "**/env/**"
+  - "**/.git/**"

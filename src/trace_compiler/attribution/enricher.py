@@ -1,8 +1,9 @@
 """Address enrichment for InvestigationNode objects.
 
-Applies sanctions screening, entity attribution, and risk taint propagation
-to nodes produced by chain compilers.  All calls are best-effort — failures
-are swallowed so enrichment never blocks an expansion response.
+Applies sanctions screening, entity attribution, contract deployer resolution,
+and risk taint propagation to nodes produced by chain compilers.  All calls
+are best-effort — failures are swallowed so enrichment never blocks an
+expansion response.
 
 Design choices:
 - Groups nodes by chain to support multi-chain expansions (bridge hops).
@@ -12,6 +13,11 @@ Design choices:
   swap_event, bridge_hop, and UTXO nodes are passed through unchanged.
 - Service nodes receive risk signals derived from the service classifier
   (mixer, sanctioned) — these are set at build time, not here.
+- Contract info: for EVM and Solana address nodes, ``get_contract_info`` is
+  called concurrently to detect contracts, resolve deployers, and flip
+  ``address_type`` to "contract" / "program".  Deployer entity names are
+  then resolved via a secondary bulk attribution call.  Results are cached
+  in Redis with a 7-day TTL (deployment data is immutable).
 - Taint propagation: after external enrichment, the edge topology is used to
   propagate risk signals from high-risk nodes to connected address nodes:
     * mixer service node  → connected address: ``mixer_interaction`` risk factor,
@@ -24,6 +30,7 @@ Design choices:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections import defaultdict
 from typing import Dict
@@ -34,6 +41,13 @@ from src.trace_compiler.models import InvestigationEdge
 from src.trace_compiler.models import InvestigationNode
 
 logger = logging.getLogger(__name__)
+
+# Chains where contract deployer resolution is attempted.  Must stay in sync
+# with the chain IDs accepted by ``src.services.contract_info.get_contract_info``.
+_CONTRACT_INFO_CHAINS: frozenset = frozenset({
+    "ethereum", "bsc", "polygon", "arbitrum", "base", "avalanche",
+    "optimism", "solana",
+})
 
 # Maps risk_level strings returned by the entity service to numeric scores.
 _ENTITY_RISK_MAP: Dict[str, float] = {
@@ -131,6 +145,8 @@ def _propagate_service_risk(
 async def enrich_nodes(
     nodes: List[InvestigationNode],
     edges: Optional[List[InvestigationEdge]] = None,
+    *,
+    redis_client: Optional[object] = None,
 ) -> List[InvestigationNode]:
     """Apply sanctions, entity enrichment, and risk taint to address nodes.
 
@@ -144,10 +160,12 @@ async def enrich_nodes(
     connected address nodes.
 
     Args:
-        nodes: List of InvestigationNodes from a chain compiler or cache.
-        edges: Optional list of InvestigationEdges from the same expansion.
-               Required for taint propagation; omit for backwards-compatible
-               single-node enrichment (e.g. seed node at session create time).
+        nodes:        List of InvestigationNodes from a chain compiler or cache.
+        edges:        Optional list of InvestigationEdges from the same expansion.
+                      Required for taint propagation; omit for backwards-compatible
+                      single-node enrichment (e.g. seed node at session create time).
+        redis_client: Optional async Redis client, forwarded to the contract
+                      info service for 7-day result caching.
 
     Returns:
         A new list with address nodes enriched via model_copy. The original
@@ -233,6 +251,77 @@ async def enrich_nodes(
     except ImportError:
         pass
 
+    # --- Contract deployer / creator resolution (concurrent per chain) ------
+    # Determines whether each address is a smart contract/program and fetches
+    # the deployer address + deployment tx.  Only makes sense for chains where
+    # the concept applies (EVM + Solana).  Best-effort — failures are absorbed.
+    #
+    # deployer_to_nodes: chain → deployer_address → [node_id, ...]
+    # Populated by _resolve_one; used below for the deployer entity attribution pass.
+    deployer_to_nodes: defaultdict = defaultdict(lambda: defaultdict(list))
+    try:
+        from src.api.graph_dependencies import get_contract_info
+
+        async def _resolve_one(node: InvestigationNode) -> None:
+            """Fetch and apply contract info for a single address node."""
+            if node.address_data is None:
+                return
+            addr = node.address_data.address
+            chain = node.chain
+            if chain not in _CONTRACT_INFO_CHAINS:
+                return
+            try:
+                info = await get_contract_info(addr, chain, redis_client=redis_client)
+            except Exception as exc:
+                logger.debug(
+                    "Contract info lookup failed addr=%s chain=%s: %s", addr, chain, exc
+                )
+                return
+            if info is None or not info.is_contract:
+                return
+            patch = updates.setdefault(node.node_id, {})
+            addr_patch = patch.setdefault("address_data", {})
+            addr_patch["is_contract"] = True
+            # Flip address_type to reflect confirmed contract status.
+            addr_patch["address_type"] = "program" if chain == "solana" else "contract"
+            if info.deployer:
+                addr_patch["deployer"] = info.deployer
+                deployer_to_nodes[chain][info.deployer].append(node.node_id)
+            if info.deployment_tx:
+                addr_patch["deployment_tx"] = info.deployment_tx
+            if info.upgrade_authority:
+                addr_patch["upgrade_authority"] = info.upgrade_authority
+
+        await asyncio.gather(*[_resolve_one(n) for n in address_nodes])
+    except ImportError:
+        pass
+
+    # --- Deployer entity attribution ------------------------------------------
+    # For every deployer address discovered above, resolve its entity name via
+    # the same bulk attribution service already used for address nodes.  The
+    # result is stored in address_data.deployer_entity for frontend display.
+    if deployer_to_nodes:
+        try:
+            from src.api.graph_dependencies import lookup_addresses_bulk
+
+            for chain, deployer_map in deployer_to_nodes.items():
+                deployer_addrs = list(deployer_map.keys())
+                try:
+                    entity_results = await lookup_addresses_bulk(deployer_addrs, chain)
+                except Exception as exc:
+                    logger.debug("Deployer entity lookup failed chain=%s: %s", chain, exc)
+                    continue
+                for deployer_addr, node_ids in deployer_map.items():
+                    info = entity_results.get(deployer_addr)
+                    if not info or not info.get("entity_name"):
+                        continue
+                    for nid in node_ids:
+                        patch = updates.setdefault(nid, {})
+                        addr_patch = patch.setdefault("address_data", {})
+                        addr_patch["deployer_entity"] = info["entity_name"]
+        except ImportError:
+            pass
+
     # --- Taint propagation from high-risk nodes to connected addresses ------
     # Runs after external enrichment so that newly-flagged sanctioned addresses
     # (discovered above) also contribute to the taint pass.
@@ -240,10 +329,10 @@ async def enrich_nodes(
     if edges:
         # Re-apply any sanction patches discovered above so _propagate_service_risk
         # sees the updated sanctioned=True state when walking neighbours.
-        _apply_patches_to_node_list = {n.node_id: n for n in nodes}
+        # Build index map once before the loop for efficiency.
+        idx_map = {n.node_id: i for i, n in enumerate(nodes)}
         patched_for_taint = list(nodes)
         for node_id, patch in updates.items():
-            idx_map = {n.node_id: i for i, n in enumerate(patched_for_taint)}
             idx = idx_map.get(node_id)
             if idx is not None and "sanctioned" in patch:
                 patched_for_taint[idx] = patched_for_taint[idx].model_copy(
@@ -271,6 +360,10 @@ async def enrich_nodes(
         # Only raise risk_score, never lower it (compiler may have set one already).
         if "risk_score" in patch:
             patch["risk_score"] = max(node.risk_score, patch["risk_score"])
+        # Merge nested address_data sub-patches (e.g. contract deployer fields).
+        if "address_data" in patch and node.address_data is not None:
+            addr_sub_patch = patch.pop("address_data")
+            patch["address_data"] = node.address_data.model_copy(update=addr_sub_patch)
         result_list[idx] = node.model_copy(update=patch)
 
     return result_list

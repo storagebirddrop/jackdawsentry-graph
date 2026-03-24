@@ -27,6 +27,11 @@ from typing import Tuple
 from src.trace_compiler.lineage import edge_id as mk_edge_id
 from src.trace_compiler.lineage import lineage_id as mk_lineage
 from src.trace_compiler.lineage import node_id as mk_node_id
+
+try:
+    from src.tracing.bridge_tracer import BridgeTracer
+except ImportError:
+    BridgeTracer = None  # type: ignore[assignment]
 from src.trace_compiler.models import ActivitySummary
 from src.trace_compiler.models import BridgeHopData
 from src.trace_compiler.models import InvestigationEdge
@@ -438,9 +443,8 @@ class BridgeHopCompiler:
         # Allbridge, Synapse, and solver protocols like LI.FI / Squid / Mayan /
         # deBridge / Symbiosis).  Protocols that require an intermediate ID from
         # decoded event logs remain pending.
-        if correlation is None:
+        if correlation is None and BridgeTracer is not None:
             try:
-                from src.tracing.bridge_tracer import BridgeTracer
                 tracer = BridgeTracer()
                 live = await tracer.detect_bridge_hop(tx_hash, source_chain, to_address)
                 if live is not None:

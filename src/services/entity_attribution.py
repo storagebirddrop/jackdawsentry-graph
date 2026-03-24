@@ -121,6 +121,22 @@ def _build_seed(raw: List[tuple]) -> Dict[str, "_SeedEntry"]:
     }
 
 
+def _build_solana_seed(raw: List[tuple]) -> Dict[str, "_SeedEntry"]:
+    """Build a case-sensitive lookup dict for Solana base58 addresses.
+    
+    Solana base58 addresses are case-sensitive, so we preserve the original case.
+    """
+    return {
+        addr: {
+            "entity_name": name,
+            "entity_type": etype,
+            "category": category,
+            "risk_level": risk,
+        }
+        for addr, name, etype, category, risk in raw
+    }
+
+
 # ---------------------------------------------------------------------------
 # EVM seed (ethereum, bsc, polygon, arbitrum, base, optimism, avalanche)
 # ---------------------------------------------------------------------------
@@ -150,7 +166,7 @@ _SEED_EVM_RAW: List[tuple] = [
     ("0x6cc5f688a315f3dc28a7781717a9a798a59fda7b", "OKX", "cex", "exchange", "low"),  # OKX 1
     ("0x236f9f97e0e62388479bf9e5ba4889e46b0273c3", "OKX", "cex", "exchange", "low"),  # OKX 2
     # --- Bybit ---
-    ("0xf89d7b9c864f589bbf53a82105107622b35ea40", "Bybit", "cex", "exchange", "low"),  # Bybit 1
+    ("0xf89d7b9c864f589bbf53a82105107622b35ea405", "Bybit", "cex", "exchange", "low"),  # Bybit 1
     # --- Staking protocols ---
     # Lido stETH — official Lido staking contract
     ("0xae7ab96520de3a18e5e111b5eaab095312d7fe84", "Lido stETH", "staking", "staking", "low"),
@@ -167,7 +183,9 @@ _SEED_EVM_RAW: List[tuple] = [
 # Tron seed (T-prefix base58 addresses)
 # ---------------------------------------------------------------------------
 # Sources: public TronScan explorer labels and exchange transparency pages.
-# TRX address case is preserved in base58 — seeds are stored as-is (no lower).
+# While Tron base58 addresses are technically case-sensitive, this module
+# normalizes addresses to lowercase for storage and lookup via _build_seed,
+# so seeds in _SEED_TRON are treated case-insensitively.
 
 _SEED_TRON_RAW: List[tuple] = [
     # --- Binance ---
@@ -203,8 +221,8 @@ _SEED_BITCOIN_RAW: List[tuple] = [
 # Solana seed (base58 addresses, ~44 chars)
 # ---------------------------------------------------------------------------
 # Sources: Solscan labeled accounts (verified exchange labels).
-# Solana base58 addresses are case-sensitive; stored as-is, then lowercased
-# by _build_seed for consistent lookup.
+# Solana base58 addresses are case-sensitive and are preserved (not lowercased)
+# by _build_solana_seed for consistent lookup.
 
 _SEED_SOLANA_RAW: List[tuple] = [
     # --- Binance ---
@@ -253,7 +271,7 @@ _SEED_XRP_RAW: List[tuple] = [
 _SEED_EVM: Dict[str, _SeedEntry] = _build_seed(_SEED_EVM_RAW)
 _SEED_TRON: Dict[str, _SeedEntry] = _build_seed(_SEED_TRON_RAW)
 _SEED_BITCOIN: Dict[str, _SeedEntry] = _build_seed(_SEED_BITCOIN_RAW)
-_SEED_SOLANA: Dict[str, _SeedEntry] = _build_seed(_SEED_SOLANA_RAW)
+_SEED_SOLANA: Dict[str, _SeedEntry] = _build_solana_seed(_SEED_SOLANA_RAW)  # Preserve case for Solana
 _SEED_XRP: Dict[str, _SeedEntry] = _build_seed(_SEED_XRP_RAW)
 
 # Map chain name → seed dict.  EVM chains all resolve to _SEED_EVM.
@@ -384,7 +402,8 @@ async def lookup_addresses_bulk(
 
     # --- Pass 1: seed lookup ---
     for addr in addresses:
-        normalised = addr.strip().lower()
+        # Preserve case for Solana addresses, lowercase for others
+        normalised = addr.strip().lower() if chain_lower != "solana" else addr.strip()
         if seed is None:
             # No seed data for this chain.
             continue

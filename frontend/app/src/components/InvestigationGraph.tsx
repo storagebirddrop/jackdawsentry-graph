@@ -11,6 +11,8 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { IngestPendingContext } from '../context/IngestPendingContext';
+import IngestPoller from './IngestPoller';
 import {
   ReactFlow,
   Background,
@@ -252,6 +254,16 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
   const [pinnedPathIds, setPinnedPathIds] = useState<string[]>([]);
   const [activeSemanticKey, setActiveSemanticKey] = useState<string | null>(null);
 
+  // Tracks nodes whose expansion returned ingest_pending=true.
+  // Key: node_id. Value: { address, chain } needed for status polling.
+  const [ingestPendingMap, setIngestPendingMap] = useState<
+    Map<string, { address: string; chain: string }>
+  >(new Map());
+  // Stores the pending retry payload so handleIngestComplete can re-expand.
+  const ingestRetryRef = useRef<
+    Map<string, { node: Pick<InvestigationNode, 'node_id' | 'lineage_id'>; operation: ExpandRequest['operation_type'] }>
+  >(new Map());
+
   const showNotice = useCallback((message: string, tone: 'info' | 'error' = 'info') => {
     setNotice({ tone, message });
   }, []);
@@ -487,9 +499,26 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
         const deltaEdges = response.edges ?? response.added_edges ?? [];
 
         if (deltaNodes.length === 0 && deltaEdges.length === 0) {
-          showNotice(
-            `No indexed ${expandOperationLabel(operation)} activity was found for this node in the current graph dataset.`,
-          );
+          if (response.ingest_pending) {
+            // Background ingest triggered — parse address/chain from node_id
+            // format "{chain}:{type}:{identifier}" and start polling.
+            const parts = node.node_id.split(':');
+            const nodeChain = parts[0] ?? '';
+            const nodeAddress = parts.slice(2).join(':');
+            setIngestPendingMap((prev) => {
+              const next = new Map(prev);
+              next.set(node.node_id, { address: nodeAddress, chain: nodeChain });
+              return next;
+            });
+            ingestRetryRef.current.set(node.node_id, { node, operation });
+            showNotice(
+              `Fetching ${expandOperationLabel(operation)} activity for this address — will retry automatically when data is ready.`,
+            );
+          } else {
+            showNotice(
+              `No indexed ${expandOperationLabel(operation)} activity was found for this node in the current graph dataset.`,
+            );
+          }
           return;
         }
 
@@ -517,6 +546,43 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
     },
     [sessionId, rfNodes, rfEdges, expandingNodeIds, setExpandingNode, applyExpansionDelta, showNotice],
   );
+
+  // Derived set consumed by IngestPendingContext and the enrichedNodes mapping.
+  const ingestPendingNodeIds = useMemo(
+    () => new Set(ingestPendingMap.keys()),
+    [ingestPendingMap],
+  );
+
+  const handleIngestComplete = useCallback(
+    (nodeId: string) => {
+      // Remove from pending set.
+      setIngestPendingMap((prev) => {
+        const next = new Map(prev);
+        next.delete(nodeId);
+        return next;
+      });
+      // Retry the expansion so the newly-ingested data appears on the canvas.
+      const retry = ingestRetryRef.current.get(nodeId);
+      ingestRetryRef.current.delete(nodeId);
+      if (retry) {
+        void handleExpand(retry.node, retry.operation);
+      }
+    },
+    [handleExpand],
+  );
+
+  const handleIngestTimeout = useCallback((nodeId: string) => {
+    setIngestPendingMap((prev) => {
+      const next = new Map(prev);
+      next.delete(nodeId);
+      return next;
+    });
+    ingestRetryRef.current.delete(nodeId);
+    showNotice(
+      'Background data fetch did not complete in time. Try expanding the node again later.',
+      'error',
+    );
+  }, [showNotice]);
 
   const handleNodeClick: NodeMouseHandler = useCallback((_evt, node) => {
     setSelectedNodeId(node.id);
@@ -574,6 +640,7 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
         onExpandNext: () => handleExpand(invNode, 'expand_next'),
         onExpandPrev: () => handleExpand(invNode, 'expand_prev'),
         isExpanding: expandingNodeIds.has(n.id),
+        isIngestPending: ingestPendingNodeIds.has(n.id),
         appearance,
         isPathPinned: pinned,
         hasPinnedPaths: pinnedPathIds.length > 0,
@@ -1046,6 +1113,19 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
   }, [sessionBriefing.markdown, sessionId]);
 
   return (
+    <IngestPendingContext.Provider value={{ pendingNodeIds: ingestPendingNodeIds }}>
+      {/* Render-null pollers — one per pending node, respecting rules-of-hooks */}
+      {Array.from(ingestPendingMap.entries()).map(([nodeId, { address, chain }]) => (
+        <IngestPoller
+          key={nodeId}
+          sessionId={sessionId}
+          nodeId={nodeId}
+          address={address}
+          chain={chain}
+          onComplete={handleIngestComplete}
+          onTimeout={handleIngestTimeout}
+        />
+      ))}
     <div
       style={{
         width: '100%',
@@ -1911,6 +1991,7 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
         onToggleCollapsed={() => setInspectorCollapsed((value) => !value)}
       />
     </div>
+    </IngestPendingContext.Provider>
   );
 }
 

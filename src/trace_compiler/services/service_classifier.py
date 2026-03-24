@@ -114,10 +114,10 @@ _SEED_SERVICES: List[_ServiceRecord] = [
             "arbitrum":  ["0x1b02da8cb0d097eb8d57a175b88c7d8b47997506"],
         },
     ),
-    # ---- PancakeSwap ----
+    # ---- PancakeSwap V2 ----
     _ServiceRecord(
-        protocol_id="pancakeswap",
-        display_name="PancakeSwap",
+        protocol_id="pancakeswap_v2",
+        display_name="PancakeSwap V2",
         service_type="dex",
         chains=["bsc", "ethereum"],
         contracts={
@@ -273,6 +273,35 @@ _SEED_SERVICES: List[_ServiceRecord] = [
                 "0xb4315e873dbcf96ffd0acd8ea43f689d8c20fb30",  # LBRouter V2.1
                 "0x18556da13313f3532c54711497a8fedac273220e",  # LBRouter V2.2
             ],
+        },
+    ),
+    # ---- PancakeSwap V3 ----
+    # Concentrated-liquidity DEX on BSC and Ethereum.  Uses the identical
+    # Swap event signature as Uniswap V3 — UNISWAP_V3_SWAP_SIG already decodes
+    # these logs.  SmartRouter V3 addresses verified from
+    # pancakeswap/pancake-smart-router (deployed at the same address on both
+    # chains via CREATE2).
+    _ServiceRecord(
+        protocol_id="pancakeswap_v3",
+        display_name="PancakeSwap V3",
+        service_type="dex",
+        chains=["bsc", "ethereum"],
+        contracts={
+            "bsc":      ["0x13f4ea83d0bd40e75c8222255bc855a974568dd4"],  # SmartRouter V3
+            "ethereum": ["0x13f4ea83d0bd40e75c8222255bc855a974568dd4"],  # SmartRouter V3
+        },
+    ),
+    # ---- Camelot DEX (Arbitrum) ----
+    # Native Arbitrum DEX; V2 volatile/stable pools emit the same Swap event
+    # as Uniswap V2 (UNISWAP_V2_SWAP_SIG), so no new decoder is required.
+    # Router address verified from camelot-dex/camelot-sdk.
+    _ServiceRecord(
+        protocol_id="camelot",
+        display_name="Camelot DEX",
+        service_type="dex",
+        chains=["arbitrum"],
+        contracts={
+            "arbitrum": ["0xc873fecbd354f5a56e00e710b90ef4201db2448d"],  # Router V2
         },
     ),
     # =========================================================================
@@ -476,8 +505,9 @@ class ServiceClassifier:
                 for addr in addrs:
                     # Preserve case for Solana addresses, lowercase for others
                     normalized_addr = addr if chain == "solana" else addr.lower()
-                    excl_addr = addr if chain == "solana" else addr.lower()
-                    if excl_addr not in excl:
+                    # Normalize exclusion key to lowercase for consistent membership test
+                    excl_key = normalized_addr.lower() if chain != "solana" else normalized_addr
+                    if excl_key not in excl:
                         chain_bucket[normalized_addr] = record
 
         self._loaded = True

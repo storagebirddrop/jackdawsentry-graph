@@ -447,7 +447,16 @@ class BridgeTracer:
         dest_amount = _thorchain_amount(dest_coins[0].get("amount")) if dest_coins else None
         dest_tx = out.get("id", "") or None
 
-        elapsed = time.monotonic() - t0
+        # Compute elapsed time from transaction timestamps if available
+        elapsed: Optional[int] = None
+        source_ts = tx.get("timestamp")
+        dest_ts = out.get("timestamp")
+        if source_ts is not None and dest_ts is not None:
+            try:
+                # THORChain timestamps are typically Unix seconds
+                elapsed = int(dest_ts) - int(source_ts)
+            except (ValueError, TypeError):
+                pass
 
         return BridgeCorrelation(
             protocol=protocol.protocol_id,
@@ -1257,8 +1266,16 @@ class BridgeTracer:
         # Celer transfer statuses: 0=unknown, 1=submitting, 2=failed, 3=waiting_for_sgn_confirmation,
         # 4=waiting_for_fund_release, 5=completed, 6=to_be_refunded, 7=requesting_refund,
         # 8=refund_to_be_confirmed, 9=confirming_your_refund, 10=refunded
-        status_code: int = (data.get("status") or {}).get("code") if isinstance(data.get("status"), dict) \
-            else int(data.get("status") or 0)
+        status_raw = data.get("status")
+        status_code: int = 0
+        try:
+            if isinstance(status_raw, dict):
+                code_val = status_raw.get("code", 0)
+                status_code = int(code_val) if code_val is not None else 0
+            elif status_raw is not None:
+                status_code = int(status_raw)
+        except (ValueError, TypeError):
+            status_code = 0
         is_complete = status_code == 5
         dest_tx_hash = data.get("dst_block_tx_link") or data.get("dst_transfer_tx_hash")
         dest_address = data.get("dst_transfer") and (data["dst_transfer"].get("receiver"))

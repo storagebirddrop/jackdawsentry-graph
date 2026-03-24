@@ -1,22 +1,24 @@
 """EVM DEX event log decoder for swap_event enrichment.
 
-Decodes Uniswap V2/V3/V4, Balancer V2, and Curve Swap events from raw log
-data stored in ``raw_evm_logs``.  The decoded amounts provide ground-truth
-swap sizes, replacing the token-transfer-leg inference used when logs are
-unavailable.
+Decodes Uniswap V2/V3/V4, Balancer V2, Curve, and Solidly-fork Swap events
+from raw log data stored in ``raw_evm_logs``.  The decoded amounts provide
+ground-truth swap sizes, replacing the token-transfer-leg inference used when
+logs are unavailable.
 
 Supported event signatures (keccak256 of the ABI signature):
 
-- Uniswap V2 Swap:
+- Uniswap V2 Swap / Camelot V2 / SushiSwap:
   ``0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822``
   Emitted by every Uniswap V2 pair on each swap. Non-indexed data encodes
   (amount0In, amount1In, amount0Out, amount1Out) as four uint256 values.
+  Camelot V2 volatile/stable pools on Arbitrum share this identical signature.
 
-- Uniswap V3 Swap:
+- Uniswap V3 Swap / PancakeSwap V3:
   ``0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67``
   Emitted by each Uniswap V3 pool. Non-indexed data encodes
   (amount0, amount1, sqrtPriceX96, liquidity, tick) where amount0/amount1
   are signed int256 values (positive = pool receives, negative = pool sends).
+  PancakeSwap V3 on BSC/Ethereum shares this identical signature.
 
 - Uniswap V4 Swap:
   ``0x19b47279256b2a23a1665c810c8d55a1758940ee09377d4f8d26497a3577dc83``
@@ -251,16 +253,11 @@ def decode_v4_swap(data_hex: str) -> Optional[Dict[str, Any]]:
         data = _hex_to_bytes(data_hex)
         if len(data) < 192:
             return None
-        # int128 — stored in 32 bytes but only lower 16 bytes are meaningful
-        # (ABI encoding always pads to 32 bytes)
+        # int128 — stored in a 32-byte ABI slot; read full slot and decode as signed
         def _i128(d: bytes, off: int) -> int:
-            # Extract only the lower 16 bytes (128 bits) that contain the actual value
-            # ABI pads to 32 bytes, but int128 only uses the lower 16 bytes
-            raw_bytes = d[off + 16 : off + 32]  # skip upper 16 padding bytes
-            raw = int.from_bytes(raw_bytes, "big")
-            if raw >= (1 << 127):
-                raw -= 1 << 128
-            return raw
+            # Read the full 32-byte slot and interpret as signed 256-bit integer
+            raw_bytes = d[off : off + 32]
+            return int.from_bytes(raw_bytes, "big", signed=True)
 
         amount0 = _i128(data, 0)
         amount1 = _i128(data, 32)
@@ -350,16 +347,13 @@ def decode_curve_token_exchange(data_hex: str) -> Optional[Dict[str, Any]]:
         data = _hex_to_bytes(data_hex)
         if len(data) < 128:
             return None
-        # int128 is ABI-encoded as a 32-byte slot; read as int256 then clip.
+        # int128 is ABI-encoded as a 32-byte slot; read full slot and decode as signed.
         # sold_id / bought_id are always small non-negative indices in practice,
         # but we honour the signed type to match the ABI exactly.
         def _i128_from_slot(d: bytes, off: int) -> int:
-            # Lower 16 bytes hold the value; upper 16 are sign-extension padding.
-            raw_bytes = d[off + 16 : off + 32]
-            raw = int.from_bytes(raw_bytes, "big")
-            if raw >= (1 << 127):
-                raw -= 1 << 128
-            return raw
+            # Read the full 32-byte slot and interpret as signed 256-bit integer
+            raw_bytes = d[off : off + 32]
+            return int.from_bytes(raw_bytes, "big", signed=True)
 
         return {
             "sold_id":      _i128_from_slot(data, 0),
@@ -368,6 +362,7 @@ def decode_curve_token_exchange(data_hex: str) -> Optional[Dict[str, Any]]:
             "tokens_bought": _u256(data, 96),
         }
     except Exception as exc:
+        # nosemgrep: python-logger-credential-disclosure - logging exception, not credentials
         logger.debug("decode_curve_token_exchange failed: %s", exc)
         return None
 

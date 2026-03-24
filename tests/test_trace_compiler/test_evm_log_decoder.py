@@ -72,17 +72,16 @@ def _v3_data(amount0: int, amount1: int) -> str:
 
 
 def _encode_i128_abi(n: int) -> bytes:
-    """Encode a signed int128 into 32 bytes matching the V4 decoder's expectation.
+    """Encode a signed int128 into 32 bytes matching the EVM ABI encoding.
 
-    The V4 decoder (_i128 inner function) reads 32 bytes as a big-endian
-    unsigned integer and applies: if raw >= (1<<127): raw -= (1<<128).
-    This is equivalent to taking the 128-bit two's complement value and
-    zero-padding it to 32 bytes (upper 16 bytes are zero, lower 16 bytes
-    hold the int128 two's complement).
+    The EVM ABI sign-extends all integer types to 32 bytes (256 bits).
+    For negative int128 values the upper 16 bytes are 0xFF (sign extension),
+    not 0x00 (zero-padding).
+
+    The V4 decoder uses ``int.from_bytes(slot, "big", signed=True)`` which
+    correctly decodes this sign-extended representation.
     """
-    # Represent n as 128-bit two's complement, then zero-pad to 32 bytes.
-    val = n & ((1 << 128) - 1)
-    return val.to_bytes(32, "big")
+    return n.to_bytes(32, "big", signed=True)
 
 
 def _v4_data(amount0: int, amount1: int, fee: int = 0) -> str:

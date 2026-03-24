@@ -398,6 +398,21 @@ class Settings(BaseSettings):
             raise ValueError("JWT_SECRET_KEY environment variable is required")
         return v
 
+    @field_validator("GRAPH_AUTH_DISABLED")
+    @classmethod
+    def validate_graph_auth_disabled_safety(cls, v, info):
+        """Prevent GRAPH_AUTH_DISABLED=True in production (non-DEBUG mode).
+
+        Disabling auth in production is a critical security misconfiguration.
+        Only allow when DEBUG is also True (development/testing mode).
+        """
+        if v and not info.data.get("DEBUG", False):
+            raise ValueError(
+                "GRAPH_AUTH_DISABLED=True requires DEBUG=True. "
+                "Disabling authentication in production is unsafe."
+            )
+        return v
+
 
 # Create global settings instance
 settings = Settings()

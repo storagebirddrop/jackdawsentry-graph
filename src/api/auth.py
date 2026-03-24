@@ -4,6 +4,7 @@ JWT-based authentication with GDPR compliance
 """
 
 import logging
+import os
 from datetime import datetime
 from datetime import timedelta
 from datetime import timezone
@@ -168,13 +169,16 @@ async def get_current_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ) -> User:
     """Get current authenticated user from token, backed by database lookup"""
-    # Auth bypass with safeguards - only allowed in non-production contexts
+    # Auth bypass with safeguards - only allowed in development with explicit confirmation
     if settings.GRAPH_AUTH_DISABLED:
-        # Additional safety checks: only allow bypass in debug mode or explicit development flag
-        if not (settings.DEBUG or getattr(settings, 'ALLOW_AUTH_BYPASS', False)):
+        # Additional safety checks: only allow bypass in development environment with explicit confirmation
+        node_env = os.getenv("NODE_ENV", "development").lower()
+        auth_disable_confirm = os.getenv("AUTH_DISABLE_CONFIRM", "false").lower()
+        
+        if not (node_env == "development" and auth_disable_confirm == "true"):
             logger.error(
                 "GRAPH_AUTH_DISABLED is true but bypass blocked - "
-                "not in DEBUG mode and ALLOW_AUTH_BYPASS not set. "
+                "requires NODE_ENV=development AND AUTH_DISABLE_CONFIRM=true. "
                 "This prevents accidental auth bypass in production."
             )
             raise HTTPException(
@@ -187,7 +191,7 @@ async def get_current_user(
             "AUTH BYPASS ACTIVE: GRAPH_AUTH_DISABLED=true - "
             "Returning elevated local user without authentication. "
             f"Timestamp: {datetime.now(timezone.utc).isoformat()}, "
-            f"DEBUG={settings.DEBUG}, ALLOW_AUTH_BYPASS={getattr(settings, 'ALLOW_AUTH_BYPASS', False)}"
+            f"NODE_ENV={node_env}, AUTH_DISABLE_CONFIRM={auth_disable_confirm}"
         )
         return User(
             id=UUID("00000000-0000-0000-0000-000000000000"),

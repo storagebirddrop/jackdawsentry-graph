@@ -413,6 +413,12 @@ class TronCollector(BaseCollector):
         - ``topics``: list of 32-byte hex strings (no ``0x`` prefix).
         - ``data``: hex-encoded non-indexed log data (no ``0x`` prefix).
 
+        Contract addresses are normalised to the canonical Tron 25-byte hex
+        format used throughout the event store and service classifier:
+        ``41`` (version byte) + 20-byte address + 4-byte double-SHA256 checksum,
+        all lowercased.  This matches the output of ``TronCollector.hex_to_base58``
+        and the address format stored by ``base58_to_hex``.
+
         Returns an empty list on any error or when no matching logs are found.
 
         Args:
@@ -439,11 +445,18 @@ class TronCollector(BaseCollector):
                 if topic0 not in _DEX_SWAP_SIGS:
                     continue
 
-                # Address is the 20-byte portion; prepend "41" for Tron
-                # network prefix so the stored hex matches what the Tron
-                # collector writes for other addresses.
+                # Build canonical 25-byte Tron hex address:
+                # version byte (41) + 20-byte body + 4-byte double-SHA256 checksum.
+                # This format matches what the service classifier and event store
+                # use for counterparty lookups, so _fetch_dex_swap_log can find
+                # the stored log by contract address.
                 raw_addr = log_entry.get("address", "")
-                contract = "41" + raw_addr if raw_addr else ""
+                if raw_addr:
+                    addr_21 = bytes.fromhex("41" + raw_addr)
+                    checksum = hashlib.sha256(hashlib.sha256(addr_21).digest()).digest()[:4]
+                    contract = (addr_21 + checksum).hex().lower()
+                else:
+                    contract = ""
 
                 def _topic_hex(t: str) -> Optional[str]:
                     return "0x" + t if t else None
@@ -452,7 +465,7 @@ class TronCollector(BaseCollector):
                 data_hex = "0x" + data_raw if data_raw else None
 
                 result.append({
-                    "log_index": len(result),
+                    "log_index": log_entry.get("log_index", len(result)),  # Use actual log_index if available
                     "contract": contract.lower(),
                     "event_sig": topic0,
                     "topic1": _topic_hex(topics[1]) if len(topics) > 1 else None,

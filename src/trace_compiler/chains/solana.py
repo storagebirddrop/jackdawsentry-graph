@@ -567,7 +567,7 @@ class SolanaChainCompiler(BaseChainCompiler):
         # precisely.  This prevents multi-hop or pool-internal transfers from
         # being misidentified as the user's swap legs.
         swap_ix = await self._fetch_swap_instruction(tx_hash, program_address)
-        user_atas: set[str] = set()
+        user_atas: Set[str] = set()
         if swap_ix is not None:
             args = swap_ix.get("decoded_args") or {}
             # Collect all ATA fields that indicate user-controlled token accounts
@@ -594,8 +594,10 @@ class SolanaChainCompiler(BaseChainCompiler):
 
         outgoing_asset: Optional[str] = None
         outgoing_amount: float = 0.0
+        outgoing_canonical_id: Optional[str] = None
         incoming_asset: Optional[str] = None
         incoming_amount: float = 0.0
+        incoming_canonical_id: Optional[str] = None
 
         for leg in spl_legs:
             raw_from = leg.get("from_address", "")
@@ -611,8 +613,13 @@ class SolanaChainCompiler(BaseChainCompiler):
             amount = leg.get("amount_normalized")
             if not amount:
                 continue
-            amount = float(amount)
-            symbol = (leg.get("asset_symbol") or leg.get("canonical_asset_id") or "").upper()
+            try:
+                amount = float(amount)
+            except (ValueError, TypeError) as conv_exc:
+                logger.debug("Failed to convert amount to float: %s", conv_exc)
+                continue
+            canonical_id = leg.get("canonical_asset_id")
+            symbol = (leg.get("asset_symbol") or canonical_id or "").upper()
             if not symbol:
                 continue
 
@@ -632,11 +639,13 @@ class SolanaChainCompiler(BaseChainCompiler):
                 if amount > outgoing_amount:
                     outgoing_asset = symbol
                     outgoing_amount = amount
+                    outgoing_canonical_id = canonical_id
 
             if to_addr == seed_lc and amount > 0 and to_ata_ok:
                 if amount > incoming_amount:
                     incoming_asset = symbol
                     incoming_amount = amount
+                    incoming_canonical_id = canonical_id
 
         if outgoing_asset is None or incoming_asset is None:
             return None
@@ -709,6 +718,7 @@ class SolanaChainCompiler(BaseChainCompiler):
             value_native=outgoing_amount,
             value_fiat=None,
             asset_symbol=outgoing_asset,
+            canonical_asset_id=outgoing_canonical_id,
             tx_hash=tx_hash,
             tx_chain="solana",
             timestamp=timestamp,
@@ -724,6 +734,7 @@ class SolanaChainCompiler(BaseChainCompiler):
             value_native=incoming_amount,
             value_fiat=None,
             asset_symbol=incoming_asset,
+            canonical_asset_id=incoming_canonical_id,
             tx_hash=tx_hash,
             tx_chain="solana",
             timestamp=timestamp,

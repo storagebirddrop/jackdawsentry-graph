@@ -31,3 +31,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS uix_address_ingest_queue_active
 CREATE INDEX IF NOT EXISTS idx_address_ingest_queue_poll
     ON address_ingest_queue (status, priority DESC, requested_at ASC)
     WHERE status IN ('pending', 'running');
+
+-- Retry queries: efficiently find failed rows that are ready for retry
+CREATE INDEX IF NOT EXISTS idx_address_ingest_queue_retry
+    ON address_ingest_queue (status, next_retry_at)
+    WHERE status = 'failed' AND next_retry_at IS NOT NULL;
