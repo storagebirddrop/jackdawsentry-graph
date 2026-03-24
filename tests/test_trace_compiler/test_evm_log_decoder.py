@@ -4,9 +4,11 @@ Covers:
 - decode_v2_swap: happy paths (both directions), short/invalid hex
 - decode_v3_swap: signed int256 decoding, direction flag, short data
 - decode_v4_swap: signed int128 ABI-encoded decoding, direction flag, short data
-- decode_swap_log: dispatcher for V2/V3/V4 and unknown signature
+- decode_balancer_v2_swap: amountIn/amountOut decoding, short data
+- decode_curve_token_exchange: sold_id/tokens_sold/bought_id/tokens_bought, short data
+- decode_swap_log: dispatcher for V2/V3/V4/Balancer/Curve and unknown signature
 - extract_swap_amounts: V2 token0→token1, V2 token1→token0, V2 ambiguous,
-  V3 token0-is-input, V3 token1-is-input
+  V3 token0-is-input, V3 token1-is-input, Balancer V2, Curve TokenExchange
 - DEX_SWAP_SIGS frozenset membership
 """
 
@@ -17,10 +19,15 @@ import struct
 import pytest
 
 from src.trace_compiler.chains.evm_log_decoder import (
+    BALANCER_V2_SWAP_SIG,
+    CURVE_TOKEN_EXCHANGE_SIG,
+    CURVE_TOKEN_EXCHANGE_UNDERLYING_SIG,
     DEX_SWAP_SIGS,
     UNISWAP_V2_SWAP_SIG,
     UNISWAP_V3_SWAP_SIG,
     UNISWAP_V4_SWAP_SIG,
+    decode_balancer_v2_swap,
+    decode_curve_token_exchange,
     decode_swap_log,
     decode_v2_swap,
     decode_v3_swap,
@@ -387,6 +394,165 @@ class TestExtractSwapAmounts:
 
 
 # ---------------------------------------------------------------------------
+# Balancer V2 Vault Swap decoder tests
+# ---------------------------------------------------------------------------
+
+
+def _balancer_data(amount_in: int, amount_out: int) -> str:
+    """Encode Balancer V2 non-indexed data: amountIn (uint256) | amountOut (uint256)."""
+    return "0x" + amount_in.to_bytes(32, "big").hex() + amount_out.to_bytes(32, "big").hex()
+
+
+class TestDecodeBalancerV2Swap:
+    """Tests for decode_balancer_v2_swap()."""
+
+    def test_happy_path(self):
+        """Correctly decodes amountIn and amountOut."""
+        data = _balancer_data(int(1000e18), int(995e18))
+        result = decode_balancer_v2_swap(data)
+        assert result is not None
+        assert result["amount_in"] == int(1000e18)
+        assert result["amount_out"] == int(995e18)
+
+    def test_without_0x_prefix(self):
+        """Accepts data without 0x prefix."""
+        raw = _balancer_data(int(500e6), int(499e18))[2:]  # strip 0x
+        result = decode_balancer_v2_swap(raw)
+        assert result is not None
+        assert result["amount_in"] == int(500e6)
+
+    def test_short_data_returns_none(self):
+        """Less than 64 bytes → None."""
+        assert decode_balancer_v2_swap("0x" + "aa" * 32) is None
+
+    def test_empty_data_returns_none(self):
+        """Empty string → None."""
+        assert decode_balancer_v2_swap("") is None
+
+
+class TestExtractSwapAmountsBalancer:
+    """Tests for extract_swap_amounts with Balancer V2 events."""
+
+    def test_balancer_amounts(self):
+        """Returns (amount_in, amount_out, True) for Balancer V2."""
+        data = _balancer_data(int(1000e18), int(995e18))
+        decoded = decode_balancer_v2_swap(data)
+        result = extract_swap_amounts(decoded, BALANCER_V2_SWAP_SIG)
+        assert result is not None
+        inp, out, token0_is_input = result
+        assert abs(inp - 1000.0) < 1e-6
+        assert abs(out - 995.0) < 1e-6
+        assert token0_is_input is True
+
+    def test_balancer_stablecoin_decimals(self):
+        """Correctly normalises USDC (6 decimals) amountIn."""
+        data = _balancer_data(int(500e6), int(499e18))
+        decoded = decode_balancer_v2_swap(data)
+        result = extract_swap_amounts(decoded, BALANCER_V2_SWAP_SIG, decimals0=6, decimals1=18)
+        assert result is not None
+        inp, out, _ = result
+        assert abs(inp - 500.0) < 1e-3
+        assert abs(out - 499.0) < 1e-9
+
+
+# ---------------------------------------------------------------------------
+# Curve TokenExchange / TokenExchangeUnderlying decoder tests
+# ---------------------------------------------------------------------------
+
+
+def _curve_data(sold_id: int, tokens_sold: int, bought_id: int, tokens_bought: int) -> str:
+    """Encode Curve non-indexed data: sold_id | tokens_sold | bought_id | tokens_bought."""
+
+    def _i128_slot(v: int) -> bytes:
+        if v < 0:
+            v = v + (1 << 128)
+        return v.to_bytes(16, "big").rjust(32, b"\x00")
+
+    return "0x" + (
+        _i128_slot(sold_id)
+        + tokens_sold.to_bytes(32, "big")
+        + _i128_slot(bought_id)
+        + tokens_bought.to_bytes(32, "big")
+    ).hex()
+
+
+class TestDecodeCurveTokenExchange:
+    """Tests for decode_curve_token_exchange()."""
+
+    def test_happy_path(self):
+        """Correctly decodes sold_id, tokens_sold, bought_id, tokens_bought."""
+        data = _curve_data(0, int(500e6), 1, int(499e18))
+        result = decode_curve_token_exchange(data)
+        assert result is not None
+        assert result["sold_id"] == 0
+        assert result["tokens_sold"] == int(500e6)
+        assert result["bought_id"] == 1
+        assert result["tokens_bought"] == int(499e18)
+
+    def test_short_data_returns_none(self):
+        """Less than 128 bytes → None."""
+        assert decode_curve_token_exchange("0x" + "aa" * 64) is None
+
+    def test_large_coin_index(self):
+        """Coin index 2 for a 3-pool is decoded correctly."""
+        data = _curve_data(2, int(1e18), 0, int(999e6))
+        result = decode_curve_token_exchange(data)
+        assert result is not None
+        assert result["sold_id"] == 2
+        assert result["bought_id"] == 0
+
+
+class TestExtractSwapAmountsCurve:
+    """Tests for extract_swap_amounts with Curve events."""
+
+    def test_curve_token_exchange(self):
+        """Returns (tokens_sold, tokens_bought, True) for Curve TokenExchange."""
+        data = _curve_data(0, int(500e6), 1, int(499e18))
+        decoded = decode_curve_token_exchange(data)
+        result = extract_swap_amounts(decoded, CURVE_TOKEN_EXCHANGE_SIG, decimals0=6, decimals1=18)
+        assert result is not None
+        inp, out, token0_is_input = result
+        assert abs(inp - 500.0) < 1e-3
+        assert abs(out - 499.0) < 1e-9
+        assert token0_is_input is True
+
+    def test_curve_token_exchange_underlying(self):
+        """Same decode for TokenExchangeUnderlying."""
+        data = _curve_data(0, int(100e18), 1, int(99e18))
+        decoded = decode_curve_token_exchange(data)
+        result = extract_swap_amounts(decoded, CURVE_TOKEN_EXCHANGE_UNDERLYING_SIG)
+        assert result is not None
+        inp, out, _ = result
+        assert abs(inp - 100.0) < 1e-9
+        assert abs(out - 99.0) < 1e-9
+
+
+class TestDecodeSwapLogDispatcher:
+    """Tests that decode_swap_log dispatches to the correct decoder."""
+
+    def test_balancer_v2_dispatched(self):
+        """BALANCER_V2_SWAP_SIG routes to decode_balancer_v2_swap."""
+        data = _balancer_data(int(1e18), int(1e18))
+        result = decode_swap_log(BALANCER_V2_SWAP_SIG, data)
+        assert result is not None
+        assert "amount_in" in result
+
+    def test_curve_token_exchange_dispatched(self):
+        """CURVE_TOKEN_EXCHANGE_SIG routes to decode_curve_token_exchange."""
+        data = _curve_data(0, int(1e18), 1, int(1e18))
+        result = decode_swap_log(CURVE_TOKEN_EXCHANGE_SIG, data)
+        assert result is not None
+        assert "tokens_sold" in result
+
+    def test_curve_underlying_dispatched(self):
+        """CURVE_TOKEN_EXCHANGE_UNDERLYING_SIG also routes to decode_curve_token_exchange."""
+        data = _curve_data(0, int(1e18), 1, int(1e18))
+        result = decode_swap_log(CURVE_TOKEN_EXCHANGE_UNDERLYING_SIG, data)
+        assert result is not None
+        assert "tokens_bought" in result
+
+
+# ---------------------------------------------------------------------------
 # DEX_SWAP_SIGS frozenset membership tests
 # ---------------------------------------------------------------------------
 
@@ -411,6 +577,18 @@ class TestDexSwapSigs:
         unknown = "0x" + "deadbeef" * 8
         assert unknown not in DEX_SWAP_SIGS
 
-    def test_frozenset_has_exactly_three_members(self):
-        """DEX_SWAP_SIGS contains exactly the three known sigs."""
-        assert len(DEX_SWAP_SIGS) == 3
+    def test_balancer_v2_sig_in_frozenset(self):
+        """BALANCER_V2_SWAP_SIG is a member of DEX_SWAP_SIGS."""
+        assert BALANCER_V2_SWAP_SIG in DEX_SWAP_SIGS
+
+    def test_curve_token_exchange_sig_in_frozenset(self):
+        """CURVE_TOKEN_EXCHANGE_SIG is a member of DEX_SWAP_SIGS."""
+        assert CURVE_TOKEN_EXCHANGE_SIG in DEX_SWAP_SIGS
+
+    def test_curve_token_exchange_underlying_sig_in_frozenset(self):
+        """CURVE_TOKEN_EXCHANGE_UNDERLYING_SIG is a member of DEX_SWAP_SIGS."""
+        assert CURVE_TOKEN_EXCHANGE_UNDERLYING_SIG in DEX_SWAP_SIGS
+
+    def test_frozenset_has_exactly_six_members(self):
+        """DEX_SWAP_SIGS contains exactly the six known sigs."""
+        assert len(DEX_SWAP_SIGS) == 6

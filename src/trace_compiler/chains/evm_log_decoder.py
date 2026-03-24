@@ -1,8 +1,9 @@
 """EVM DEX event log decoder for swap_event enrichment.
 
-Decodes Uniswap V2, V3, and V4 Swap events from raw log data stored in
-``raw_evm_logs``.  The decoded amounts provide ground-truth swap sizes,
-replacing the token-transfer-leg inference used when logs are unavailable.
+Decodes Uniswap V2/V3/V4, Balancer V2, and Curve Swap events from raw log
+data stored in ``raw_evm_logs``.  The decoded amounts provide ground-truth
+swap sizes, replacing the token-transfer-leg inference used when logs are
+unavailable.
 
 Supported event signatures (keccak256 of the ABI signature):
 
@@ -21,6 +22,23 @@ Supported event signatures (keccak256 of the ABI signature):
   ``0x19b47279256b2a23a1665c810c8d55a1758940ee09377d4f8d26497a3577dc83``
   Emitted on the PoolManager's Swap hook. Data: (amount0, amount1,
   sqrtPriceX96, liquidity, tick, fee). Structure similar to V3.
+
+- Balancer V2 Vault Swap:
+  ``0x2170c741c41531aec20e7c107c24eecfdd15e69c9bb0a8dd37b1840b9e0b207b``
+  Emitted by the Balancer V2 Vault for every single-hop swap. Indexed
+  topics carry poolId, tokenIn, tokenOut; non-indexed data encodes
+  (amountIn, amountOut) as two uint256 values.
+
+- Curve TokenExchange:
+  ``0x8b3e96f2b889fa771c53c981b40daf005f63f637f1869f707052d15a3dd97140``
+  Emitted by Curve plain and factory pools on token exchanges. Non-indexed
+  data encodes (sold_id int128, tokens_sold uint256, bought_id int128,
+  tokens_bought uint256). sold_id/bought_id are pool-internal coin indices.
+
+- Curve TokenExchangeUnderlying:
+  ``0xd013ca23e77a65003c2c659c5442c00c805371b7fc1ebd4c206c41d1536bd90b``
+  Emitted by Curve meta-pools on underlying-token exchanges. Same data
+  layout as TokenExchange (sold_id, tokens_sold, bought_id, tokens_bought).
 
 All decoded values are normalised to ``float`` using the standard ERC-20
 decimal divisor (``10**decimals``).  Since we don't store token decimals in
@@ -67,11 +85,41 @@ UNISWAP_V4_SWAP_SIG = (
     "0x19b47279256b2a23a1665c810c8d55a1758940ee09377d4f8d26497a3577dc83"
 )
 
-#: Set of all known DEX Swap event signatures.
+#: Balancer V2 Vault — ``Swap(bytes32 indexed poolId,
+#: address indexed tokenIn, address indexed tokenOut,
+#: uint256 amountIn, uint256 amountOut)``
+#: All swaps routed through the single Vault contract.
+BALANCER_V2_SWAP_SIG = (
+    "0x2170c741c41531aec20e7c107c24eecfdd15e69c9bb0a8dd37b1840b9e0b207b"
+)
+
+#: Curve plain/factory pool — ``TokenExchange(address indexed buyer,
+#: int128 sold_id, uint256 tokens_sold, int128 bought_id,
+#: uint256 tokens_bought)``
+#: sold_id / bought_id are the pool's internal coin indices (0, 1, 2, …).
+CURVE_TOKEN_EXCHANGE_SIG = (
+    "0x8b3e96f2b889fa771c53c981b40daf005f63f637f1869f707052d15a3dd97140"
+)
+
+#: Curve meta-pool — ``TokenExchangeUnderlying(address indexed buyer,
+#: int128 sold_id, uint256 tokens_sold, int128 bought_id,
+#: uint256 tokens_bought)``
+#: Same data layout as TokenExchange; underlying coin indices may differ
+#: from the base-pool coin indices.
+CURVE_TOKEN_EXCHANGE_UNDERLYING_SIG = (
+    "0xd013ca23e77a65003c2c659c5442c00c805371b7fc1ebd4c206c41d1536bd90b"
+)
+
+#: Frozenset of all known DEX Swap event signatures used to filter
+#: ``raw_evm_logs`` during collection and query.  Keep in sync with
+#: ``EthereumCollector._build_relevant_log_sigs()``.
 DEX_SWAP_SIGS = frozenset({
     UNISWAP_V2_SWAP_SIG,
     UNISWAP_V3_SWAP_SIG,
     UNISWAP_V4_SWAP_SIG,
+    BALANCER_V2_SWAP_SIG,
+    CURVE_TOKEN_EXCHANGE_SIG,
+    CURVE_TOKEN_EXCHANGE_UNDERLYING_SIG,
 })
 
 # ---------------------------------------------------------------------------
@@ -209,17 +257,94 @@ def decode_v4_swap(data_hex: str) -> Optional[Dict[str, Any]]:
         return None
 
 
+def decode_balancer_v2_swap(data_hex: str) -> Optional[Dict[str, Any]]:
+    """Decode Balancer V2 Vault Swap event non-indexed data.
+
+    The non-indexed data field encodes two uint256 values:
+    amountIn, amountOut.
+
+    Note: tokenIn and tokenOut addresses are in indexed topics[2] and
+    topics[3], not in the data field.  The caller must retrieve them from
+    the ``raw_evm_logs.topic2`` / ``topic3`` columns when token identity
+    is required.
+
+    Args:
+        data_hex: Hex-encoded non-indexed log data (with or without 0x prefix).
+
+    Returns:
+        Dict with keys ``amount_in``, ``amount_out`` (both int), or None on
+        decode failure.
+    """
+    try:
+        data = _hex_to_bytes(data_hex)
+        if len(data) < 64:
+            return None
+        return {
+            "amount_in":  _u256(data, 0),
+            "amount_out": _u256(data, 32),
+        }
+    except Exception as exc:
+        logger.debug("decode_balancer_v2_swap failed: %s", exc)
+        return None
+
+
+def decode_curve_token_exchange(data_hex: str) -> Optional[Dict[str, Any]]:
+    """Decode Curve TokenExchange / TokenExchangeUnderlying non-indexed data.
+
+    Both events share the same non-indexed data layout:
+    sold_id (int128), tokens_sold (uint256), bought_id (int128),
+    tokens_bought (uint256).
+
+    ``sold_id`` and ``bought_id`` are the pool's internal coin indices
+    (0, 1, 2, …).  Callers must consult the pool contract or a coin-index
+    registry to resolve the actual token addresses.
+
+    Args:
+        data_hex: Hex-encoded non-indexed log data (with or without 0x prefix).
+
+    Returns:
+        Dict with keys ``sold_id`` (int), ``tokens_sold`` (int),
+        ``bought_id`` (int), ``tokens_bought`` (int), or None on decode
+        failure.
+    """
+    try:
+        data = _hex_to_bytes(data_hex)
+        if len(data) < 128:
+            return None
+        # int128 is ABI-encoded as a 32-byte slot; read as int256 then clip.
+        # sold_id / bought_id are always small non-negative indices in practice,
+        # but we honour the signed type to match the ABI exactly.
+        def _i128_from_slot(d: bytes, off: int) -> int:
+            # Lower 16 bytes hold the value; upper 16 are sign-extension padding.
+            raw_bytes = d[off + 16 : off + 32]
+            raw = int.from_bytes(raw_bytes, "big")
+            if raw >= (1 << 127):
+                raw -= 1 << 128
+            return raw
+
+        return {
+            "sold_id":      _i128_from_slot(data, 0),
+            "tokens_sold":  _u256(data, 32),
+            "bought_id":    _i128_from_slot(data, 64),
+            "tokens_bought": _u256(data, 96),
+        }
+    except Exception as exc:
+        logger.debug("decode_curve_token_exchange failed: %s", exc)
+        return None
+
+
 def decode_swap_log(event_sig: str, data_hex: str) -> Optional[Dict[str, Any]]:
     """Dispatch to the correct decoder based on event signature.
 
     Args:
-        event_sig: topics[0] (keccak256 of ABI event signature).
+        event_sig: topics[0] (keccak256 of ABI event signature) - already lowercase.
         data_hex:  Hex-encoded non-indexed log data.
 
     Returns:
         Decoded dict, or None when the signature is not recognised or
         decoding fails.
     """
+    # Normalize to lowercase for consistency (keccak256 hashes are lowercase)
     sig = event_sig.lower()
     if sig == UNISWAP_V2_SWAP_SIG:
         return decode_v2_swap(data_hex)
@@ -227,6 +352,10 @@ def decode_swap_log(event_sig: str, data_hex: str) -> Optional[Dict[str, Any]]:
         return decode_v3_swap(data_hex)
     if sig == UNISWAP_V4_SWAP_SIG:
         return decode_v4_swap(data_hex)
+    if sig == BALANCER_V2_SWAP_SIG:
+        return decode_balancer_v2_swap(data_hex)
+    if sig in (CURVE_TOKEN_EXCHANGE_SIG, CURVE_TOKEN_EXCHANGE_UNDERLYING_SIG):
+        return decode_curve_token_exchange(data_hex)
     return None
 
 
@@ -252,6 +381,7 @@ def extract_swap_amounts(
         Tuple ``(input_amount, output_amount, token0_is_input)`` or None when
         amounts cannot be determined.
     """
+    # Normalize to lowercase for consistency (keccak256 hashes are lowercase)
     sig = event_sig.lower()
     try:
         if sig == UNISWAP_V2_SWAP_SIG:
@@ -294,6 +424,27 @@ def extract_swap_amounts(
                     abs(amount0) / (10 ** decimals0),
                     False,
                 )
+
+        elif sig == BALANCER_V2_SWAP_SIG:
+            # amountIn/amountOut are unambiguous — the Vault event names them
+            # explicitly unlike Uniswap's pool-relative amount0/amount1.
+            # We define tokenIn as "token0" by convention so the return type
+            # stays consistent.
+            return (
+                decoded["amount_in"] / (10 ** decimals0),
+                decoded["amount_out"] / (10 ** decimals1),
+                True,
+            )
+
+        elif sig in (CURVE_TOKEN_EXCHANGE_SIG, CURVE_TOKEN_EXCHANGE_UNDERLYING_SIG):
+            # tokens_sold is always the input; tokens_bought is always the
+            # output.  sold_id / bought_id are coin indices, not in amounts.
+            return (
+                decoded["tokens_sold"] / (10 ** decimals0),
+                decoded["tokens_bought"] / (10 ** decimals1),
+                True,
+            )
+
     except (KeyError, ZeroDivisionError) as exc:
         logger.debug("extract_swap_amounts failed: %s", exc)
     return None

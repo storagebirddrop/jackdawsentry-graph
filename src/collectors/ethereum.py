@@ -406,7 +406,16 @@ class EthereumCollector(BaseCollector):
             "fantom": 250,
             "cronos": 25,
         }
-        chainid = chain_to_id.get(self.blockchain, 1)  # default to Ethereum mainnet
+        
+        # Validate blockchain is supported
+        if self.blockchain not in chain_to_id:
+            logger.warning(
+                f"Unsupported blockchain '{self.blockchain}' for Etherscan API. "
+                f"Supported chains: {sorted(chain_to_id.keys())}"
+            )
+            return []
+        
+        chainid = chain_to_id[self.blockchain]
 
         url = (
             "https://api.etherscan.io/v2/api"
@@ -578,7 +587,7 @@ class EthereumCollector(BaseCollector):
                     status = "unknown"  # default fallback
                     try:
                         if self.w3 and WEB3_AVAILABLE:
-                            receipt = await asyncio.get_event_loop().run_in_executor(
+                            receipt = await asyncio.get_running_loop().run_in_executor(
                                 None, self.w3.eth.get_transaction_receipt, tx_hash
                             )
                             if receipt:
@@ -719,6 +728,9 @@ class EthereumCollector(BaseCollector):
             "0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822",  # Uniswap V2
             "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67",  # Uniswap V3
             "0x19b47279256b2a23a1665c810c8d55a1758940ee09377d4f8d26497a3577dc83",  # Uniswap V4
+            "0x2170c741c41531aec20e7c107c24eecfdd15e69c9bb0a8dd37b1840b9e0b207b",  # Balancer V2 Vault Swap
+            "0x8b3e96f2b889fa771c53c981b40daf005f63f637f1869f707052d15a3dd97140",  # Curve TokenExchange
+            "0xd013ca23e77a65003c2c659c5442c00c805371b7fc1ebd4c206c41d1536bd90b",  # Curve TokenExchangeUnderlying
         }
         try:
             from src.tracing.bridge_log_decoder import (
