@@ -233,6 +233,9 @@ in this repository.
 For maintainer contact or private coordination, use
 `jackdawsentry.support@dawgus.com`.
 
+Support via Lightning / Nostr:
+`npub1p0jkd532p3c0za2s7fugq0tx30xm2e4v03n6udkqze6ercyf5fesgsy9fv@npub.cash`
+
 For security issues, do not open a public issue. Follow [SECURITY.md](SECURITY.md).
 
 This support surface covers the standalone graph product only. The private
