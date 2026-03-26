@@ -378,7 +378,7 @@ async def lookup_addresses_bulk(
 
         - ``entity_name`` (str): Human-readable name, e.g. ``"Binance"``.
         - ``entity_type`` (str): One of ``"cex"``, ``"vasp"``, ``"defi"``,
-          ``"lending"``, ``"staking"``, ``"mixer"``, ``"dao"``.
+          ``"lending"``, ``"staking"``, ``"mixer"``, ``"dao"``, ``"bridge"``.
         - ``category`` (str): One of ``"exchange"``, ``"service"``,
           ``"mixer"``, ``"lending"``, ``"staking"``, ``"bridge"``.
         - ``risk_level`` (str): One of ``"low"``, ``"medium"``, ``"high"``.

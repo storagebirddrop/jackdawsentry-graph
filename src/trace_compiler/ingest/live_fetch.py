@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -266,7 +265,11 @@ async def _persist(
                         tx_transfer_counters[tx_hash] = idx + 1
 
                         ts = datetime.fromtimestamp(int(row["timeStamp"]), tz=timezone.utc)
-                        decimals = int(row.get("tokenDecimal", 18) or 18)
+                        try:
+                            decimals = int(row.get("tokenDecimal", 18) or 18)
+                        except (ValueError, TypeError):
+                            decimals = 18
+                        decimals = max(0, min(decimals, 18))
                         amount_raw = int(row.get("value", 0) or 0)
                         amount_norm = amount_raw / (10 ** decimals) if amount_raw else 0.0
                         symbol = (row.get("tokenSymbol") or "").upper() or None

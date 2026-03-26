@@ -230,11 +230,30 @@ Acceptance criteria:
       accounts added; Bridgers (bridgers.xyz) ETH/BSC custodial bridge registered
 - [x] `service_classifier.py` — Raydium AMM v4 pool authority PDA and Route
       program added as Solana DEX entries
-- [ ] **Tech debt (deferred)**: `trigger.py` `_make_pg_pool` mock in
-      `test_on_demand_ingest.py` handles 3 `fetchval` calls but trigger now makes
-      4; `test_trigger_queues_row_when_no_data` will fail — needs mock update
-- [ ] **Tech debt (deferred)**: no unit tests for `solana_decoder.py`,
-      `_calldata_destination_solana`, generic swap path, or `ix_rows` persist path
+- [ ] **Tech debt**: update `_make_pg_pool` mock in `test_on_demand_ingest.py` so
+      `test_trigger_queues_row_when_no_data` handles 4 `fetchval` calls: index 0 =
+      tx-exists check (→ None), index 1 = token-exists check (→ None), index 2 =
+      recently_fetched window check (→ None), index 3 = INSERT RETURNING id (→ uuid)
+- [ ] **Tech debt**: add unit tests for `solana_decoder.py`:
+      - `_scan_evm_address`: 12-zero + 20-nonzero bytes → CrossChainDestination (ethereum);
+        all-zero padding → None; random bytes → None
+      - `_scan_tron_address`: valid 0x41 + 20-byte body → valid T-address with correct
+        leading-zero `pad` count; interior zeros do NOT inflate pad
+- [ ] **Tech debt**: add unit tests for `BridgeHopCompiler._calldata_destination_solana`:
+      - Solana sig (base58, mixed-case) is queried unchanged from `raw_solana_instructions`
+      - EVM-padded result decoded as ethereum dest; Tron 0x41 result decoded as tron dest
+      - Missing instruction row → None
+- [ ] **Tech debt**: add unit tests for `solana._build_graph` generic swap path:
+      - `_maybe_build_solana_swap_event` returns a result → node added, key enters
+        `generic_swap_seen`, row does NOT fall through to `process_row`
+      - `_maybe_build_solana_swap_event` returns None → row falls through to
+        `process_row` (key must NOT enter `generic_swap_seen` prematurely)
+      - Second `expand()` on same address + program still attempts swap (key not
+        carried over between calls because set is local)
+- [ ] **Tech debt**: add unit tests for `ix_rows` persist path in
+      `solana_live_fetch._persist`: decoded args stored as `{"raw_data": <hex>}`
+      in `raw_solana_instructions.decoded_args`; no insert attempted into
+      `raw_transactions` for instruction rows
 
 ## Attribution & Sanctions Data Pass [COMPLETE — ADR-021]
 

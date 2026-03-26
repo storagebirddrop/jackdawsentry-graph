@@ -172,7 +172,7 @@ def _scan_tron_address(payload: bytes, CrossChainDestination: type) -> Optional[
         while n:
             n, r = divmod(n, 58)
             chars.append(_B58_ALPHABET[r: r + 1])
-        pad = sum(1 for b in encoded if b == 0)
+        pad = len(encoded) - len(encoded.lstrip(b"\x00"))
         tron_addr = (b"1" * pad + b"".join(reversed(chars))).decode()
         if tron_addr.startswith("T") and len(tron_addr) == 34:
             return CrossChainDestination(

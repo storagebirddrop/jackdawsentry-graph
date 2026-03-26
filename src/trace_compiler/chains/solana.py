@@ -884,7 +884,6 @@ class SolanaChainCompiler(BaseChainCompiler):
                 # Guard: only try once per (tx_hash, counterparty) within this call.
                 _generic_swap_key = (tx_hash, counterparty)
                 if _generic_swap_key not in generic_swap_seen:
-                    generic_swap_seen.add(_generic_swap_key)
                     swap_result = await self._maybe_build_solana_swap_event(
                         tx_hash=tx_hash,
                         seed_address=seed_address,
@@ -906,16 +905,13 @@ class SolanaChainCompiler(BaseChainCompiler):
                             "program %s (tx=%s)",
                             counterparty[:16], tx_hash[:16],
                         )
+                        generic_swap_seen.add(_generic_swap_key)
                         swap_nodes, swap_edges = swap_result
                         for sn in swap_nodes:
                             seen_nodes.setdefault(sn.node_id, sn)
                         edges.extend(swap_edges)
                         continue
-                else:
-                    # Key already processed in this pass — skip to avoid
-                    # emitting a plain transfer for a row that belongs to a
-                    # swap that was already added.
-                    continue
+                    # No swap built — fall through to service/transfer handling.
 
             svc_result = await self._service.process_row(
                 tx_hash=tx_hash,

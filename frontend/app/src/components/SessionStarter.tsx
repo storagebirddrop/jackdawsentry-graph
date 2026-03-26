@@ -23,19 +23,27 @@ interface Props {
 }
 
 /** Return 'address', 'tx_hash', or null based on format heuristics. */
-function detectInputType(value: string): 'address' | 'tx_hash' | null {
+function detectInputType(value: string, chain?: string): 'address' | 'tx_hash' | null {
   const v = value.trim();
   if (!v) return null;
-  // EVM tx hash: 0x + 64 hex
-  if (/^0x[0-9a-fA-F]{64}$/.test(v)) return 'tx_hash';
+  // 0x + 64 hex: Starknet and Sui use this as an address; all other chains treat it as a tx hash.
+  if (/^0x[0-9a-fA-F]{64}$/.test(v)) {
+    return chain && ['starknet', 'sui'].includes(chain) ? 'address' : 'tx_hash';
+  }
   // EVM address: 0x + 40 hex
   if (/^0x[0-9a-fA-F]{40}$/.test(v)) return 'address';
-  // Bare 64 hex (Bitcoin/Tron tx hash without 0x)
+  // Bare 64 hex (Bitcoin/Ethereum tx hash without 0x prefix)
   if (/^[0-9a-fA-F]{64}$/.test(v)) return 'tx_hash';
   // Solana tx signature: base58, ~87-88 chars
   if (/^[1-9A-HJ-NP-Za-km-z]{80,}$/.test(v)) return 'tx_hash';
-  // Solana / Bitcoin / Tron address: base58, shorter
+  // Tron base58 address: always starts with 'T'
+  if (/^T[1-9A-HJ-NP-Za-km-z]{25,35}$/.test(v)) return 'address';
+  // Bech32 address (cosmos, inj, osmo, etc.): lowercase prefix + '1' + bech32 data
+  if (/^[a-z0-9]+1[ac-hj-np-z02-9]{6,}$/i.test(v)) return 'address';
+  // Solana / Bitcoin address: base58, shorter range
   if (/^[1-9A-HJ-NP-Za-km-z]{25,60}$/.test(v)) return 'address';
+  // Safe fallback: plausible address length and alphanumeric-only — don't block the submit button.
+  if (v.length >= 20 && /^[0-9a-zA-Z]+$/.test(v)) return 'address';
   return null;
 }
 
@@ -56,9 +64,10 @@ export default function SessionStarter({ onSessionCreated }: Props) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [resolved, setResolved] = useState<TxResolveResponse | null>(null);
+  const [participantActive, setParticipantActive] = useState<string | null>(null);
   const { initSession } = useGraphStore();
 
-  const inputType = detectInputType(input);
+  const inputType = detectInputType(input, chain);
 
   // Clear resolved tx whenever input or chain changes.
   useEffect(() => {
@@ -280,7 +289,16 @@ export default function SessionStarter({ onSessionCreated }: Props) {
                   type="button"
                   onClick={() => void startSession(resolved.from_address!)}
                   disabled={loading}
-                  style={participantBtnStyle}
+                  style={{
+                    ...participantBtnStyle,
+                    ...(participantActive === 'from' ? participantBtnActiveStyle : {}),
+                    cursor: loading ? 'not-allowed' : 'pointer',
+                    opacity: loading ? 0.6 : 1,
+                  }}
+                  onFocus={() => setParticipantActive('from')}
+                  onBlur={() => setParticipantActive(null)}
+                  onMouseEnter={() => setParticipantActive('from')}
+                  onMouseLeave={() => setParticipantActive((p) => p === 'from' ? null : p)}
                 >
                   <span style={{ fontSize: 10, color: '#94a3b8', display: 'block', marginBottom: 2 }}>SENDER</span>
                   <span style={{ fontFamily: 'monospace', fontSize: 11, color: '#e2e8f0', wordBreak: 'break-all' }}>
@@ -293,7 +311,16 @@ export default function SessionStarter({ onSessionCreated }: Props) {
                   type="button"
                   onClick={() => void startSession(resolved.to_address!)}
                   disabled={loading}
-                  style={participantBtnStyle}
+                  style={{
+                    ...participantBtnStyle,
+                    ...(participantActive === 'to' ? participantBtnActiveStyle : {}),
+                    cursor: loading ? 'not-allowed' : 'pointer',
+                    opacity: loading ? 0.6 : 1,
+                  }}
+                  onFocus={() => setParticipantActive('to')}
+                  onBlur={() => setParticipantActive(null)}
+                  onMouseEnter={() => setParticipantActive('to')}
+                  onMouseLeave={() => setParticipantActive((p) => p === 'to' ? null : p)}
                 >
                   <span style={{ fontSize: 10, color: '#94a3b8', display: 'block', marginBottom: 2 }}>RECEIVER</span>
                   <span style={{ fontFamily: 'monospace', fontSize: 11, color: '#e2e8f0', wordBreak: 'break-all' }}>
@@ -392,7 +419,12 @@ const participantBtnStyle: React.CSSProperties = {
   padding: '8px 12px',
   textAlign: 'left',
   cursor: 'pointer',
-  transition: 'border-color 0.12s',
+  transition: 'border-color 0.12s, box-shadow 0.12s',
   outline: 'none',
   width: '100%',
+};
+
+const participantBtnActiveStyle: React.CSSProperties = {
+  borderColor: '#60a5fa',
+  boxShadow: '0 0 0 2px #60a5fa40',
 };

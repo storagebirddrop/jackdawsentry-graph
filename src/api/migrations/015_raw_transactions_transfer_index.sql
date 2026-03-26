@@ -18,5 +18,20 @@ CREATE UNIQUE INDEX IF NOT EXISTS raw_tx_unique_new
 -- Step 3: drop the old two-column unique index now that the new one is in place.
 DROP INDEX IF EXISTS raw_tx_unique;
 
--- Step 4: rename the new index to the canonical name.
-ALTER INDEX raw_tx_unique_new RENAME TO raw_tx_unique;
+-- Step 4: rename the new index to the canonical name (idempotent — skips when
+-- raw_tx_unique_new is absent or raw_tx_unique already exists).
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE c.relname = 'raw_tx_unique_new' AND n.nspname = current_schema()
+  ) AND NOT EXISTS (
+    SELECT 1 FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE c.relname = 'raw_tx_unique' AND n.nspname = current_schema()
+  ) THEN
+    ALTER INDEX raw_tx_unique_new RENAME TO raw_tx_unique;
+  END IF;
+END
+$$;
