@@ -638,6 +638,28 @@ class BridgeHopStatusResponse(BaseModel):
     updated_at: datetime
 
 
+class TxResolveResponse(BaseModel):
+    """Response for GET /api/v1/graph/resolve-tx.
+
+    Resolves a transaction hash to its participant addresses so the caller
+    can seed a session from either the sender or the receiver.  ``found``
+    is False when neither the event store nor the live RPC could locate the
+    transaction.
+    """
+
+    found: bool
+    tx_hash: str
+    blockchain: str
+    from_address: Optional[str] = None
+    to_address: Optional[str] = None
+    value_native: Optional[float] = None
+    # Symbol of the native gas asset (e.g. "ETH", "BNB", "SOL").
+    asset_symbol: Optional[str] = None
+    timestamp: Optional[datetime] = None
+    block_number: Optional[int] = None
+    status: Optional[str] = None  # "success" | "failed" | "pending"
+
+
 class IngestStatusResponse(BaseModel):
     """Response for GET /api/v1/graph/sessions/{session_id}/ingest/status.
 

@@ -49,8 +49,9 @@ class BridgeHopCompiler:
                        bridge hop node carries ``status="pending"``.
     """
 
-    def __init__(self, postgres_pool=None):
+    def __init__(self, postgres_pool=None, redis_client=None):
         self._pg = postgres_pool
+        self._redis = redis_client
         # Per-chain cache: chain -> frozenset of lowercase contract addresses.
         self._contracts: Dict[str, Set[str]] = {}
         self._protocol_map: Dict[str, Dict[str, Any]] = {}
@@ -404,6 +405,219 @@ class BridgeHopCompiler:
         return edges
 
     # ------------------------------------------------------------------
+    # Calldata-based destination extraction
+    # ------------------------------------------------------------------
+
+    async def _calldata_destination(
+        self,
+        tx_hash: str,
+        contract_address: str,
+        source_chain: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Attempt to extract a cross-chain destination from bridge calldata.
+
+        Fetches ``input_data`` for ``tx_hash`` from ``raw_transactions``, then
+        delegates to the calldata decoder which first tries ABI-based decoding
+        (Etherscan-verified ABI, cached in Redis) and falls back to heuristic
+        pattern scanning.
+
+        Args:
+            tx_hash:          Source-chain transaction hash.
+            contract_address: Bridge contract address (used for ABI lookup).
+            source_chain:     Chain the transaction occurred on.
+
+        Returns:
+            Synthetic correlation dict compatible with ``build_hop_node`` /
+            ``build_dest_node``, or None if no cross-chain destination was found.
+        """
+        if self._pg is None:
+            return None
+
+        # Solana path: query raw_solana_instructions and apply the heuristic
+        # instruction decoder.  Solana tx signatures are base58 (mixed case) so
+        # they must NOT be lowercased.
+        if source_chain == "solana":
+            return await self._calldata_destination_solana(tx_hash, contract_address)
+
+        # Fetch raw calldata from the event store.
+        try:
+            async with self._pg.acquire() as conn:
+                input_data: Optional[bytes] = await conn.fetchval(
+                    """
+                    SELECT input_data
+                    FROM raw_transactions
+                    WHERE blockchain = $1
+                      AND tx_hash = $2
+                    LIMIT 1
+                    """,
+                    source_chain,
+                    tx_hash.lower(),
+                )
+        except Exception as exc:
+            logger.debug(
+                "BridgeHopCompiler: input_data fetch failed for %s/%s: %s",
+                source_chain,
+                tx_hash[:16],
+                exc,
+            )
+            return None
+
+        if not input_data:
+            return None
+
+        try:
+            from src.trace_compiler.calldata.decoder import decode_bridge_destination
+
+            dest = await decode_bridge_destination(
+                input_data=input_data,
+                contract_address=contract_address,
+                chain=source_chain,
+                redis_client=self._redis,
+            )
+        except Exception as exc:
+            logger.debug(
+                "BridgeHopCompiler: calldata decode failed for %s/%s: %s",
+                source_chain,
+                tx_hash[:16],
+                exc,
+            )
+            return None
+
+        if dest is None:
+            return None
+
+        logger.info(
+            "BridgeHopCompiler: calldata decoded destination %s (%s) for tx %s "
+            "(function=%s, confidence=%.2f)",
+            dest.destination_address,
+            dest.destination_chain,
+            tx_hash[:16],
+            dest.source_function,
+            dest.confidence,
+        )
+
+        return {
+            "protocol": None,
+            "mechanism": None,
+            "source_chain": source_chain,
+            "destination_chain": dest.destination_chain,
+            "destination_address": dest.destination_address,
+            "source_asset": None,
+            "destination_asset": None,
+            "source_amount": 0.0,
+            "destination_amount": None,
+            "time_delta_seconds": None,
+            "correlation_confidence": dest.confidence,
+            "status": "completed",
+            "order_id": None,
+            "destination_tx_hash": None,
+        }
+
+    async def _calldata_destination_solana(
+        self,
+        tx_hash: str,
+        program_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Extract a cross-chain destination from a Solana bridge instruction.
+
+        Queries ``raw_solana_instructions`` for instruction data stored during
+        live-fetch ingest, then applies the heuristic Solana decoder which
+        scans for ABI-padded EVM addresses and Tron addresses encoded inline
+        in the instruction payload.
+
+        Solana tx signatures are base58 (mixed-case) and must NOT be
+        lowercased when used as a DB key.
+
+        Args:
+            tx_hash:    Solana transaction signature (base58).
+            program_id: Bridge program address (used for logging / decoder).
+
+        Returns:
+            Synthetic correlation dict or None if no destination found.
+        """
+        # Fetch the raw instruction bytes stored as hex in decoded_args during
+        # live-fetch ingest.  The outermost instruction (lowest ix_index) for
+        # the given program is used — bridges encode the destination there.
+        # raw_transactions cannot be used here because it has a UNIQUE constraint
+        # on (blockchain, tx_hash) and is reserved for real SOL transfer rows.
+        try:
+            async with self._pg.acquire() as conn:
+                raw_hex: Optional[str] = await conn.fetchval(
+                    """
+                    SELECT decoded_args->>'raw_data'
+                    FROM raw_solana_instructions
+                    WHERE tx_signature = $1
+                      AND program_id   = $2
+                      AND decode_status = 'raw'
+                      AND decoded_args ? 'raw_data'
+                    ORDER BY ix_index ASC
+                    LIMIT 1
+                    """,
+                    tx_hash,
+                    program_id,
+                )
+        except Exception as exc:
+            logger.debug(
+                "BridgeHopCompiler: solana ix fetch failed for %s/%s: %s",
+                tx_hash[:16], program_id[:16], exc,
+            )
+            return None
+
+        if not raw_hex:
+            return None
+
+        try:
+            input_data = bytes.fromhex(raw_hex)
+        except ValueError:
+            logger.debug(
+                "BridgeHopCompiler: invalid hex in decoded_args for %s/%s",
+                tx_hash[:16], program_id[:16],
+            )
+            return None
+
+        try:
+            from src.trace_compiler.calldata.solana_decoder import (
+                decode_solana_bridge_destination,
+            )
+
+            dest = decode_solana_bridge_destination(input_data, program_id)
+        except Exception as exc:
+            logger.debug(
+                "BridgeHopCompiler: solana decode failed %s/%s: %s",
+                tx_hash[:16], program_id[:16], exc,
+            )
+            return None
+
+        if dest is None:
+            return None
+
+        logger.info(
+            "BridgeHopCompiler: solana heuristic decoded destination %s (%s) "
+            "for tx %s (confidence=%.2f)",
+            dest.destination_address,
+            dest.destination_chain,
+            tx_hash[:16],
+            dest.confidence,
+        )
+
+        return {
+            "protocol": None,
+            "mechanism": None,
+            "source_chain": "solana",
+            "destination_chain": dest.destination_chain,
+            "destination_address": dest.destination_address,
+            "source_asset": None,
+            "destination_asset": None,
+            "source_amount": 0.0,
+            "destination_amount": None,
+            "time_delta_seconds": None,
+            "correlation_confidence": dest.confidence,
+            "status": "completed",
+            "order_id": None,
+            "destination_tx_hash": None,
+        }
+
+    # ------------------------------------------------------------------
     # Unified entry point used by chain compiler _build_graph()
     # ------------------------------------------------------------------
 
@@ -458,6 +672,18 @@ class BridgeHopCompiler:
                     tx_hash[:16],
                     exc,
                 )
+
+        # If still unresolved, attempt calldata-based destination extraction.
+        # This decodes the destination cross-chain address directly from the
+        # transaction input field using the bridge contract's verified ABI or
+        # heuristic pattern scanning — covering custodial bridges like Bridgers
+        # that embed the destination address as a calldata parameter.
+        if correlation is None:
+            correlation = await self._calldata_destination(
+                tx_hash=tx_hash,
+                contract_address=to_address,
+                source_chain=source_chain,
+            )
 
         hop_node = self.build_hop_node(
             protocol=protocol,

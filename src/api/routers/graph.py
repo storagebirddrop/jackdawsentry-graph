@@ -2010,7 +2010,122 @@ from src.trace_compiler.models import (  # noqa: E402
     SessionCreateResponse,
     SessionSnapshotRequest,
     SessionSnapshotResponse,
+    TxResolveResponse,
 )
+
+# Native asset symbol per blockchain — used by the tx resolve endpoint.
+_NATIVE_ASSET: dict[str, str] = {
+    "ethereum": "ETH",
+    "bsc": "BNB",
+    "polygon": "MATIC",
+    "arbitrum": "ETH",
+    "base": "ETH",
+    "avalanche": "AVAX",
+    "optimism": "ETH",
+    "starknet": "ETH",
+    "injective": "INJ",
+    "tron": "TRX",
+    "solana": "SOL",
+    "xrp": "XRP",
+    "cosmos": "ATOM",
+    "sui": "SUI",
+    "bitcoin": "BTC",
+    "litecoin": "LTC",
+    "bitcoin_cash": "BCH",
+    "dogecoin": "DOGE",
+    "lightning": "BTC",
+}
+
+
+@router.get("/resolve-tx", response_model=TxResolveResponse)
+async def resolve_transaction(
+    chain: str = Query(..., description="Blockchain name (e.g. 'ethereum', 'bsc')"),
+    tx: str = Query(..., description="Transaction hash to resolve"),
+    current_user: User = Depends(check_permissions([PERMISSIONS["read_blockchain"]])),
+):
+    """Resolve a transaction hash to its participant addresses.
+
+    Useful for seeding an investigation from a transaction rather than an
+    address.  The caller can then create a session from ``from_address`` or
+    ``to_address`` depending on which party they want to investigate.
+
+    Resolution order:
+    1. ``raw_transactions`` table (instant, offline).
+    2. Chain RPC client ``get_transaction()`` (live, may be slow).
+
+    Returns ``found=False`` when neither source can locate the transaction.
+    """
+    # Normalise: strip whitespace, lowercase.
+    tx_hash = tx.strip().lower()
+    chain = chain.strip().lower()
+    # EVM hashes are stored with a 0x prefix; UTXO/Solana hashes are bare hex,
+    # so only add the prefix when the chain is an EVM-family chain.
+    _EVM_CHAINS = {
+        "ethereum", "polygon", "bsc", "arbitrum", "base",
+        "avalanche", "optimism", "starknet", "injective",
+    }
+    if (
+        chain in _EVM_CHAINS
+        and len(tx_hash) == 64
+        and all(c in '0123456789abcdef' for c in tx_hash)
+    ):
+        tx_hash = '0x' + tx_hash
+
+    # Try the event store first — fast and works offline.
+    row = None
+    try:
+        pg = get_postgres_pool()
+        async with pg.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT tx_hash, from_address, to_address,
+                       value_native, timestamp, block_number, status
+                FROM raw_transactions
+                WHERE blockchain = $1 AND tx_hash = $2
+                LIMIT 1
+                """,
+                chain,
+                tx_hash,
+            )
+    except Exception as exc:
+        logger.warning("resolve_transaction: DB lookup failed for %s/%s: %s", chain, tx_hash, exc)
+
+    if row is not None:
+        return TxResolveResponse(
+            found=True,
+            tx_hash=row["tx_hash"],
+            blockchain=chain,
+            from_address=row["from_address"],
+            to_address=row["to_address"],
+            value_native=row["value_native"],
+            asset_symbol=_NATIVE_ASSET.get(chain),
+            timestamp=row["timestamp"],
+            block_number=row["block_number"],
+            status=row["status"],
+        )
+
+    # Fall back to live RPC lookup.
+    try:
+        rpc = get_rpc_client(chain)
+        if rpc is not None:
+            tx_obj = await rpc.get_transaction(tx_hash)
+            if tx_obj is not None:
+                return TxResolveResponse(
+                    found=True,
+                    tx_hash=tx_obj.hash,
+                    blockchain=chain,
+                    from_address=tx_obj.from_address,
+                    to_address=tx_obj.to_address,
+                    value_native=float(tx_obj.value) if tx_obj.value is not None else None,
+                    asset_symbol=_NATIVE_ASSET.get(chain),
+                    timestamp=tx_obj.timestamp,
+                    block_number=tx_obj.block_number,
+                    status=tx_obj.status,
+                )
+    except Exception as exc:
+        logger.warning("resolve_transaction: RPC lookup failed for %s/%s: %s", chain, tx_hash, exc)
+
+    return TxResolveResponse(found=False, tx_hash=tx_hash, blockchain=chain)
 
 
 @router.post("/sessions", response_model=SessionCreateResponse)

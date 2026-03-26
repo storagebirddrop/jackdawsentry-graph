@@ -177,6 +177,11 @@ _SEED_EVM_RAW: List[tuple] = [
     ("0xc3d688b66703497daa19211eedff47f25384cdc3", "Compound V3", "defi", "lending", "low"),
     # MakerDAO DSS / DAI proxy
     ("0x9759a6ac90977b93b58547b4a71c78317f391a28", "MakerDAO", "defi", "service", "low"),
+    # --- Bridgers (bridgers.xyz) — ETH/BSC ↔ TRC-20 custodial bridge ---
+    # V2 router (Bridge To V2 method) — primary USDT/USDC cross-chain swap contract
+    ("0xfd6ead5eab787df0decf409f6b088312e7b38e6b", "Bridgers", "bridge", "bridge", "medium"),
+    # Secondary/V1 router
+    ("0xb685760ebd368a891f27ae547391f4e2a289895b", "Bridgers", "bridge", "bridge", "medium"),
 ]
 
 # ---------------------------------------------------------------------------

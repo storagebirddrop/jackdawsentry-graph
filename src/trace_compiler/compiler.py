@@ -479,6 +479,28 @@ class TraceCompiler:
                 chain,
                 node_type,
             )
+            return ExpansionResponseV2(
+                operation_id=new_operation_id(),
+                operation_type=request.operation_type,
+                session_id=session_id,
+                seed_node_id=request.seed_node_id,
+                seed_lineage_id=request.seed_lineage_id,
+                branch_id=_branch,
+                expansion_depth=0,
+                added_nodes=[],
+                added_edges=[],
+                has_more=False,
+                ingest_pending=False,
+                pagination=PaginationMeta(
+                    page_size=request.options.page_size,
+                    max_results=request.options.max_results,
+                    has_more=False,
+                ),
+                layout_hints=LayoutHints(),
+                chain_context=ChainContext(),
+                asset_context=AssetContext(),
+                timestamp=datetime.now(timezone.utc),
+            )
 
         # When the event store has no data for this address, queue an
         # on-demand ingest so future expansions are served from live data.

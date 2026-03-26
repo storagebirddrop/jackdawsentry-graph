@@ -46,7 +46,7 @@ export default function AddressNode({ data, selected }: NodeProps) {
   const [copied, setCopied] = useState(false);
   const [hoverPrev, setHoverPrev] = useState(false);
   const [hoverNext, setHoverNext] = useState(false);
-  const copyTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const copyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Cleanup timeout on unmount
   useEffect(() => {

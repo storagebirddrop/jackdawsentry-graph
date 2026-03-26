@@ -392,3 +392,16 @@ export interface IngestStatusResponse {
   tx_count?: number;
   error?: string;
 }
+
+export interface TxResolveResponse {
+  found: boolean;
+  tx_hash: string;
+  blockchain: string;
+  from_address?: string;
+  to_address?: string;
+  value_native?: number;
+  asset_symbol?: string;
+  timestamp?: string;
+  block_number?: number;
+  status?: string;
+}

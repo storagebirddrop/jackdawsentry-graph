@@ -12,6 +12,7 @@ import type {
   ExpansionResponseV2,
   BridgeHopStatusResponse,
   IngestStatusResponse,
+  TxResolveResponse,
 } from '../types/graph';
 
 const API_BASE = '/api/v1';
@@ -140,4 +141,21 @@ export async function getIngestStatus(
     { headers: authHeaders(), credentials: 'same-origin' },
   );
   return handleResponse<IngestStatusResponse>(res);
+}
+
+/** Resolve a transaction hash to its sender and receiver addresses.
+ *
+ * Returns found=false when neither the event store nor the live RPC
+ * can locate the transaction.
+ */
+export async function resolveTx(
+  chain: string,
+  txHash: string,
+): Promise<TxResolveResponse> {
+  const params = new URLSearchParams({ chain, tx: txHash });
+  const res = await fetch(
+    `${API_BASE}/graph/resolve-tx?${params.toString()}`,
+    { headers: authHeaders(), credentials: 'same-origin' },
+  );
+  return handleResponse<TxResolveResponse>(res);
 }

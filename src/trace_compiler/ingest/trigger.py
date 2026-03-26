@@ -2,8 +2,9 @@
 
 Called by TraceCompiler.expand() when the chain compiler returns an empty
 result set (no events in the raw event store for the queried address).
-Queues a row in ``address_ingest_queue`` so the AddressIngestWorker can
-fetch and store recent history for that address on the next polling cycle.
+Queues a row in ``address_ingest_queue`` and, when an Etherscan API key is
+available, immediately fires a background live-fetch task so the data
+arrives within seconds rather than waiting for an external ingest worker.
 
 Guarantees:
 - One active (pending/running) row per (address, blockchain) — idempotent.
@@ -11,13 +12,16 @@ Guarantees:
   the expansion response.
 - Newly queued addresses always have ``priority = 1`` (slightly above default
   background backfill) so investigator-driven requests are served first.
+- Recently-completed queue entries (within 1 hour) suppress re-queuing to
+  avoid hammering the Etherscan API for addresses with no on-chain history.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from typing import Any
-from typing import Optional
+import os
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -33,10 +37,14 @@ async def maybe_trigger_address_ingest(
 ) -> bool:
     """Queue an address ingest if no data exists and no request is pending.
 
-    Checks whether ``raw_transactions`` already has any rows for this
-    (address, chain) pair before inserting.  If data already exists —
-    meaning the expansion was empty for other reasons (e.g. filtered out
+    Checks whether ``raw_transactions`` or ``raw_token_transfers`` already
+    has rows for this (address, chain) pair before inserting.  If data
+    exists — meaning the expansion was empty for other reasons (e.g. filtered
     by options) — no queue entry is created.
+
+    When an ``ETHERSCAN_API_KEY`` environment variable is set and the chain
+    is supported, fires a background live-fetch task immediately after
+    queuing so data arrives within seconds.
 
     Args:
         address:  Lowercase address to ingest (EVM hex, Solana base58, etc.).
@@ -51,8 +59,7 @@ async def maybe_trigger_address_ingest(
 
     try:
         async with pg_pool.acquire() as conn:
-            # Check whether raw_transactions already has data for this address.
-            # Check if any transactions exist for this address
+            # Check whether the event store already has data for this address.
             has_transactions = await conn.fetchval(
                 """
                 SELECT EXISTS (
@@ -67,10 +74,8 @@ async def maybe_trigger_address_ingest(
                 address,
             )
             if has_transactions:
-                # Data exists — expansion was empty for other reasons.
                 return False
 
-            # Also check raw_token_transfers (ERC-20 / SPL token activity).
             has_token_transfers = await conn.fetchval(
                 """
                 SELECT EXISTS (
@@ -85,6 +90,30 @@ async def maybe_trigger_address_ingest(
                 address,
             )
             if has_token_transfers:
+                return False
+
+            # Suppress re-queuing when a completed entry already exists within
+            # the last hour — the address likely has no on-chain history.
+            recently_fetched = await conn.fetchval(
+                """
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM address_ingest_queue
+                    WHERE address = $1
+                      AND blockchain = $2
+                      AND status = 'completed'
+                      AND completed_at > NOW() - INTERVAL '1 hour'
+                )
+                """,
+                address,
+                chain,
+            )
+            if recently_fetched:
+                logger.debug(
+                    "Skipping re-queue for %s/%s — completed within last hour",
+                    address,
+                    chain,
+                )
                 return False
 
             # No data found — insert a queue entry if one isn't already active.
@@ -111,10 +140,56 @@ async def maybe_trigger_address_ingest(
                     chain,
                     result,
                 )
-            return triggered
 
     except Exception as exc:
         logger.warning(
             "maybe_trigger_address_ingest failed for %s/%s: %s", address, chain, exc
         )
         return False
+
+    if not triggered:
+        return False
+
+    # --- Live fetch (standalone mode) ----------------------------------------
+    # Fire a background coroutine immediately after queuing so data arrives
+    # within seconds rather than waiting for an external ingest worker.
+    # All live fetch paths are best-effort — failures never block the response.
+
+    # EVM chains: Etherscan v2 API
+    api_key = os.environ.get("ETHERSCAN_API_KEY", "").strip()
+    if api_key:
+        try:
+            from src.trace_compiler.ingest.live_fetch import (
+                fetch_evm_address_history,
+                supported_chain,
+            )
+
+            if supported_chain(chain):
+                asyncio.ensure_future(
+                    fetch_evm_address_history(address, chain, pg_pool, api_key)
+                )
+                logger.info("Fired background EVM live fetch for %s on %s", address, chain)
+        except Exception as exc:
+            logger.debug("Failed to fire EVM live fetch for %s/%s: %s", address, chain, exc)
+
+    # Solana: JSON-RPC getSignaturesForAddress + getTransaction
+    if chain == "solana":
+        rpc_url = os.environ.get("SOLANA_RPC_URL", "").strip() or None
+        if rpc_url:
+            try:
+                from src.trace_compiler.ingest.solana_live_fetch import (
+                    fetch_solana_address_history,
+                )
+
+                asyncio.ensure_future(
+                    fetch_solana_address_history(address, pg_pool, rpc_url)
+                )
+                logger.info("Fired background Solana live fetch for %s", address)
+            except Exception as exc:
+                logger.debug("Failed to fire Solana live fetch for %s: %s", address, exc)
+        else:
+            logger.debug(
+                "Solana live fetch skipped for %s — SOLANA_RPC_URL not configured", address
+            )
+
+    return True

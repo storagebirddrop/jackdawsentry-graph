@@ -319,6 +319,13 @@ _SEED_SERVICES: List[_ServiceRecord] = [
             "solana": [
                 "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",  # AMM v4
                 "5quBtoiQqxF9Jv6KYKctB59NT3gtJD2Y65kdnB1Uev3h",  # AMM stable
+                # AMM v4 pool authority PDA — all v4 pool token vaults are
+                # owned by this address, so it appears as the transfer
+                # counterparty after ATA resolution in the live-fetched data.
+                "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1",
+                # Raydium Route program — outer instruction for multi-hop swaps
+                # that internally call the AMM v4 program.
+                "routeUGWgWzqBWFcrCfv8tritsqukccJPu3q5GPP3xS",
             ],
         },
     ),

@@ -216,11 +216,16 @@ def create_graph_app() -> FastAPI:
 
     @app.get("/health", tags=["Health"])
     async def health_check():
-        """Basic graph-runtime health check."""
+        """Basic graph-runtime health check.
+
+        Also exposes ``auth_disabled`` so the frontend can skip the login
+        redirect when running in unauthenticated development mode.
+        """
         return {
             "status": "healthy",
             "service": "Jackdaw Sentry Graph API",
             "version": "1.0.0",
+            "auth_disabled": settings.GRAPH_AUTH_DISABLED,
         }
 
     @app.get("/health/detailed", tags=["Health"])

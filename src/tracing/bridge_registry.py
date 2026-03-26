@@ -1,6 +1,6 @@
 """
 Jackdaw Sentry — Bridge Protocol Registry
-Structured definitions for all 15 supported cross-chain bridge protocols.
+Structured definitions for all 16 supported cross-chain bridge protocols.
 
 Each ``BridgeProtocol`` record describes:
 - The protocol's on-chain contract addresses per chain (for ingress detection)
@@ -28,6 +28,8 @@ class BridgeProtocol:
     #   burn_release — Celer, Synapse: burn on source chain, release on destination
     #   solver       — deBridge, Mayan, Squid, LI.FI, Rango, Relay: off-chain solver fills
     #   liquidity    — Stargate, Across: AMM liquidity pools on both sides
+    #   custodial    — Bridgers: assets held by a centralised custodian; operator
+    #                  releases equivalent tokens on the destination chain
     mechanism: str
     supported_chains: List[str]
     # Contract addresses per chain — used to detect bridge ingress in on-chain data.
@@ -44,7 +46,7 @@ class BridgeProtocol:
 
 
 # ---------------------------------------------------------------------------
-# Registry of all 15 required bridge protocols
+# Registry of all 16 registered bridge protocols
 # ---------------------------------------------------------------------------
 
 BRIDGE_REGISTRY: Dict[str, BridgeProtocol] = {
@@ -278,6 +280,14 @@ BRIDGE_REGISTRY: Dict[str, BridgeProtocol] = {
             "ethereum": ["0x7DBF07Ad92Ed4e26746Ef4cc6c7BcA8B4849BEBb"],
             "bsc": ["0x7DBF07Ad92Ed4e26746Ef4cc6c7BcA8B4849BEBb"],
             "tron": ["TDPs9gtEqU1iUqiR7g7GKuPi1BMNfCRHV"],
+            # Solana: bridge program ID + known pool authority account (USDC).
+            # The ATA counterparty resolves to the pool authority after ATA resolution;
+            # the program ID is checked for instruction-level detection.
+            "solana": [
+                "BrdgN2RPzEMWF96ZbnnJaUtQDQx7VRXYaHHbYCBvceWB",  # Allbridge Core program
+                "7DyZQw3iV5zhHssnNA6Nopi5zc8NGLbYjHMcaok6NN66",  # USDC pool authority
+                "9zo9Dp5i626GXUkXLynYpYgHK94FwyF75CL16rXCKLoU",   # bridge state PDA
+            ],
         },
     ),
 
@@ -333,6 +343,38 @@ BRIDGE_REGISTRY: Dict[str, BridgeProtocol] = {
             "arbitrum": ["0xa5f565650890fba1824ee0f21ebbbf660a179934"],
             "base": ["0xa5f565650890fba1824ee0f21ebbbf660a179934"],
             "optimism": ["0xa5f565650890fba1824ee0f21ebbbf660a179934"],
+        },
+    ),
+
+    # Bridgers (bridgers.xyz) — custodial cross-chain swap bridge focused on
+    # ETH/BSC ↔ TRC-20 (Tron) routes.  Unlike decentralised bridges, Bridgers
+    # operates a custodial backend; there is no public correlation API.
+    # Contract addresses verified against Etherscan labels and on-chain data.
+    # The V2 router replaced the V1 contract; both are tracked here.
+    "bridgers": BridgeProtocol(
+        protocol_id="bridgers",
+        display_name="Bridgers",
+        # Custodial model: source funds are locked in the Bridgers contract;
+        # the operator releases equivalent tokens on the destination chain.
+        mechanism="custodial",
+        # Explorer at explorer.bridgers.xyz shows cross-chain tx status but
+        # has no documented public API for automated correlation.
+        api_base="https://explorer.bridgers.xyz",
+        quote_endpoint=None,
+        status_endpoint=None,
+        # Tron chain: Bridgers operates via custodial deposit addresses on Tron
+        # rather than a single fixed contract; no stable on-chain contract address
+        # is available for Tron-side detection.
+        supported_chains=["ethereum", "bsc", "tron"],
+        known_contract_addresses={
+            # Verified from on-chain transfer data (bridgers.xyz ETH contracts)
+            "ethereum": [
+                "0xfd6ead5eab787df0decf409f6b088312e7b38e6b",  # Bridgers V2 router (Bridge To V2)
+                "0xb685760ebd368a891f27ae547391f4e2a289895b",  # Bridgers secondary router
+            ],
+            "bsc": [
+                "0xfd6ead5eab787df0decf409f6b088312e7b38e6b",  # Bridgers V2 (BSC, same addr)
+            ],
         },
     ),
 }

@@ -179,27 +179,11 @@ Acceptance criteria:
 - [x] TypeScript: `npx tsc --noEmit` passes with 0 errors
 - [x] 546 unit tests pass (538 prior + 8 new)
 
-## Bridge Log-Decode Resolution Pass [IN PROGRESS]
+## Bridge Log-Decode Resolution Pass [COMPLETE — ADR-022]
 
 Goal:
 - resolve the 6 bridge protocols that stay `status=pending` because they require
   an intermediate ID extracted from decoded event logs, not the tx hash alone
-
-Context:
-- `BridgeHopCompiler.process_row()` now calls `BridgeTracer.detect_bridge_hop()`
-  inline on first encounter and caches results in `bridge_correlations`
-- 9 of 15 protocols resolve immediately via tx hash (THORChain, Wormhole,
-  Allbridge, Synapse, LI.FI, Squid, Mayan, deBridge, Symbiosis)
-- 5 protocols fully resolved:
-  - Across: log-decode V3FundsDeposited → depositId → status API (completed/pending)
-  - Celer: log-decode Send → transferId → POST status API (completed/pending)
-  - Stargate: log-decode Swap → LayerZero chainId → dest chain labelled (no dest tx)
-  - Rango: txId-based status API (no log decode needed)
-  - Relay: originTxHash-based API search (no log decode needed)
-- 1 protocol partially resolved:
-  - Chainflip: log-decode SwapNative/SwapToken → dest chain labelled (swap_id unavailable)
-    swap_id (broker deposit channel ID) is not emitted as an EVM event and
-    requires broker API integration to fully resolve; noted for future pass
 
 Acceptance criteria:
 - [x] `src/tracing/bridge_log_decoder.py` — fetches tx receipt via aiohttp,
@@ -212,8 +196,45 @@ Acceptance criteria:
 - [x] `EthereumCollector._extract_dex_logs` extended to also store bridge events
       (Across, Celer, Stargate, Chainflip) in `raw_evm_logs` for future txs
 - [~] Chainflip: dest chain labelled but status stays `pending` — swap_id (broker
-      deposit channel ID) is not emitted as an EVM event and requires broker API
-      integration to fully resolve; noted for future pass
+      deposit channel ID) is not emitted as an EVM event; broker API integration
+      required for full resolution; deferred
+
+## Solana Live Ingest & Coverage Pass [COMPLETE — ADR-025]
+
+Goal:
+- fix Solana live ingest reliability (RPC rate limits dropping transactions) and
+  extend Solana graph coverage to unknown DEX programs and bridge instruction decoding
+
+Acceptance criteria:
+- [x] `src/trace_compiler/ingest/solana_live_fetch.py` — full SPL balance-diff
+      ingest; `_rpc_post` retries on HTTP 429 and JSON-RPC error code 429 with
+      12 s back-off (3 retries); `_TX_BATCH_SIZE=1` enforces serial fetching
+- [x] `_parse_transaction` returns 4-tuple including `ix_rows` — base58-decoded
+      instruction bytes for unrecognised programs, stored in
+      `raw_solana_instructions.decoded_args` as `{"raw_data": hex}` (avoids the
+      `UNIQUE ON (blockchain, tx_hash)` conflict in `raw_transactions`)
+- [x] `src/trace_compiler/calldata/solana_decoder.py` — heuristic scanner:
+      EVM-padded address (12 zero + 20 non-zero bytes) and Tron address (0x41 + 20
+      bytes → base58check); inline base58 implementation (no external library)
+- [x] `BridgeHopCompiler._calldata_destination` routes Solana to new
+      `_calldata_destination_solana` method — preserves base58 case, queries
+      `raw_solana_instructions` directly, avoids `tx_hash.lower()` corruption
+- [x] `src/trace_compiler/chains/solana.py` `_build_graph` — generic swap_event
+      promotion for unregistered DEX programs (`elif service_record is None` +
+      `_maybe_build_solana_swap_event`); dedup by local `generic_swap_seen` set
+      (not a `self` attribute — resets correctly between expansion calls)
+- [x] `trigger.py` — adds `recently_fetched` suppression (1-hour window);
+      fires background `fetch_evm_address_history` (EVM) and
+      `fetch_solana_address_history` (Solana) immediately after queuing
+- [x] `bridge_registry.py` — Allbridge Core Solana program + pool authority
+      accounts added; Bridgers (bridgers.xyz) ETH/BSC custodial bridge registered
+- [x] `service_classifier.py` — Raydium AMM v4 pool authority PDA and Route
+      program added as Solana DEX entries
+- [ ] **Tech debt (deferred)**: `trigger.py` `_make_pg_pool` mock in
+      `test_on_demand_ingest.py` handles 3 `fetchval` calls but trigger now makes
+      4; `test_trigger_queues_row_when_no_data` will fail — needs mock update
+- [ ] **Tech debt (deferred)**: no unit tests for `solana_decoder.py`,
+      `_calldata_destination_solana`, generic swap path, or `ix_rows` persist path
 
 ## Attribution & Sanctions Data Pass [COMPLETE — ADR-021]
 

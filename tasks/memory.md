@@ -93,9 +93,10 @@ Read this file before touching graph schema, graph API, trace compiler semantics
 
 ### ADR-019
 - Empty graph frontiers should not remain dead ends when ingestion can help.
-  The near-term target is on-demand address-targeted ingest when expansion hits
-  an empty frontier, while keeping the request-serving graph API isolated from
-  long-running collector work.
+  On-demand ingest fires immediately in standalone mode: `trigger.py` queues
+  `address_ingest_queue` AND fires `fetch_evm_address_history` / `fetch_solana_address_history`
+  as background coroutines so data arrives within seconds, not on the next worker poll.
+  The request-serving graph API remains isolated — live fetchers run via `asyncio.ensure_future`.
 
 ### ADR-020
 - EVM `swap_event` generation is now active for known DEX and aggregator
@@ -169,6 +170,36 @@ Read this file before touching graph schema, graph API, trace compiler semantics
 - XRP seed: Kraken, Coinbase, Bitstamp (3 entries; Bithomp/XRPSCAN); inactive Binance omitted
 - Remaining gap: Cosmos and Sui (JS-gated explorers blocked address verification)
 
+### ADR-025 (COMPLETE — Solana Live Ingest & Coverage Pass)
+- `solana_live_fetch.py` uses sequential `getTransaction` fetching (`_TX_BATCH_SIZE=1`)
+  with 12 s 429 back-off (3 retries) to survive public RPC rate limits. Both HTTP 429
+  and JSON-RPC error-code 429 are handled.
+- Instruction bytes for unrecognised programs stored in `raw_solana_instructions.decoded_args`
+  as `{"raw_data": hex}` — NOT `raw_transactions.input_data`, which has a UNIQUE constraint on
+  `(blockchain, tx_hash)` and would conflict with real SOL transfer rows.
+- `src/trace_compiler/calldata/solana_decoder.py` — heuristic scanner; 12-zero-byte + 20-byte
+  EVM address pattern and Tron 0x41 prefix pattern; inline base58 (no external library);
+  confidence 0.75 (best-effort, not authoritative).
+- `BridgeHopCompiler._calldata_destination` routes Solana to `_calldata_destination_solana`
+  before EVM path — avoids `tx_hash.lower()` which corrupts base58 signatures.
+- `SolanaChainCompiler._build_graph` generic swap fallback: `elif service_record is None`
+  attempts `_maybe_build_solana_swap_event` for any unregistered counterparty that has both
+  SPL legs. Dedup via local `generic_swap_seen: set` per `_build_graph` call — not `self`
+  (a `self`-level cache would block correct promotion on subsequent expand calls).
+- Known limitation: Allbridge encodes the bridge destination in an ephemeral PDA, not in
+  instruction bytes — heuristic scanner returns None for it; BridgeTracer API path is primary.
+- Known tech debt: `test_on_demand_ingest.py` mock needs updating (3 → 4 `fetchval` calls);
+  no tests yet for `solana_decoder`, `_calldata_destination_solana`, or generic swap path.
+- Bug-fix patch (2026-03-26):
+  - `get_transaction` (`graph.py`): `0x` prefix now gated on `chain in _EVM_CHAINS`; UTXO/Solana
+    hashes preserved as bare hex/base58.
+  - Migration 015 (`015_raw_transactions_transfer_index.sql`): create `raw_tx_unique_new` first,
+    drop `raw_tx_unique`, then rename — no uniqueness window.
+  - `live_fetch.py`: `from` field access changed to `(row.get("from") or "").lower() or None`
+    to guard against explicit JSON `null`.
+  - `solana_live_fetch.py`: added `if not senders: continue` guard in receiver pairing loop
+    to prevent `IndexError` on mint-only (airdrop) transfers.
+
 ## Guardrails
 
 - Do not widen this repo into the private compliance dashboard.
@@ -181,6 +212,10 @@ Read this file before touching graph schema, graph API, trace compiler semantics
 - Do not invent swap semantics from thin evidence. Only emit `swap_event`
   when both asset legs can be justified from persisted transaction context;
   otherwise keep the activity as a generic `service` interaction.
+- Do not prefix tx hashes with `0x` unconditionally. Only EVM-family chains
+  (ethereum, polygon, bsc, arbitrum, base, avalanche, optimism, starknet,
+  injective) store hashes with the `0x` prefix. UTXO and Solana hashes are
+  bare hex or base58 and must never be prefixed.
 - Do not treat graph-safe enrichment as optional in the long term. The target
   product behavior is immediate screening and labeling of newly discovered
   addresses within the session flow.
