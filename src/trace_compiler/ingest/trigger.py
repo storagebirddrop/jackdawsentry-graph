@@ -192,4 +192,20 @@ async def maybe_trigger_address_ingest(
                 "Solana live fetch skipped for %s — SOLANA_RPC_URL not configured", address
             )
 
+    # Tron: TronGrid v1 REST API
+    if chain == "tron":
+        tron_rpc_url = os.environ.get("TRON_RPC_URL", "").strip() or None
+        tron_api_key = os.environ.get("TRONGRID_API_KEY", "").strip() or None
+        try:
+            from src.trace_compiler.ingest.tron_live_fetch import (
+                fetch_tron_address_history,
+            )
+
+            asyncio.ensure_future(
+                fetch_tron_address_history(address, pg_pool, tron_rpc_url, tron_api_key)
+            )
+            logger.info("Fired background Tron live fetch for %s", address)
+        except Exception as exc:
+            logger.debug("Failed to fire Tron live fetch for %s: %s", address, exc)
+
     return True
