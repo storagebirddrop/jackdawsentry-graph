@@ -8,7 +8,28 @@
 Support via Lightning / Nostr:
 `npub1p0jkd532p3c0za2s7fugq0tx30xm2e4v03n6udkqze6ercyf5fesgsy9fv@npub.cash`
 
-Standalone investigation graph for blockchain tracing and session-based graph exploration.
+Jackdaw Sentry Graph is a self-hosted, open-source blockchain investigation tool built to make fund tracing accessible without expensive industry APIs.
+
+Most professional tracing tools require Chainalysis, Elliptic, or similar subscriptions. This project is built for everyone else: hack and scam victims trying to follow their funds, curious amateurs who want to understand what happened to their money, and under-resourced investigators who need a capable tool without the enterprise price tag.
+
+The ingest service is the core of that accessibility — it rehydrates traces using free-tier RPC endpoints so that the graph can expand even when you have no access to industry data feeds.
+
+Hard things this tool is specifically designed to handle:
+- tracing through smart contracts (EVM DEX swaps, aggregator hops, bridge contracts)
+- following cross-chain flows where assets bridge between networks
+- UTXO-level tracing on Bitcoin alongside account-model chains in the same session
+
+Current honest limits:
+- **Liquid**: peg-in and peg-out events are marked on the graph, but tracing does not continue inside the Liquid network
+- **Lightning**: channel open and close events are marked, but in-channel routing is not traceable
+
+## Important Disclaimer
+
+This project is a work in progress. The graph is a starting point for investigation, not a verdict. Results should never be treated as ground truth — address labels can be incomplete, heuristics can misfire, and the underlying data depends on what has been indexed.
+
+Use this tool to build a picture and generate leads, then verify what you find by reading the actual blockchain data. Part of the goal of this project is to encourage users to learn how blockchains and smart contracts work and can be read directly — not to produce a black box that hands you an answer. The more you understand the underlying data, the better you can judge what the graph is telling you.
+
+OFAC sanctions listings and known-address intelligence are being integrated incrementally. When an address matches a sanctions entry or a known entity, that will be surfaced on the graph — but absence of a flag does not mean an address is clean.
 
 ## Repo Posture
 
@@ -35,19 +56,32 @@ This repository is intentionally narrower than the private Jackdaw Sentry platfo
 
 - graph session creation and restore
 - graph expansion via `ExpansionResponse v2`
-- bridge hop status polling
+- bridge hop status polling and calldata-based destination decoding
+- on-demand address ingest when expansion hits an empty frontier
 - React investigation graph UI
 - graph-focused backend/runtime, contracts, and tests
 
+**Supported chains:** Bitcoin, Lightning Network, Ethereum, BSC, Polygon, Arbitrum, Base, Avalanche, Optimism, Starknet, Injective, Solana, Tron, XRP, Cosmos, Sui.
+
+**Node types on the canvas:** `address`, `entity`, `utxo`, `swap_event`, `atomic_swap`, `bridge_hop`, `btc_sidechain_peg`, `lightning_channel_open`, `lightning_channel_close`, `solana_instruction`, `cluster_summary`, `service`.
+
 ## Codebase Map
 
-- `src/api/graph_app.py` runs the standalone FastAPI graph runtime
-- `src/api/routers/graph.py` exposes graph session, expansion, search, trace,
-  and status endpoints
-- `src/trace_compiler/` owns the graph expansion contract and chain-aware
-  compilation logic
-- `frontend/app/` contains the React 19 + TypeScript investigation graph
-- `frontend/graph-login.html` is the static login shell served ahead of the app
+- `src/api/graph_app.py` — standalone FastAPI graph runtime entry point
+- `src/api/routers/graph.py` — graph session, expansion, search, trace, and status endpoints
+- `src/api/routers/auth.py` — JWT authentication endpoints
+- `src/trace_compiler/` — graph expansion contract and chain-aware compilation logic
+  - `chains/` — per-chain handlers: Bitcoin, EVM, Solana, Cosmos, Sui, Tron, XRP
+  - `bridges/` — bridge hop compilation and calldata-based destination decoding
+  - `calldata/` — EVM and Solana instruction decoder (ABI, Anchor discriminator, heuristic scanners)
+  - `ingest/` — on-demand live fetch trigger and chain-specific fetchers
+  - `services/` — address exposure and service classification
+  - `attribution/` — entity enrichment
+- `src/collectors/` — live blockchain data collectors (one per chain) with RPC abstraction layer, backfill, and address ingest worker
+- `src/tracing/` — bridge protocol registry, cross-chain bridge tracer, bridge log decoder
+- `src/services/` — sanctions screening, price oracle, contract info, entity attribution
+- `frontend/app/` — React 19 + TypeScript investigation graph (Zustand, XYFlow, ELK layout)
+- `frontend/graph-login.html` — static login shell served ahead of the app
 
 ## Quick Start
 
@@ -121,12 +155,10 @@ python scripts/dev/load_perf_fixture_dataset.py
 
 ## Recent Improvements
 
-The codebase has undergone significant enhancements for security, performance, and reliability:
-
-- **🔒 Security**: Fixed authentication bypass vulnerability with proper safeguards and audit logging
-- **🚀 Performance**: Optimized database queries, HTTP client usage, and enrichment processes  
-- **🐛 Reliability**: Enhanced error handling, stale row reclamation, and robust data validation
-- **🧪 Quality**: Improved test accuracy, fixed data formats, and enhanced code maintainability
+- **Security**: Resolved authentication bypass; added audit logging on sensitive endpoints
+- **Ingest**: Solana live fetch with SPL balance-diff parsing and rate-limit resilience; on-demand address trigger when expansion hits an empty frontier
+- **Semantic nodes**: EVM swap_event promotion from log-aware decoding; Solana generic DEX swap_event for unregistered programs; bridge calldata destination decoding via EVM ABI and Solana Anchor heuristics
+- **Reliability**: Enhanced error handling, stale row reclamation, null-safe JSON field access, robust data validation
 
 See [CHANGELOG.md](CHANGELOG.md) for detailed technical changes and migration notes.
 
@@ -166,32 +198,31 @@ chrome.
 
 ## Near-Term Product Priorities
 
-The next implementation wave is focused on semantic detection and immediate
-address intelligence so the graph can move closer to a true investigator-grade
-tracing product.
+Remaining work to reach full investigator-grade coverage:
 
-- deepen EVM `swap_event` detection from the current tx-leg inference path
-  into broader log-aware semantic decoding
-- decode Solana instructions into richer semantic activity nodes where program
-  flows clearly reveal swaps, routes, or protocol actions
-- upgrade bridge handling to persist and surface destination chain,
-  destination asset, and destination address directly
-- add on-demand address-targeted ingest when expansion hits an empty frontier
-- run mandatory address enrichment during session create / expand so newly
-  discovered addresses are screened and labeled immediately against sanctions,
-  AML / CFT, fraud, and entity datasets
+- run address enrichment during session create / expand so newly discovered
+  addresses are screened and labeled immediately against sanctions, AML / CFT,
+  fraud, and entity datasets
 - add a graph-safe enrichment adapter that stamps `risk_score`, `sanctioned`,
   `entity_*`, and fraud labels into the public graph contract
+- deepen EVM `swap_event` detection beyond the current tx-leg inference path
+  into full log-aware multi-hop routing decoding
+- resolve Allbridge Core bridge destinations from on-chain PDA state (currently
+  blocked: destination lives in an ephemeral PDA; requires BridgeTracer API)
 
-Current honest limitation:
-- bridge hops are active today
-- Lightning and BTC peg markers are active today
-- known EVM DEX / aggregator transactions can now promote into first-class
-  `swap_event` nodes when the raw event store can justify both asset legs
-- DEX / aggregator interactions with incomplete transaction context still fall
-  back to generic `service` nodes
-- first-class `swap_event` and `atomic_swap` generation are not yet broadly
-  active in the public graph flow
+What is active today:
+- bridge hops with protocol classification
+- Lightning channel open / close markers (tracing does not continue inside Lightning)
+- BTC peg-in / peg-out markers for Liquid (tracing does not continue inside Liquid)
+- EVM DEX / aggregator `swap_event` nodes when both asset legs are present
+  in the raw event store
+- Solana DEX `swap_event` nodes for registered protocols and generic fallback
+  for unregistered programs
+- Solana bridge instruction decoding via Anchor discriminator + EVM / Tron
+  address heuristics
+- on-demand address ingest when expansion hits an empty frontier
+- DEX / aggregator interactions with incomplete context still fall back to
+  generic `service` nodes
 
 Backend verification:
 
@@ -235,9 +266,6 @@ in this repository.
 
 For maintainer contact or private coordination, use
 `jackdawsentry.support@dawgus.com`.
-
-Support via Lightning / Nostr:
-`npub1p0jkd532p3c0za2s7fugq0tx30xm2e4v03n6udkqze6ercyf5fesgsy9fv@npub.cash`
 
 For security issues, do not open a public issue. Follow [SECURITY.md](SECURITY.md).
 
