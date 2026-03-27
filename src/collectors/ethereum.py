@@ -76,6 +76,8 @@ class EthereumCollector(BaseCollector):
         self.w3 = None
         self.latest_block_cache = None
         self.cache_timeout = 30  # seconds
+        self._token_symbol_cache: Dict[str, str] = {}
+        self._token_decimals_cache: Dict[str, int] = {}
 
     def get_stablecoin_contracts(self) -> Dict[str, str]:
         """Get stablecoin contracts for this blockchain"""
@@ -706,25 +708,23 @@ class EthereumCollector(BaseCollector):
                     # Decode amount (first 32 bytes of data)
                     amount = int(log["data"].hex(), 16)
 
-                    # Check if this is a stablecoin
                     contract_address = log["address"].hex()
-                    stablecoin_symbol = self.get_stablecoin_symbol(contract_address)
+                    symbol = await self.get_token_symbol(contract_address)
+                    decimals = await self.get_token_decimals(contract_address)
+                    amount_adjusted = amount / (10**decimals)
 
-                    if stablecoin_symbol:
-                        # Get decimals for the token
-                        decimals = await self.get_token_decimals(contract_address)
-                        amount_adjusted = amount / (10**decimals)
-
-                        transfers.append(
-                            {
-                                "symbol": stablecoin_symbol,
-                                "contract_address": contract_address,
-                                "from_address": from_address,
-                                "to_address": to_address,
-                                "amount": amount_adjusted,
-                                "decimals": decimals,
-                            }
-                        )
+                    transfers.append(
+                        {
+                            "symbol": symbol,
+                            "contract_address": contract_address,
+                            "from_address": from_address,
+                            "to_address": to_address,
+                            "amount_raw": amount,
+                            "amount_normalized": amount_adjusted,
+                            "decimals": decimals,
+                            "asset_type": "bep20" if self.blockchain == "bsc" else "erc20",
+                        }
+                    )
 
         except Exception as e:
             logger.error(f"Error parsing token transfers for {tx_hash}: {e}")
@@ -846,8 +846,54 @@ class EthereumCollector(BaseCollector):
                 return symbol
         return None
 
+    async def get_token_symbol(self, contract_address: str) -> str:
+        """Get a token symbol from the contract, with readable fallbacks."""
+        contract_key = contract_address.lower()
+        cached = self._token_symbol_cache.get(contract_key)
+        if cached:
+            return cached
+
+        stablecoin_symbol = self.get_stablecoin_symbol(contract_address)
+        if stablecoin_symbol:
+            self._token_symbol_cache[contract_key] = stablecoin_symbol
+            return stablecoin_symbol
+
+        fallback = (
+            f"{contract_address[:6]}...{contract_address[-4:]}"
+            if len(contract_address) > 12
+            else contract_address
+        )
+
+        try:
+            if not self.w3:
+                self._token_symbol_cache[contract_key] = fallback
+                return fallback
+
+            checksum_address = to_checksum_address(contract_address)
+            symbol = (
+                self.w3.eth.contract(address=checksum_address)
+                .functions.symbol()
+                .call()
+            )
+            if isinstance(symbol, bytes):
+                symbol = symbol.decode("utf-8", errors="ignore").strip("\x00")
+            symbol_text = str(symbol).strip()
+            if symbol_text:
+                self._token_symbol_cache[contract_key] = symbol_text.upper()
+                return self._token_symbol_cache[contract_key]
+        except Exception as e:
+            logger.debug(f"Error getting symbol for {contract_address}: {e}")
+
+        self._token_symbol_cache[contract_key] = fallback
+        return fallback
+
     async def get_token_decimals(self, contract_address: str) -> int:
         """Get token decimals from contract"""
+        contract_key = contract_address.lower()
+        cached = self._token_decimals_cache.get(contract_key)
+        if cached is not None:
+            return cached
+
         try:
             if not self.w3:
                 return 18  # Default to 18
@@ -860,11 +906,14 @@ class EthereumCollector(BaseCollector):
             )
 
             if result:
-                return int(result.hex(), 16)
+                decimals = int(result.hex(), 16)
+                self._token_decimals_cache[contract_key] = decimals
+                return decimals
 
         except Exception as e:
             logger.error(f"Error getting decimals for {contract_address}: {e}")
 
+        self._token_decimals_cache[contract_key] = 18
         return 18  # Default to 18
 
     async def monitor_pending_transactions(self):

@@ -284,6 +284,14 @@ export function riskLabel(score?: number): string {
   return 'low';
 }
 
+function hasMixerExposure(node: InvestigationNode, address?: AddressNodeData): boolean {
+  return Boolean(
+    address?.is_mixer
+    || node.entity_category === 'mixer'
+    || node.entity_type === 'mixer',
+  );
+}
+
 export function inferNodeChain(node: InvestigationNode): string | undefined {
   switch (node.node_type) {
     case 'address':
@@ -404,7 +412,7 @@ export function semanticMetaForNode(node: InvestigationNode): NodeSemanticMeta |
 
   if (node.node_type === 'address') {
     const address = (node.address_data ?? node.node_data) as AddressNodeData;
-    if (address.is_mixer) {
+    if (hasMixerExposure(node, address)) {
       return { key: 'exposure:mixer', label: 'Mixer', family: 'Exposure', color: '#7c3aed' };
     }
     if (address.is_coinjoin_halt) {
@@ -438,7 +446,7 @@ export function nodeGlyphKind(node: InvestigationNode): GlyphKind {
   if (node.node_type === 'address') {
     const address = (node.address_data ?? node.node_data) as AddressNodeData;
     if (address.is_sanctioned || node.sanctioned) return 'sanction';
-    if (address.is_mixer) return 'mixer';
+    if (hasMixerExposure(node, address)) return 'mixer';
     if (address.is_coinjoin_halt) return 'coinjoin';
     return 'address';
   }
@@ -466,7 +474,7 @@ export function semanticBadges(node: InvestigationNode): Array<{ label: string; 
     const address = (node.address_data ?? node.node_data) as AddressNodeData;
     return [
       ...((address.is_sanctioned || node.sanctioned) ? [{ label: 'Sanctioned', tone: '#dc2626' }] : []),
-      ...(address.is_mixer ? [{ label: 'Mixer', tone: '#7c3aed' }] : []),
+      ...(hasMixerExposure(node, address) ? [{ label: 'Mixer', tone: '#7c3aed' }] : []),
       ...(address.is_coinjoin_halt ? [{ label: 'CoinJoin', tone: '#b45309' }] : []),
       // entity_category set by enricher lives on node; address_data copy is a fallback.
       ...((node.entity_category ?? address.entity_category) ? [{ label: (node.entity_category ?? address.entity_category)!, tone: '#2563eb' }] : []),
@@ -550,7 +558,7 @@ export function isNodeVisibleInView(node: InvestigationNode, viewMode: GraphAppe
         address.label ||
         address.is_sanctioned ||
         node.sanctioned ||
-        address.is_mixer ||
+        hasMixerExposure(node, address) ||
         address.is_coinjoin_halt,
       );
     }

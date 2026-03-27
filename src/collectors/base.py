@@ -14,6 +14,9 @@ from dataclasses import field
 from datetime import datetime
 from datetime import timedelta
 from datetime import timezone
+from decimal import Decimal
+from decimal import InvalidOperation
+from decimal import ROUND_HALF_UP
 from typing import Any
 from typing import Dict
 from typing import List
@@ -228,6 +231,130 @@ class BaseCollector(ABC):
         """Get address transaction history"""
         pass
 
+    def _default_token_asset_type(self) -> str:
+        """Return the chain-default fungible token type label."""
+        if self.blockchain == "solana":
+            return "spl"
+        if self.blockchain == "tron":
+            return "trc20"
+        if self.blockchain == "bsc":
+            return "bep20"
+        return "erc20"
+
+    def _default_token_symbol(self, asset_contract: Optional[str]) -> str:
+        """Return a readable fallback symbol when token metadata is missing."""
+        if asset_contract:
+            if len(asset_contract) > 12:
+                return f"{asset_contract[:6]}...{asset_contract[-4:]}"
+            return asset_contract
+        return self.blockchain.upper()
+
+    def _infer_canonical_asset_id(self, asset_symbol: str) -> Optional[str]:
+        """Infer a canonical asset identifier for common token symbols."""
+        return {
+            "USDT": "usdt",
+            "USDC": "usdc",
+            "WETH": "weth",
+            "ETH": "eth",
+            "WBTC": "wbtc",
+            "BTC": "btc",
+            "BNB": "bnb",
+            "BUSD": "busd",
+            "SOL": "sol",
+            "TRX": "tron",
+            "DAI": "dai",
+            "JUP": "jup",
+            "BONK": "bonk",
+        }.get(asset_symbol.upper())
+
+    def _coerce_token_transfer(
+        self,
+        transfer: TokenTransfer | Dict[str, Any],
+        *,
+        tx_hash: str,
+        transfer_index: int,
+    ) -> TokenTransfer:
+        """Convert a loose collector token payload into a TokenTransfer."""
+        if isinstance(transfer, TokenTransfer):
+            return transfer
+
+        asset_contract = (
+            transfer.get("asset_contract")
+            or transfer.get("contract_address")
+            or transfer.get("mint")
+        )
+        raw_symbol = transfer.get("asset_symbol") or transfer.get("symbol")
+        asset_symbol = (
+            str(raw_symbol).strip().upper()
+            if raw_symbol not in (None, "")
+            else self._default_token_symbol(asset_contract)
+        )
+
+        decimals_raw = transfer.get("decimals")
+        try:
+            decimals = max(0, int(decimals_raw)) if decimals_raw is not None else 0
+        except (TypeError, ValueError):
+            decimals = 0
+
+        amount_raw_value = transfer.get("amount_raw")
+        amount_normalized_value = transfer.get("amount_normalized")
+        legacy_amount = transfer.get("amount")
+
+        amount_raw_str: Optional[str]
+        if amount_raw_value is not None:
+            amount_raw_str = str(amount_raw_value)
+        elif legacy_amount is not None:
+            try:
+                scaled = (
+                    Decimal(str(legacy_amount))
+                    * (Decimal(10) ** decimals)
+                ).to_integral_value(rounding=ROUND_HALF_UP)
+                amount_raw_str = str(int(scaled))
+            except (InvalidOperation, ValueError, TypeError):
+                amount_raw_str = str(legacy_amount)
+        else:
+            amount_raw_str = "0"
+
+        if amount_normalized_value is not None:
+            amount_normalized = float(amount_normalized_value)
+        elif legacy_amount is not None:
+            amount_normalized = float(legacy_amount)
+        else:
+            try:
+                if decimals > 0:
+                    amount_normalized = float(Decimal(amount_raw_str) / (Decimal(10) ** decimals))
+                else:
+                    amount_normalized = float(amount_raw_str)
+            except (InvalidOperation, ValueError, TypeError):
+                amount_normalized = 0.0
+
+        return TokenTransfer(
+            tx_hash=tx_hash,
+            blockchain=self.blockchain,
+            transfer_index=transfer.get("transfer_index", transfer_index),
+            asset_type=str(transfer.get("asset_type") or self._default_token_asset_type()),
+            asset_symbol=asset_symbol,
+            from_address=str(transfer.get("from_address") or ""),
+            to_address=str(transfer.get("to_address") or ""),
+            amount_raw=amount_raw_str,
+            amount_normalized=amount_normalized,
+            asset_contract=asset_contract,
+            fiat_value_at_transfer=transfer.get("fiat_value_at_transfer"),
+            canonical_asset_id=(
+                transfer.get("canonical_asset_id")
+                or self._infer_canonical_asset_id(asset_symbol)
+            ),
+        )
+
+    def _normalize_token_transfers(self, tx: Transaction) -> None:
+        """Normalize collector token payloads into TokenTransfer objects."""
+        if not tx.token_transfers:
+            return
+        tx.token_transfers = [
+            self._coerce_token_transfer(transfer, tx_hash=tx.hash, transfer_index=index)
+            for index, transfer in enumerate(tx.token_transfers)
+        ]
+
     async def start(self):
         """Start the collector"""
         logger.info(f"Starting {self.blockchain} collector...")
@@ -338,6 +465,8 @@ class BaseCollector(ABC):
             tx = await self.get_transaction(tx_hash)
             if not tx:
                 return
+
+            self._normalize_token_transfers(tx)
 
             # Store transaction in Neo4j using the bipartite model.
             await self.store_transaction(tx)

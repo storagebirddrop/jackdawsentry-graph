@@ -10,7 +10,9 @@ import json
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime
+from datetime import timezone
 from typing import Any
+from uuid import UUID
 
 from fastapi import Depends
 from fastapi import FastAPI
@@ -19,6 +21,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse
 
+from src.api.auth import PERMISSIONS
+from src.api.auth import ROLES
 from src.api.auth import User
 from src.api.auth import get_current_user
 from src.api.config import settings
@@ -38,6 +42,13 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
+PUBLIC_GRAPH_USER_ID = UUID("00000000-0000-0000-0000-000000000042")
+PUBLIC_GRAPH_PERMISSIONS = sorted(
+    {
+        *ROLES["analyst"],
+        PERMISSIONS["write_blockchain"],
+    }
+)
 
 
 class DateTimeEncoder(json.JSONEncoder):
@@ -101,6 +112,20 @@ async def get_ingest_runtime_status() -> dict[str, Any]:
     return status
 
 
+async def get_graph_runtime_user() -> User:
+    """Return the synthetic analyst user used by the public graph runtime."""
+    return User(
+        id=PUBLIC_GRAPH_USER_ID,
+        username="graph_public",
+        email="graph-public@jackdawsentry.local",
+        role="analyst",
+        permissions=PUBLIC_GRAPH_PERMISSIONS,
+        is_active=True,
+        created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        last_login=None,
+    )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize only the services required by the graph runtime."""
@@ -146,6 +171,13 @@ def configure_middleware(target_app: FastAPI) -> None:
     target_app.add_middleware(GraphLatencyMiddleware)
 
 
+def configure_auth_mode(target_app: FastAPI) -> None:
+    """Toggle auth requirements for the standalone graph runtime only."""
+    target_app.dependency_overrides.pop(get_current_user, None)
+    if settings.GRAPH_AUTH_DISABLED:
+        target_app.dependency_overrides[get_current_user] = get_graph_runtime_user
+
+
 def create_graph_app() -> FastAPI:
     """Build the standalone graph FastAPI application."""
     app = FastAPI(
@@ -160,6 +192,7 @@ def create_graph_app() -> FastAPI:
     )
 
     configure_middleware(app)
+    configure_auth_mode(app)
 
     @app.exception_handler(JackdawException)
     async def jackdaw_exception_handler(request, exc: JackdawException):
@@ -217,15 +250,12 @@ def create_graph_app() -> FastAPI:
     @app.get("/health", tags=["Health"])
     async def health_check():
         """Basic graph-runtime health check."""
-        response: dict = {
+        response: dict[str, Any] = {
             "status": "healthy",
             "service": "Jackdaw Sentry Graph API",
             "version": "1.0.0",
+            "auth_disabled": settings.GRAPH_AUTH_DISABLED,
         }
-        # Only expose auth mode in non-production environments to avoid
-        # leaking deployment configuration to unauthenticated callers.
-        if settings.DEBUG or settings.TESTING:
-            response["auth_disabled"] = settings.GRAPH_AUTH_DISABLED
         return response
 
     @app.get("/health/detailed", tags=["Health"])
@@ -238,6 +268,7 @@ def create_graph_app() -> FastAPI:
             "status": "healthy" if all(db_health.values()) else "degraded",
             "service": "Jackdaw Sentry Graph API",
             "version": "1.0.0",
+            "auth_disabled": settings.GRAPH_AUTH_DISABLED,
             "databases": db_health,
         }
 
@@ -260,7 +291,8 @@ def create_graph_app() -> FastAPI:
             },
         }
 
-    app.include_router(auth_router.router, prefix="/api/v1/auth", tags=["Authentication"])
+    if not settings.GRAPH_AUTH_DISABLED:
+        app.include_router(auth_router.router, prefix="/api/v1/auth", tags=["Authentication"])
     app.include_router(
         graph.router,
         prefix="/api/v1/graph",

@@ -78,6 +78,16 @@ _CANONICAL_ASSET: Dict[str, str] = {
 _SYSTEM_PROGRAM = "11111111111111111111111111111111"
 
 
+def _mint_label(mint: str) -> str:
+    """Return a readable fallback label for a Solana mint."""
+    symbol = _MINT_SYMBOLS.get(mint)
+    if symbol:
+        return symbol
+    if len(mint) > 12:
+        return f"{mint[:6]}...{mint[-4:]}"
+    return mint or "SPL"
+
+
 async def _rpc_post(
     session: aiohttp.ClientSession,
     rpc_url: str,
@@ -353,7 +363,7 @@ def _parse_transaction(
     for mint, changes in mint_changes.items():
         senders = [c for c in changes if c["delta"] < 0]
         receivers = [c for c in changes if c["delta"] > 0]
-        symbol = _MINT_SYMBOLS.get(mint)
+        symbol = _mint_label(mint)
         canonical = _CANONICAL_ASSET.get(symbol) if symbol else None
 
         # Pair senders and receivers to avoid cartesian inflation.

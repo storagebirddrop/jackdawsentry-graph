@@ -12,7 +12,7 @@
  * Network / HTTP errors do not stop polling — they are treated as transient.
  */
 
-import { useEffect, useRef } from 'react';
+import { useEffect } from 'react';
 import { getIngestStatus } from '../api/client';
 
 const POLL_INTERVAL_MS = 5_000;
@@ -26,12 +26,6 @@ export function useIngestPoller(
   onComplete: (nodeId: string) => void,
   onTimeout: (nodeId: string) => void,
 ): void {
-  // Stable refs prevent stale closures in the polling loop.
-  const onCompleteRef = useRef(onComplete);
-  const onTimeoutRef = useRef(onTimeout);
-  onCompleteRef.current = onComplete;
-  onTimeoutRef.current = onTimeout;
-
   useEffect(() => {
     const startedAt = Date.now();
     let cancelled = false;
@@ -41,7 +35,7 @@ export function useIngestPoller(
       if (cancelled) return;
 
       if (Date.now() - startedAt >= TIMEOUT_MS) {
-        onTimeoutRef.current(nodeId);
+        onTimeout(nodeId);
         return;
       }
 
@@ -50,13 +44,13 @@ export function useIngestPoller(
         if (cancelled) return;
 
         if (status.status === 'completed') {
-          onCompleteRef.current(nodeId);
+          onComplete(nodeId);
           return;
         }
 
         if (status.status === 'failed') {
           // Terminal failure — stop polling and surface it.
-          onTimeoutRef.current(nodeId);
+          onTimeout(nodeId);
           return;
         }
 
@@ -76,6 +70,5 @@ export function useIngestPoller(
       cancelled = true;
       if (timerId !== null) clearTimeout(timerId);
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, nodeId, address, chain]);
+  }, [sessionId, nodeId, address, chain, onComplete, onTimeout]);
 }

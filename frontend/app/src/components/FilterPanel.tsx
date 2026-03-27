@@ -17,6 +17,7 @@ import { bridgeProtocolLabel } from './graphVisuals';
 export interface FilterState {
   minFiatValue: number | null;
   assetFilter: string;
+  selectedAssets: string[];
   chainFilter: string[];
   maxDepth: number;
   bridgeProtocols: string[];
@@ -27,6 +28,7 @@ export interface FilterState {
 export const DEFAULT_FILTERS: FilterState = {
   minFiatValue: 0,
   assetFilter: '',
+  selectedAssets: [],
   chainFilter: [],
   maxDepth: 20,
   bridgeProtocols: [],
@@ -43,6 +45,7 @@ interface Props {
   filters: FilterState;
   onChange: (f: FilterState) => void;
   onClose: () => void;
+  availableAssets: string[];
   availableBridgeProtocols: string[];
   availableBridgeRoutes: string[];
 }
@@ -57,6 +60,7 @@ export default function FilterPanel({
   filters,
   onChange,
   onClose,
+  availableAssets,
   availableBridgeProtocols,
   availableBridgeRoutes,
 }: Props) {
@@ -108,6 +112,15 @@ export default function FilterPanel({
     setLocal((f) => ({
       ...f,
       bridgeRoute: f.bridgeRoute === route ? null : route,
+    }));
+  }
+
+  function toggleAsset(asset: string) {
+    setLocal((f) => ({
+      ...f,
+      selectedAssets: f.selectedAssets.includes(asset)
+        ? f.selectedAssets.filter((value) => value !== asset)
+        : [...f.selectedAssets, asset],
     }));
   }
 
@@ -164,6 +177,33 @@ export default function FilterPanel({
           style={inputStyle}
         />
       </label>
+
+      <div style={{ marginTop: 8 }}>
+        <div style={{ color: '#94a3b8', marginBottom: 4 }}>Selected assets</div>
+        {availableAssets.length === 0 ? (
+          <div style={{ color: '#64748b', fontSize: 11 }}>
+            Asset chips appear here once token or native transfer edges are on the canvas.
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+            {availableAssets.map((asset) => (
+              <button
+                key={asset}
+                onClick={() => toggleAsset(asset)}
+                aria-pressed={local.selectedAssets.includes(asset)}
+                style={{
+                  ...tokenStyle,
+                  background: local.selectedAssets.includes(asset) ? '#0f766e' : '#0f172a',
+                  color: local.selectedAssets.includes(asset) ? '#fff' : '#99f6e4',
+                  borderColor: local.selectedAssets.includes(asset) ? '#14b8a6' : '#115e59',
+                }}
+              >
+                {asset}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
 
       {/* Max depth */}
       <label style={labelStyle}>

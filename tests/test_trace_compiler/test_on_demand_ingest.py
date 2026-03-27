@@ -28,6 +28,7 @@ from src.trace_compiler.ingest.trigger import maybe_trigger_address_ingest
 def _make_pg_pool(
     tx_count: int = 0,
     token_count: int = 0,
+    recently_fetched: bool = False,
     insert_id: int | None = 42,
 ):
     """Build a mock asyncpg pool with configurable query results."""
@@ -36,13 +37,16 @@ def _make_pg_pool(
     async def fetchval(query, *args):
         # First call: raw_transactions count
         # Second call: raw_token_transfers count
-        # Third call: INSERT RETURNING id
+        # Third call: recently completed queue row check
+        # Fourth call: INSERT RETURNING id
         call_num = getattr(fetchval, "_calls", 0)
         fetchval._calls = call_num + 1
         if call_num == 0:
             return tx_count
         if call_num == 1:
             return token_count
+        if call_num == 2:
+            return recently_fetched
         return insert_id  # INSERT RETURNING id
 
     fetchval._calls = 0

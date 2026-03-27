@@ -2,7 +2,7 @@
  * AddressNode — custom React Flow node for blockchain addresses.
  */
 
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { Handle, Position, type NodeProps } from '@xyflow/react';
 
 import type { InvestigationNode, AddressNodeData } from '../../types/graph';
@@ -58,15 +58,15 @@ export default function AddressNode({ data, selected }: NodeProps) {
     };
   }, []);
 
-  const copyAddress = useCallback(() => {
+  function copyAddress() {
     if (!addr?.address) return;
-    
+
     // Clear any existing timeout
     if (copyTimeoutRef.current) {
       clearTimeout(copyTimeoutRef.current);
       copyTimeoutRef.current = null;
     }
-    
+
     navigator.clipboard.writeText(addr.address).then(() => {
       setCopied(true);
       copyTimeoutRef.current = setTimeout(() => {
@@ -86,7 +86,7 @@ export default function AddressNode({ data, selected }: NodeProps) {
         success = false;
       }
       document.body.removeChild(textArea);
-      
+
       if (success) {
         setCopied(true);
         copyTimeoutRef.current = setTimeout(() => {
@@ -97,7 +97,7 @@ export default function AddressNode({ data, selected }: NodeProps) {
         console.error('Failed to copy address: both clipboard API and fallback failed');
       }
     });
-  }, [addr?.address]);
+  }
 
   if (!addr?.address) {
     return (

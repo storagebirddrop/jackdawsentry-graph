@@ -11,16 +11,35 @@ import SessionStarter from './components/SessionStarter';
 import InvestigationGraph from './components/InvestigationGraph';
 import { useGraphStore } from './store/graphStore';
 import { isAuthenticated, redirectToLogin } from './api/client';
+import {
+  clearSavedWorkspace,
+  loadSavedWorkspace,
+} from './workspacePersistence';
 
 export default function App() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
   const resetGraph = useGraphStore((state) => state.reset);
+  const importSnapshot = useGraphStore((state) => state.importSnapshot);
 
   const handleStartNewInvestigation = useCallback(() => {
+    clearSavedWorkspace();
     resetGraph();
     setSessionId(null);
   }, [resetGraph]);
+
+  const handleRestoreWorkspace = useCallback(() => {
+    const savedWorkspace = loadSavedWorkspace();
+    if (!savedWorkspace) return;
+
+    const restored = importSnapshot(savedWorkspace.snapshot);
+    if (!restored) {
+      clearSavedWorkspace();
+      return;
+    }
+
+    setSessionId(savedWorkspace.sessionId);
+  }, [importSnapshot]);
 
   useEffect(() => {
     async function bootstrap() {
@@ -60,7 +79,12 @@ export default function App() {
   }
 
   if (!sessionId) {
-    return <SessionStarter onSessionCreated={setSessionId} />;
+    return (
+      <SessionStarter
+        onSessionCreated={setSessionId}
+        onRestoreWorkspace={handleRestoreWorkspace}
+      />
+    );
   }
 
   return (

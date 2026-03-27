@@ -13,6 +13,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from src.collectors.base import Address
+from src.collectors.base import Transaction
 from src.trace_compiler.compiler import _expansion_cache_key
 from src.trace_compiler.compiler import TraceCompiler
 from src.trace_compiler.lineage import branch_id as mk_branch_id
@@ -163,6 +165,93 @@ async def test_expand_has_required_timestamp(compiler):
     )
     resp = await compiler.expand("s", req)
     assert resp.timestamp is not None
+
+
+@pytest.mark.asyncio
+async def test_expand_empty_response_includes_chain_specific_empty_state(monkeypatch):
+    compiler = TraceCompiler()
+
+    class EmptyCompiler:
+        async def expand_next(self, **kwargs):
+            return [], []
+
+    class FakeClient:
+        async def get_address_info(self, address: str):
+            return Address(
+                address=address,
+                blockchain="ethereum",
+                balance=0,
+                transaction_count=4,
+                type="eoa",
+            )
+
+    compiler._chain_compilers = {"ethereum": EmptyCompiler()}
+    monkeypatch.setattr(
+        "src.trace_compiler.compiler.get_rpc_client",
+        lambda chain: FakeClient() if chain == "ethereum" else None,
+    )
+
+    req = ExpandRequest(
+        operation_type="expand_next",
+        seed_node_id="ethereum:address:0xabc",
+    )
+    resp = await compiler.expand("s", req)
+
+    assert resp.added_nodes == []
+    assert resp.added_edges == []
+    assert resp.empty_state is not None
+    assert resp.empty_state.chain == "ethereum"
+    assert resp.empty_state.reason == "live_lookup_returned_empty"
+    assert resp.empty_state.observed_on_chain is True
+    assert "live address-history fallback" in resp.empty_state.message
+
+
+@pytest.mark.asyncio
+async def test_expand_bitcoin_uses_live_history_fallback(monkeypatch):
+    compiler = TraceCompiler()
+
+    class EmptyCompiler:
+        def __init__(self):
+            self._address_exposure = MagicMock()
+            self._address_exposure.enrich_node = AsyncMock(side_effect=lambda node: node)
+
+        async def expand_next(self, **kwargs):
+            return [], []
+
+    tx_time = datetime(2026, 3, 26, tzinfo=timezone.utc)
+
+    class FakeClient:
+        async def get_address_transactions(self, address: str, limit: int = 25):
+            return [
+                Transaction(
+                    hash="btc-tx-1",
+                    blockchain="bitcoin",
+                    timestamp=tx_time,
+                    from_address="bc1seedaddress0000000000000000000000000",
+                    to_address="bc1peeraddress0000000000000000000000000",
+                    value=0.42,
+                    block_number=100,
+                )
+            ]
+
+    compiler._chain_compilers = {"bitcoin": EmptyCompiler()}
+    monkeypatch.setattr(
+        "src.trace_compiler.compiler.get_rpc_client",
+        lambda chain: FakeClient() if chain == "bitcoin" else None,
+    )
+
+    req = ExpandRequest(
+        operation_type="expand_next",
+        seed_node_id="bitcoin:address:bc1seedaddress0000000000000000000000000",
+    )
+    resp = await compiler.expand("session-btc", req)
+
+    assert resp.empty_state is None
+    assert len(resp.added_nodes) == 1
+    assert len(resp.added_edges) == 1
+    assert resp.added_nodes[0].node_id == "bitcoin:address:bc1peeraddress0000000000000000000000000"
+    assert resp.added_edges[0].asset_symbol == "BTC"
+    assert resp.added_edges[0].tx_hash == "btc-tx-1"
 
 
 @pytest.mark.asyncio

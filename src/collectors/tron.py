@@ -67,6 +67,22 @@ class TronCollector(BaseCollector):
 
         self.session = None
 
+    def _label_trc20_contract(self, contract_address: str) -> str:
+        """Return a readable token label for a TRC-20 contract."""
+        for symbol, address in self.stablecoin_contracts.items():
+            if contract_address == address:
+                return symbol
+            if contract_address.startswith("41"):
+                try:
+                    if self.hex_to_base58(contract_address) == address:
+                        return symbol
+                except Exception:
+                    pass
+
+        if len(contract_address) > 12:
+            return f"{contract_address[:6]}...{contract_address[-4:]}"
+        return contract_address or "TRC20"
+
     async def connect(self) -> bool:
         """Connect to Tron RPC"""
         if not AIOHTTP_AVAILABLE:
@@ -495,30 +511,26 @@ class TronCollector(BaseCollector):
                     contract_address = trigger.get("contract_address", "")
                     parameter = trigger.get("data", "")
 
-                    # Check if this is a stablecoin contract
-                    stablecoin_symbol = None
-                    for symbol, address in self.stablecoin_contracts.items():
-                        if contract_address == address:
-                            stablecoin_symbol = symbol
-                            break
-
-                    if stablecoin_symbol and parameter.startswith("a9059cbb") and len(parameter) >= 136:
+                    if parameter.startswith("a9059cbb") and len(parameter) >= 136:
                         # Decode transfer(address,uint256) ABI call.
                         # Recipient: last 20 bytes of first 32-byte word; prepend 41 for Tron.
                         to_hex_raw = parameter[8 + 24 : 8 + 64]
                         to_addr_b58 = self.hex_to_base58("41" + to_hex_raw)
                         amount_raw = int(parameter[72:136], 16)
-                        # Determine decimals: USDT/USDC on Tron use 6; default to 6.
-                        decimals = 6
+                        # Determine decimals: known Tron stablecoins use 6; generic TRC-20
+                        # contracts fall back to 18 until richer token metadata is available.
+                        known_stablecoin_addrs = set(self.stablecoin_contracts.values())
+                        decimals = 6 if contract_address in known_stablecoin_addrs else 18
                         transfers.append(
                             {
-                                "symbol": stablecoin_symbol,
+                                "symbol": self._label_trc20_contract(contract_address),
                                 "contract_address": contract_address,
                                 "from_address": from_address,
                                 "to_address": to_addr_b58,
-                                "amount": amount_raw,
+                                "amount_raw": amount_raw,
                                 "amount_normalized": amount_raw / (10 ** decimals),
                                 "decimals": decimals,
+                                "asset_type": "trc20",
                             }
                         )
 

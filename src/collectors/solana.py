@@ -64,6 +64,15 @@ class SolanaCollector(BaseCollector):
 
         self.client = None
 
+    def _label_mint(self, mint: str) -> str:
+        """Return a readable label for a Solana mint."""
+        for symbol, known_mint in self.stablecoin_mints.items():
+            if known_mint == mint:
+                return symbol
+        if len(mint) > 12:
+            return f"{mint[:6]}...{mint[-4:]}"
+        return mint or "SPL"
+
     def _normalize_rpc_payload(self, value: Any) -> Any:
         """Convert solders / solana-py response objects into plain Python values."""
         if value is None or isinstance(value, (str, int, float, bool)):
@@ -418,45 +427,80 @@ class SolanaCollector(BaseCollector):
         transfers = []
 
         try:
-            # Create maps of pre and post balances
             pre_map = {bal["accountIndex"]: bal for bal in pre_balances}
             post_map = {bal["accountIndex"]: bal for bal in post_balances}
+            all_indices = set(pre_map.keys()) | set(post_map.keys())
+            mint_changes: Dict[str, List[Dict[str, Any]]] = {}
 
-            # Find balance changes
-            for account_index, post_bal in post_map.items():
+            for account_index in all_indices:
                 pre_bal = pre_map.get(account_index, {})
+                post_bal = post_map.get(account_index, {})
+                mint = post_bal.get("mint") or pre_bal.get("mint")
+                if not mint:
+                    continue
 
-                if post_bal.get("mint") in self.stablecoin_mints.values():
-                    pre_amount = pre_bal.get("uiTokenAmount", {}).get("uiAmount", 0)
-                    post_amount = post_bal.get("uiTokenAmount", {}).get("uiAmount", 0)
+                owner = post_bal.get("owner") or pre_bal.get("owner")
+                ata_address = (
+                    account_keys[account_index]
+                    if 0 <= account_index < len(account_keys)
+                    else None
+                )
 
-                    amount_change = post_amount - pre_amount
-                    if abs(amount_change) > 0:
-                        # Find stablecoin symbol
-                        symbol = None
-                        for sym, mint in self.stablecoin_mints.items():
-                            if post_bal["mint"] == mint:
-                                symbol = sym
-                                break
+                pre_amount_raw = int((pre_bal.get("uiTokenAmount") or {}).get("amount") or 0)
+                post_amount_raw = int((post_bal.get("uiTokenAmount") or {}).get("amount") or 0)
+                delta = post_amount_raw - pre_amount_raw
+                if delta == 0:
+                    continue
 
-                        if symbol:
-                            owner = post_bal.get("owner")
-                            if owner and len(account_keys) > account_index:
-                                from_address = account_keys[account_index]
-                                to_address = owner
+                decimals = int(
+                    ((post_bal.get("uiTokenAmount") or pre_bal.get("uiTokenAmount") or {}))
+                    .get("decimals")
+                    or 0
+                )
+                mint_changes.setdefault(mint, []).append(
+                    {
+                        "owner": owner,
+                        "ata": ata_address,
+                        "delta": delta,
+                        "decimals": decimals,
+                    }
+                )
 
-                                transfers.append(
-                                    {
-                                        "symbol": symbol,
-                                        "contract_address": post_bal["mint"],
-                                        "from_address": from_address,
-                                        "to_address": to_address,
-                                        "amount": abs(amount_change),
-                                        "decimals": post_bal.get(
-                                            "uiTokenAmount", {}
-                                        ).get("decimals", 0),
-                                    }
-                                )
+            for mint, changes in mint_changes.items():
+                senders = [change for change in changes if change["delta"] < 0]
+                receivers = [change for change in changes if change["delta"] > 0]
+                symbol = self._label_mint(mint)
+
+                for index, receiver in enumerate(receivers):
+                    if not senders:
+                        continue
+
+                    sender = senders[index] if len(senders) == len(receivers) else senders[0]
+                    from_address = sender["owner"] or sender["ata"]
+                    to_address = receiver["owner"] or receiver["ata"]
+                    if not from_address or not to_address:
+                        continue
+
+                    amount_raw = receiver["delta"]
+                    decimals = receiver["decimals"]
+                    amount_normalized = (
+                        amount_raw / (10 ** decimals)
+                        if decimals
+                        else float(amount_raw)
+                    )
+
+                    transfers.append(
+                        {
+                            "symbol": symbol,
+                            "contract_address": mint,
+                            "from_address": from_address,
+                            "to_address": to_address,
+                            "amount_raw": amount_raw,
+                            "amount_normalized": amount_normalized,
+                            "decimals": decimals,
+                            "asset_type": "spl",
+                        }
+                    )
 
         except Exception as e:
             logger.error(f"Error parsing token balances: {e}")

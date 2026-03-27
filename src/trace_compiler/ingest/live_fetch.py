@@ -9,6 +9,10 @@ This is what makes the standalone graph actually usable without a separate
 ingest worker: the first expansion of an unknown EVM address fires a
 background Etherscan fetch, which completes within seconds and allows the
 frontend's ingest-status poller to re-trigger expansion with live data.
+
+When the fast-path fetch fails transiently, the queue row is intentionally
+left pending so the slower ``AddressIngestWorker`` collector fallback can
+still process the address instead of surfacing a permanent dead-end.
 """
 
 from __future__ import annotations
@@ -123,8 +127,10 @@ async def fetch_evm_address_history(
 
     Runs two Etherscan calls in parallel (``txlist`` + ``tokentx``), then
     bulk-inserts the results into ``raw_transactions`` and
-    ``raw_token_transfers``.  Marks the ``address_ingest_queue`` entry
-    ``completed`` or ``failed`` when done.
+    ``raw_token_transfers``. Successful fetches mark the
+    ``address_ingest_queue`` entry ``completed``. Recoverable failures leave
+    the queue row untouched so the background worker can retry via the
+    chain-specific collector path.
 
     Args:
         address:  Lowercase EVM hex address (0x…).
@@ -137,8 +143,10 @@ async def fetch_evm_address_history(
     """
     chain_id = _CHAIN_IDS.get(chain)
     if chain_id is None:
-        logger.debug("live_fetch: chain %s not supported via Etherscan v2", chain)
-        await _mark_queue(address, chain, pg_pool, "failed", "chain not supported via Etherscan")
+        logger.debug(
+            "live_fetch: chain %s not supported via Etherscan v2; leaving queue pending",
+            chain,
+        )
         return False
 
     logger.info("live_fetch: fetching %s on %s via Etherscan", address, chain)
@@ -151,8 +159,11 @@ async def fetch_evm_address_history(
         )
 
     if native_rows is None and token_rows is None:
-        logger.warning("live_fetch: Etherscan returned errors for %s/%s", address, chain)
-        await _mark_queue(address, chain, pg_pool, "failed", "Etherscan API error")
+        logger.warning(
+            "live_fetch: Etherscan returned errors for %s/%s; deferring to worker fallback",
+            address,
+            chain,
+        )
         return False
 
     native_rows = native_rows or []
@@ -181,7 +192,11 @@ async def fetch_evm_address_history(
         await _mark_queue(address, chain, pg_pool, "completed", None, tx_count=tx_count_total)
         return True
 
-    await _mark_queue(address, chain, pg_pool, "failed", "no records inserted")
+    logger.warning(
+        "live_fetch: fetched rows for %s/%s but stored none; leaving queue pending for worker fallback",
+        address,
+        chain,
+    )
     return False
 
 

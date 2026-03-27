@@ -62,10 +62,6 @@ class _ServiceRecord:
     chains: List[str] = field(default_factory=list)
     # Contract addresses per chain: chain -> [lowercase addr, ...]
     contracts: Dict[str, List[str]] = field(default_factory=dict)
-    # True when the protocol is on a sanctions list (e.g. OFAC SDN).
-    # Service nodes built from sanctioned records carry sanctioned=True and
-    # risk_score=1.0, and connected address nodes inherit a risk signal.
-    sanctioned: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -114,10 +110,10 @@ _SEED_SERVICES: List[_ServiceRecord] = [
             "arbitrum":  ["0x1b02da8cb0d097eb8d57a175b88c7d8b47997506"],
         },
     ),
-    # ---- PancakeSwap V2 ----
+    # ---- PancakeSwap ----
     _ServiceRecord(
-        protocol_id="pancakeswap_v2",
-        display_name="PancakeSwap V2",
+        protocol_id="pancakeswap",
+        display_name="PancakeSwap",
         service_type="dex",
         chains=["bsc", "ethereum"],
         contracts={
@@ -126,23 +122,16 @@ _SEED_SERVICES: List[_ServiceRecord] = [
         },
     ),
     # ---- Curve Finance ----
-    # Router NG (curve-router-ng) — routes swaps through pools; pools emit
-    # TokenExchange events directly, but investigators encounter the Router
-    # as the tx counterparty.  Addresses verified from curvefi/curve-router-ng.
     _ServiceRecord(
         protocol_id="curve",
         display_name="Curve Finance",
         service_type="dex",
-        chains=["ethereum", "arbitrum", "optimism", "polygon", "base", "avalanche", "bsc"],
+        chains=["ethereum", "arbitrum", "optimism", "polygon"],
         contracts={
-            "ethereum":  ["0x45312ea0eFf7E09C83CBE249fa1d7598c4C8cd4e",   # Router NG
-                          "0x99a58482bd75cbab83b27ec03ca68ff489b5788f"],  # Router v1 (legacy)
-            "arbitrum":  ["0x2191718CD32d02B8E60BAdFFeA33E4B5DD9A0A0D"],   # Router NG
-            "optimism":  ["0x0DCDED3545D565bA3B19E683431381007245d983"],   # Router NG
-            "polygon":   ["0x0DCDED3545D565bA3B19E683431381007245d983"],   # Router NG
-            "base":      ["0x4f37A9d177470499A2dD084621020b023fcffc1F"],   # Router NG
-            "avalanche": ["0x0DCDED3545D565bA3B19E683431381007245d983"],   # Router NG
-            "bsc":       ["0xA72C85C258A81761433B4e8da60505Fe3Dd551CC"],   # Router NG
+            "ethereum": [
+                "0x99a58482bd75cbab83b27ec03ca68ff489b5788f",  # Router
+                "0xd9e68a3f5f4b3b8b5db9f9a3e0f8e1d0a5b3c7d4",  # Dispatcher
+            ],
         },
     ),
     # ---- 1inch ----
@@ -162,16 +151,11 @@ _SEED_SERVICES: List[_ServiceRecord] = [
             "optimism":  ["0x1111111254eeb25477b68fb85ed929f73a960582"],
         },
     ),
-    # ---- Tornado Cash (mixer — OFAC SDN listed August 2022) ----
-    # All Tornado Cash pool and router contracts were added to the OFAC SDN
-    # list on 2022-08-08 (Notice OFAC-2022-0001).  The sanctioned=True flag
-    # causes service nodes built from this record to carry sanctioned=True and
-    # risk_score=1.0, and connected address nodes to inherit a risk signal.
+    # ---- Tornado Cash (mixer — high compliance relevance) ----
     _ServiceRecord(
         protocol_id="tornado_cash",
         display_name="Tornado Cash",
         service_type="mixer",
-        sanctioned=True,
         chains=["ethereum"],
         contracts={
             "ethereum": [
@@ -191,28 +175,22 @@ _SEED_SERVICES: List[_ServiceRecord] = [
                 "0x4736dcf1b7a3d580672cce6e7c65cd5cc9cfba9d",  # 100 DAI
                 "0xaf4c0b70b2ea9fb7487c7cbb37ada259579fe040",  # 1000 DAI
                 "0xd96f2b1c14db8458374d9aca76e26c3950113464",  # 10000 DAI
-                # Router
+                # Routers / proxies
+                "0xd90e2f925da726b50c4ed8d0fb90ad053324f31b",  # Tornado Router
                 "0x905b63fff465b9ffbf41dea908ceb12478ec7601",
             ],
         },
     ),
-    # ---- Balancer V2 ----
-    # The V2 Vault is intentionally deployed at the same address on every chain.
-    # All single-hop swaps pass through this one contract; it emits the
-    # Swap(bytes32,address,address,uint256,uint256) event decoded by
-    # BALANCER_V2_SWAP_SIG.  Addresses verified from balancer-labs/balancer-v2-monorepo.
+    # ---- Balancer ----
     _ServiceRecord(
-        protocol_id="balancer_v2",
-        display_name="Balancer V2",
+        protocol_id="balancer",
+        display_name="Balancer",
         service_type="dex",
-        chains=["ethereum", "polygon", "arbitrum", "optimism", "base", "avalanche"],
+        chains=["ethereum", "polygon", "arbitrum"],
         contracts={
-            "ethereum":  ["0xba12222222228d8ba445958a75a0704d566bf2c8"],  # Vault
-            "polygon":   ["0xba12222222228d8ba445958a75a0704d566bf2c8"],
-            "arbitrum":  ["0xba12222222228d8ba445958a75a0704d566bf2c8"],
-            "optimism":  ["0xba12222222228d8ba445958a75a0704d566bf2c8"],
-            "base":      ["0xba12222222228d8ba445958a75a0704d566bf2c8"],
-            "avalanche": ["0xba12222222228d8ba445958a75a0704d566bf2c8"],
+            "ethereum": ["0xba12222222228d8ba445958a75a0704d566bf2c8"],  # Vault
+            "polygon":  ["0xba12222222228d8ba445958a75a0704d566bf2c8"],
+            "arbitrum": ["0xba12222222228d8ba445958a75a0704d566bf2c8"],
         },
     ),
     # ---- Aave (lending — relevant for DeFi tracing) ----
@@ -227,232 +205,6 @@ _SEED_SERVICES: List[_ServiceRecord] = [
             "arbitrum":  ["0x794a61358d6845594f94dc1db02a252b5b4814ad"],
             "optimism":  ["0x794a61358d6845594f94dc1db02a252b5b4814ad"],
             "avalanche": ["0x794a61358d6845594f94dc1db02a252b5b4814ad"],
-        },
-    ),
-    # ---- Velodrome (Optimism) ----
-    # Solidly V2 fork; pools emit Swap(address indexed sender, address indexed to,
-    # uint256 amount0In, uint256 amount1In, uint256 amount0Out, uint256 amount1Out)
-    # captured by SOLIDLY_SWAP_SIG.  Router address verified from
-    # velodrome-finance/contracts deployment-addresses/optimism.json.
-    _ServiceRecord(
-        protocol_id="velodrome_v2",
-        display_name="Velodrome V2",
-        service_type="dex",
-        chains=["optimism"],
-        contracts={
-            "optimism": ["0xa062ae8a9c5e11aaa026fc2670b0d65ccc8b2858"],  # Router V2
-        },
-    ),
-    # ---- Aerodrome (Base) ----
-    # Velodrome fork on Base; same Solidly Swap event signature.
-    # Router address verified from aerodrome-finance/contracts README.
-    _ServiceRecord(
-        protocol_id="aerodrome",
-        display_name="Aerodrome",
-        service_type="dex",
-        chains=["base"],
-        contracts={
-            "base": ["0xcf77a3ba9a5ca399b7c97c74d54e5b1beb874e43"],  # Router V2
-        },
-    ),
-    # ---- Trader Joe / LFJ (Avalanche, Arbitrum) ----
-    # Liquidity Book DEX; routers verified from developers.lfj.gg/deployment-addresses.
-    # V1 JoeRouter02 (classic AMM) + LBRouter V2.1 + V2.2 registered.
-    _ServiceRecord(
-        protocol_id="traderjoe",
-        display_name="Trader Joe",
-        service_type="dex",
-        chains=["avalanche", "arbitrum"],
-        contracts={
-            "avalanche": [
-                "0x60ae616a2155ee3d9a68541ba4544862310933d4",  # JoeRouter V1 (classic AMM)
-                "0xb4315e873dbcf96ffd0acd8ea43f689d8c20fb30",  # LBRouter V2.1
-                "0x18556da13313f3532c54711497a8fedac273220e",  # LBRouter V2.2
-            ],
-            "arbitrum": [
-                "0xb4315e873dbcf96ffd0acd8ea43f689d8c20fb30",  # LBRouter V2.1
-                "0x18556da13313f3532c54711497a8fedac273220e",  # LBRouter V2.2
-            ],
-        },
-    ),
-    # ---- PancakeSwap V3 ----
-    # Concentrated-liquidity DEX on BSC and Ethereum.  Uses the identical
-    # Swap event signature as Uniswap V3 — UNISWAP_V3_SWAP_SIG already decodes
-    # these logs.  SmartRouter V3 addresses verified from
-    # pancakeswap/pancake-smart-router (deployed at the same address on both
-    # chains via CREATE2).
-    _ServiceRecord(
-        protocol_id="pancakeswap_v3",
-        display_name="PancakeSwap V3",
-        service_type="dex",
-        chains=["bsc", "ethereum"],
-        contracts={
-            "bsc":      ["0x13f4ea83d0bd40e75c8222255bc855a974568dd4"],  # SmartRouter V3
-            "ethereum": ["0x13f4ea83d0bd40e75c8222255bc855a974568dd4"],  # SmartRouter V3
-        },
-    ),
-    # ---- Camelot DEX (Arbitrum) ----
-    # Native Arbitrum DEX; V2 volatile/stable pools emit the same Swap event
-    # as Uniswap V2 (UNISWAP_V2_SWAP_SIG), so no new decoder is required.
-    # Router address verified from camelot-dex/camelot-sdk.
-    _ServiceRecord(
-        protocol_id="camelot",
-        display_name="Camelot DEX",
-        service_type="dex",
-        chains=["arbitrum"],
-        contracts={
-            "arbitrum": ["0xc873fecbd354f5a56e00e710b90ef4201db2448d"],  # Router V2
-        },
-    ),
-    # =========================================================================
-    # Solana DEX / aggregator programs
-    # Program IDs are case-sensitive base58 strings; stored as-is.
-    # Classification uses exact string matching against these program IDs.
-    # =========================================================================
-    # ---- Raydium ----
-    _ServiceRecord(
-        protocol_id="raydium_amm",
-        display_name="Raydium AMM",
-        service_type="dex",
-        chains=["solana"],
-        contracts={
-            "solana": [
-                "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",  # AMM v4
-                "5quBtoiQqxF9Jv6KYKctB59NT3gtJD2Y65kdnB1Uev3h",  # AMM stable
-                # AMM v4 pool authority PDA — all v4 pool token vaults are
-                # owned by this address, so it appears as the transfer
-                # counterparty after ATA resolution in the live-fetched data.
-                "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1",
-                # Raydium Route program — outer instruction for multi-hop swaps
-                # that internally call the AMM v4 program.
-                "routeUGWgWzqBWFcrCfv8tritsqukccJPu3q5GPP3xS",
-            ],
-        },
-    ),
-    # ---- Raydium CLMM ----
-    _ServiceRecord(
-        protocol_id="raydium_clmm",
-        display_name="Raydium CLMM",
-        service_type="dex",
-        chains=["solana"],
-        contracts={
-            "solana": [
-                "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK",  # CLMM
-            ],
-        },
-    ),
-    # ---- Orca ----
-    _ServiceRecord(
-        protocol_id="orca_whirlpool",
-        display_name="Orca Whirlpool",
-        service_type="dex",
-        chains=["solana"],
-        contracts={
-            "solana": [
-                "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc",  # Whirlpool
-            ],
-        },
-    ),
-    _ServiceRecord(
-        protocol_id="orca_v2",
-        display_name="Orca V2",
-        service_type="dex",
-        chains=["solana"],
-        contracts={
-            "solana": [
-                "9W959DqEETiGZocYWCQPaJ6sBmUzgfxXfqGeTEdp3aQP",  # Orca v2
-            ],
-        },
-    ),
-    # ---- Jupiter ----
-    _ServiceRecord(
-        protocol_id="jupiter",
-        display_name="Jupiter Aggregator",
-        service_type="aggregator",
-        chains=["solana"],
-        contracts={
-            "solana": [
-                "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4",  # v6
-                "JUP4Fb2cqiRUcaTHdrPC8h2gNsA2ETXiPDD33WcGuJB",  # v4
-                "JUP3c2Uh3WA4Ng34tw6kPd2G4LFfwhV3IwZ9JHfKq4e",  # v3
-            ],
-        },
-    ),
-    # ---- OpenBook (Serum successor) ----
-    _ServiceRecord(
-        protocol_id="openbook",
-        display_name="OpenBook DEX",
-        service_type="dex",
-        chains=["solana"],
-        contracts={
-            "solana": [
-                "srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX",  # Serum DEX v3
-                "opnb2LAfJYbRMAHHvqjCwQxanZn7ReEHp1k81EohpZb",  # OpenBook v2
-            ],
-        },
-    ),
-    # ---- Meteora ----
-    _ServiceRecord(
-        protocol_id="meteora",
-        display_name="Meteora",
-        service_type="dex",
-        chains=["solana"],
-        contracts={
-            "solana": [
-                "Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB",  # DLMM
-                "M2mx93ekt1fmXSVkTrUL9xVFHkmME8HTUi5Cyc5aF7K",  # Meteora Pools
-            ],
-        },
-    ),
-    # ---- Phoenix ----
-    _ServiceRecord(
-        protocol_id="phoenix",
-        display_name="Phoenix DEX",
-        service_type="dex",
-        chains=["solana"],
-        contracts={
-            "solana": [
-                "PhoeNiXZ8ByJGLkxNfZRnkUfjvmuYqLR89jjFHGqdXY",
-            ],
-        },
-    ),
-    # =========================================================================
-    # Tron DEX / aggregator contracts
-    # Addresses are stored in the event store as 25-byte hex strings produced by
-    # TronCollector.base58_to_hex() — base58check decoded bytes including the
-    # 4-byte checksum, lowercased.  Format: 41<20-byte-addr><4-byte-checksum>.
-    # =========================================================================
-    # ---- JustSwap / SunSwap V1 (Uniswap V2 fork, highest USDT volume on Tron) ----
-    _ServiceRecord(
-        protocol_id="justswap_v1",
-        display_name="JustSwap (SunSwap V1)",
-        service_type="dex",
-        chains=["tron"],
-        contracts={
-            # TXF1xDbVGdxFGbovmmmXvBGu8ZiE3Lq4mR — JustSwap Router
-            "tron": ["41e95812d8d5b5412d2b9f3a4d5a87ca15c5c51f33366bfa2c"],
-        },
-    ),
-    # ---- SunSwap V2 ----
-    _ServiceRecord(
-        protocol_id="sunswap_v2",
-        display_name="SunSwap V2",
-        service_type="dex",
-        chains=["tron"],
-        contracts={
-            # TKzxdSv2FZKQrEqkKVgp5DcwEXBEKMg2Ax — SunSwap V2 Router
-            "tron": ["416e0617948fe030a7e4970f8389d4ad295f249b7ee9ecb03d"],
-        },
-    ),
-    # ---- SunSwap V3 / StableSwap ----
-    _ServiceRecord(
-        protocol_id="sunswap_v3",
-        display_name="SunSwap V3",
-        service_type="dex",
-        chains=["tron"],
-        contracts={
-            # TSy7jXKKpckJ8zqUiUECG9U7LjkdJxnNEb — SunSwap V3 Router
-            "tron": ["41ba75bdae5ae107596be3e36f0bae72f21b608ec92cba7aa0"],
         },
     ),
 ]
@@ -510,28 +262,21 @@ class ServiceClassifier:
                 chain_bucket = self._lookup.setdefault(chain, {})
                 excl = bridge_addrs.get(chain, set())
                 for addr in addrs:
-                    # Preserve case for Solana addresses, lowercase for others
-                    normalized_addr = addr if chain == "solana" else addr.lower()
-                    # Normalize exclusion key to lowercase for consistent membership test
-                    excl_key = normalized_addr.lower() if chain != "solana" else normalized_addr
-                    if excl_key not in excl:
-                        chain_bucket[normalized_addr] = record
+                    addr_lc = addr.lower()
+                    if addr_lc not in excl:
+                        chain_bucket[addr_lc] = record
 
         self._loaded = True
 
     def is_service_contract(self, chain: str, address: str) -> bool:
         """Return True when ``address`` is a known service contract on ``chain``."""
         self._ensure_registry()
-        # Preserve case for Solana addresses, lowercase for others
-        normalized_addr = address if chain == "solana" else address.lower()
-        return normalized_addr in self._lookup.get(chain, {})
+        return address.lower() in self._lookup.get(chain, {})
 
     def get_record(self, chain: str, address: str) -> Optional[_ServiceRecord]:
         """Return the ``_ServiceRecord`` for ``address`` on ``chain``, or None."""
         self._ensure_registry()
-        # Preserve case for Solana addresses, lowercase for others
-        normalized_addr = address if chain == "solana" else address.lower()
-        return self._lookup.get(chain, {}).get(normalized_addr)
+        return self._lookup.get(chain, {}).get(address.lower())
 
     # ------------------------------------------------------------------
     # Node / edge construction
@@ -573,25 +318,8 @@ class ServiceClassifier:
 
         # Aggregate all known contract addresses for this protocol on this chain.
         known = record.contracts.get(chain, [])
-        # Preserve case for Solana addresses, lowercase for others
-        normalized_addr = contract_address if chain == "solana" else contract_address.lower()
-        if normalized_addr not in known:
-            known = [normalized_addr] + known
-
-        # Derive risk signals from the service record.
-        # Mixer nodes are inherently high-risk; sanctioned nodes carry maximum
-        # risk and the sanctioned flag so frontend can apply distinct styling.
-        node_risk_score: float = 0.0
-        node_risk_factors: List[str] = []
-        node_sanctioned: bool = False
-        if record.service_type == "mixer":
-            node_risk_score = 0.9
-            node_risk_factors = ["mixer"]
-        if record.sanctioned:
-            node_risk_score = 1.0
-            node_sanctioned = True
-            if "sanctions" not in node_risk_factors:
-                node_risk_factors.append("sanctions")
+        if contract_address.lower() not in known:
+            known = [contract_address.lower()] + known
 
         return InvestigationNode(
             node_id=node_id,
@@ -604,9 +332,6 @@ class ServiceClassifier:
             display_sublabel=f"{record.service_type.upper()} · {tx_hash[:10]}…",
             chain=chain,
             expandable_directions=[],  # Service nodes are not expanded further.
-            risk_score=node_risk_score,
-            risk_factors=node_risk_factors,
-            sanctioned=node_sanctioned,
             service_data=ServiceNodeData(
                 protocol_id=record.protocol_id,
                 service_type=record.service_type,
@@ -621,8 +346,7 @@ class ServiceClassifier:
                 tx_chain=chain,
                 timestamp=timestamp,
                 direction=direction,
-                # Preserve case for Solana addresses, lowercase for others
-                contract_address=contract_address if chain == "solana" else contract_address.lower(),
+                contract_address=contract_address.lower(),
                 asset_symbol=asset_symbol,
                 canonical_asset_id=canonical_asset_id,
                 value_native=value_native,

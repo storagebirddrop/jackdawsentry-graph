@@ -93,16 +93,19 @@ class AddressNodeData(BaseModel):
 
     address: str
     address_type: str  # "eoa" | "contract" | "multisig" | "program" | "pda" | ...
+    chain: Optional[str] = None
+    entity_id: Optional[str] = None
+    entity_name: Optional[str] = None
+    entity_category: Optional[str] = None
+    risk_score: Optional[float] = None
+    is_sanctioned: Optional[bool] = None
+    is_mixer: Optional[bool] = None
+    label: Optional[str] = None
+    fiat_value_usd: Optional[float] = None
     tx_count: Optional[int] = None
     first_seen: Optional[str] = None
     last_seen: Optional[str] = None
     is_coinjoin_halt: Optional[bool] = None
-    # Contract / program deployment metadata.
-    is_contract: bool = False
-    deployer: Optional[str] = None          # Address that deployed the contract.
-    deployment_tx: Optional[str] = None     # Deployment transaction hash (EVM).
-    upgrade_authority: Optional[str] = None  # Solana upgradeable-loader authority.
-    deployer_entity: Optional[str] = None   # Resolved entity name for the deployer.
 
 
 class EntityNodeData(BaseModel):
@@ -134,6 +137,10 @@ class BridgeHopData(BaseModel):
         default=None,
         validation_alias=AliasChoices("destination_chain", "dest_chain"),
     )
+    destination_address: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("destination_address", "dest_address"),
+    )
     source_asset: str
     destination_asset: str = Field(
         validation_alias=AliasChoices("destination_asset", "dest_asset"),
@@ -142,6 +149,10 @@ class BridgeHopData(BaseModel):
     destination_amount: Optional[float] = Field(
         default=None,
         validation_alias=AliasChoices("destination_amount", "dest_amount"),
+    )
+    destination_tx_hash: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("destination_tx_hash", "dest_tx_hash"),
     )
     time_delta_seconds: Optional[float] = None
     correlation_confidence: float = Field(
@@ -154,29 +165,17 @@ class BridgeHopData(BaseModel):
 class SwapEventData(BaseModel):
     """DEX / AMM swap event data."""
 
-    model_config = ConfigDict(populate_by_name=True)
-
-    swap_id: Optional[str] = None
     protocol_id: str
-    chain: Optional[str] = None
-    input_asset: str = Field(validation_alias=AliasChoices("input_asset", "in_asset"))
-    input_amount: float = Field(validation_alias=AliasChoices("input_amount", "in_amount"))
-    input_fiat: Optional[float] = Field(
-        default=None,
-        validation_alias=AliasChoices("input_fiat", "in_fiat"),
-    )
-    output_asset: str = Field(validation_alias=AliasChoices("output_asset", "out_asset"))
-    output_amount: float = Field(
-        validation_alias=AliasChoices("output_amount", "out_amount"),
-    )
-    output_fiat: Optional[float] = Field(
-        default=None,
-        validation_alias=AliasChoices("output_fiat", "out_fiat"),
-    )
-    exchange_rate: Optional[float] = None
+    in_asset: str
+    in_amount: float
+    in_fiat: Optional[float] = None
+    out_asset: str
+    out_amount: float
+    out_fiat: Optional[float] = None
+    exchange_rate: float
     route_summary: Optional[str] = None
-    tx_hash: Optional[str] = None
-    timestamp: Optional[str] = None
+    tx_hash: str
+    timestamp: str
 
 
 class LightningChannelOpenData(BaseModel):
@@ -294,6 +293,7 @@ class ActivitySummary(BaseModel):
     destination_chain: Optional[str] = None
     source_tx_hash: Optional[str] = None
     destination_tx_hash: Optional[str] = None
+    destination_address: Optional[str] = None
     order_id: Optional[str] = None
     asset_symbol: Optional[str] = None
     canonical_asset_id: Optional[str] = None
@@ -474,6 +474,26 @@ class AssetContext(BaseModel):
     total_value_fiat: Optional[float] = None
 
 
+class ExpansionEmptyState(BaseModel):
+    """Context for empty expansion responses.
+
+    Helps the frontend distinguish between:
+    - no indexed data in the current graph dataset,
+    - address not observed on-chain,
+    - chains where live address-history lookup is unavailable, and
+    - chains where a live lookup was attempted and still found no activity.
+    """
+
+    reason: str
+    message: str
+    chain: str
+    address: Optional[str] = None
+    operation_type: Optional[OperationType] = None
+    live_lookup_supported: bool = False
+    observed_on_chain: Optional[bool] = None
+    known_tx_count: Optional[int] = None
+
+
 # ---------------------------------------------------------------------------
 # ExpansionResponse v2
 # ---------------------------------------------------------------------------
@@ -520,16 +540,14 @@ class ExpansionResponseV2(BaseModel):
     continuation_token: Optional[str] = None
     pagination: PaginationMeta = Field(default_factory=PaginationMeta)
 
-    # Ingest signalling — True when expansion was empty because historical data
-    # is not yet in the event store; the frontend should poll and retry.
-    ingest_pending: bool = False
-
     # Context
     layout_hints: LayoutHints = Field(default_factory=LayoutHints)
     chain_context: ChainContext = Field(
         default_factory=lambda: ChainContext(primary_chain="unknown", chains_present=[])
     )
     asset_context: AssetContext = Field(default_factory=AssetContext)
+    empty_state: Optional[ExpansionEmptyState] = None
+    ingest_pending: bool = False
 
     timestamp: datetime
 
@@ -579,6 +597,34 @@ class SessionSnapshotResponse(BaseModel):
     saved_at: datetime
 
 
+class IngestStatusResponse(BaseModel):
+    """Response for background address ingest polling."""
+
+    address: str
+    blockchain: str
+    status: Literal["pending", "running", "completed", "failed", "not_found"]
+    queued_at: Optional[datetime] = None
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    tx_count: Optional[int] = None
+    error: Optional[str] = None
+
+
+class TxResolveResponse(BaseModel):
+    """Response for tx-hash resolution into trace seed context."""
+
+    found: bool
+    tx_hash: str
+    blockchain: str
+    from_address: Optional[str] = None
+    to_address: Optional[str] = None
+    value_native: Optional[float] = None
+    asset_symbol: Optional[str] = None
+    timestamp: Optional[str] = None
+    block_number: Optional[int] = None
+    status: Optional[str] = None
+
+
 # ---------------------------------------------------------------------------
 # Expand request
 # ---------------------------------------------------------------------------
@@ -590,6 +636,7 @@ class ExpandOptions(BaseModel):
     depth: int = Field(default=1, ge=1, le=3)
     asset_filter: List[str] = []
     chain_filter: List[str] = []
+    tx_hashes: List[str] = []
     min_value_fiat: Optional[float] = None
     max_results: int = Field(default=25, ge=1, le=100)
     include_services: bool = True
@@ -636,45 +683,3 @@ class BridgeHopStatusResponse(BaseModel):
         validation_alias=AliasChoices("correlation_confidence", "correlation_conf"),
     )
     updated_at: datetime
-
-
-class TxResolveResponse(BaseModel):
-    """Response for GET /api/v1/graph/resolve-tx.
-
-    Resolves a transaction hash to its participant addresses so the caller
-    can seed a session from either the sender or the receiver.  ``found``
-    is False when neither the event store nor the live RPC could locate the
-    transaction.
-    """
-
-    found: bool
-    tx_hash: str
-    blockchain: str
-    from_address: Optional[str] = None
-    to_address: Optional[str] = None
-    value_native: Optional[float] = None
-    # Symbol of the native gas asset (e.g. "ETH", "BNB", "SOL").
-    asset_symbol: Optional[str] = None
-    timestamp: Optional[datetime] = None
-    block_number: Optional[int] = None
-    status: Optional[str] = None  # "success" | "failed" | "pending"
-
-
-class IngestStatusResponse(BaseModel):
-    """Response for GET /api/v1/graph/sessions/{session_id}/ingest/status.
-
-    Returned by the frontend's ingest-pending poller.  The frontend calls this
-    endpoint every 5 seconds after expansion returns ``ingest_pending=True``.
-    When ``status`` transitions to ``"completed"``, the frontend retries the
-    expansion to load the newly-ingested activity.
-    """
-
-    address: str
-    blockchain: str
-    # "pending" | "running" | "completed" | "failed" | "not_found"
-    status: str
-    queued_at: Optional[datetime] = None
-    started_at: Optional[datetime] = None
-    completed_at: Optional[datetime] = None
-    tx_count: Optional[int] = None
-    error: Optional[str] = None

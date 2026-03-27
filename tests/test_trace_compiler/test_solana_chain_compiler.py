@@ -92,6 +92,52 @@ async def test_expand_prev_no_pg_returns_empty():
     assert edges == []
 
 
+@pytest.mark.asyncio
+async def test_fetch_outbound_asset_filter_excludes_native_sol():
+    mock_pg = MagicMock()
+    mock_conn = AsyncMock()
+    mock_conn.fetch = AsyncMock(return_value=[_row(COUNTERPARTY, symbol="USDC")])
+    mock_pg.acquire = MagicMock(return_value=AsyncMock(
+        __aenter__=AsyncMock(return_value=mock_conn),
+        __aexit__=AsyncMock(return_value=False),
+    ))
+
+    compiler = SolanaChainCompiler(postgres_pool=mock_pg)
+    rows = await compiler._fetch_outbound(SEED, ExpandOptions(max_results=10, asset_filter=["USDC"]))
+
+    assert len(rows) == 1
+    assert rows[0]["asset_symbol"] == "USDC"
+    assert mock_conn.fetch.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_fetch_inbound_asset_filter_includes_sol_when_selected():
+    mock_pg = MagicMock()
+    mock_conn = AsyncMock()
+    mock_conn.fetch = AsyncMock(side_effect=[
+        [_row(COUNTERPARTY, symbol="USDC")],
+        [{
+            "tx_hash": TX_HASH_2,
+            "counterparty": COUNTERPARTY,
+            "value_native": 0.5,
+            "asset_symbol": "SOL",
+            "canonical_asset_id": None,
+            "timestamp": None,
+        }],
+    ])
+    mock_pg.acquire = MagicMock(return_value=AsyncMock(
+        __aenter__=AsyncMock(return_value=mock_conn),
+        __aexit__=AsyncMock(return_value=False),
+    ))
+
+    compiler = SolanaChainCompiler(postgres_pool=mock_pg)
+    rows = await compiler._fetch_inbound(SEED, ExpandOptions(max_results=10, asset_filter=["SOL", "USDC"]))
+
+    assert len(rows) == 2
+    assert {row["asset_symbol"] for row in rows} == {"USDC", "SOL"}
+    assert mock_conn.fetch.await_count == 2
+
+
 # ---------------------------------------------------------------------------
 # _build_graph — plain address nodes
 # ---------------------------------------------------------------------------

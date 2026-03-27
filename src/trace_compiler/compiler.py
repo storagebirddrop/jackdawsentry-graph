@@ -6,7 +6,7 @@ This is the semantic boundary between raw blockchain facts (PostgreSQL event
 store, Neo4j canonical graph) and the investigation-view graph served to the
 frontend.
 
-Current state (Phase 4+): EVM, UTXO, Solana, Tron, XRP, Cosmos, and Sui chain compilers are implemented.
+Current state (Phase 4): EVM, UTXO, Solana, and Tron chain compilers are implemented.
 Session creation and expansion are fully wired; bridge hop status polling
 is supported via the PostgreSQL ``bridge_correlations`` table.
 
@@ -24,21 +24,22 @@ from typing import Dict
 from typing import List
 from typing import Optional
 
+from src.collectors.rpc.factory import get_rpc_client
 from src.trace_compiler.chains.bitcoin import UTXOChainCompiler
+from src.trace_compiler.chains.evm import EVM_CHAINS
 from src.trace_compiler.chains.evm import EVMChainCompiler
 from src.trace_compiler.chains.solana import SolanaChainCompiler
-from src.trace_compiler.chains.cosmos import CosmosChainCompiler
-from src.trace_compiler.chains.sui import SuiChainCompiler
 from src.trace_compiler.chains.tron import TronChainCompiler
-from src.trace_compiler.chains.xrp import XRPChainCompiler
 from src.trace_compiler.lineage import edge_id as mk_edge_id
 from src.trace_compiler.lineage import lineage_id as mk_lineage_id
 from src.trace_compiler.lineage import new_operation_id
 from src.trace_compiler.lineage import path_id as mk_path_id
 from src.trace_compiler.models import AssetContext
+from src.trace_compiler.models import AddressNodeData
 from src.trace_compiler.models import BridgeHopStatusResponse
 from src.trace_compiler.models import ChainContext
 from src.trace_compiler.models import ExpandRequest
+from src.trace_compiler.models import ExpansionEmptyState
 from src.trace_compiler.models import ExpansionResponseV2
 from src.trace_compiler.models import InvestigationEdge
 from src.trace_compiler.models import InvestigationNode
@@ -46,11 +47,92 @@ from src.trace_compiler.models import LayoutHints
 from src.trace_compiler.models import PaginationMeta
 from src.trace_compiler.models import SessionCreateRequest
 from src.trace_compiler.models import SessionCreateResponse
+from src.trace_compiler.services.address_exposure import AddressExposureEnricher
+from src.trace_compiler.lineage import node_id as mk_node_id
 
 logger = logging.getLogger(__name__)
 
 _EXPANSION_CACHE_TTL = 900  # 15 minutes
 _HOP_ALLOWLIST_TTL_SECONDS = 24 * 60 * 60
+_DIRECT_LIVE_ADDRESS_HISTORY_CHAINS = {"bitcoin", "solana"}
+_ON_DEMAND_HISTORY_CHAINS = set(EVM_CHAINS) | {"tron", "solana", "bitcoin"}
+_NATIVE_ASSET_SYMBOLS = {
+    "bitcoin": "BTC",
+    "solana": "SOL",
+    "ethereum": "ETH",
+    "bsc": "BNB",
+    "polygon": "MATIC",
+    "arbitrum": "ETH",
+    "base": "ETH",
+    "avalanche": "AVAX",
+    "optimism": "ETH",
+    "tron": "TRX",
+}
+
+
+def _operation_phrase(operation_type: str) -> str:
+    if operation_type == "expand_next":
+        return "next"
+    if operation_type in {"expand_prev", "expand_previous"}:
+        return "previous"
+    if operation_type == "expand_neighbors":
+        return "neighbor"
+    return "related"
+
+
+def _truncate_identifier(value: str, *, head: int = 10, tail: int = 8) -> str:
+    if not value or len(value) <= head + tail + 3:
+        return value
+    return f"{value[:head]}...{value[-tail:]}"
+
+
+def _canonical_node_identifier(chain: str, node_type: str, identifier: str) -> str:
+    """Return the canonical identifier used inside stable graph node IDs."""
+    if not isinstance(identifier, str):
+        return identifier
+
+    value = identifier.strip()
+    if not value:
+        return value
+
+    if node_type == "address" and chain in EVM_CHAINS and value.startswith("0x"):
+        return value.lower()
+
+    if node_type in {"transaction", "bridge_hop", "swap_event"} and value.startswith("0x"):
+        return value.lower()
+
+    return value
+
+
+def _canonical_node_id(node_id: str) -> str:
+    """Normalize a node_id string to the canonical identifier form."""
+    if not isinstance(node_id, str):
+        return node_id
+
+    parts = node_id.split(":", 2)
+    if len(parts) != 3:
+        return node_id
+
+    chain, node_type, identifier = parts
+    canonical_identifier = _canonical_node_identifier(chain, node_type, identifier)
+    if canonical_identifier == identifier:
+        return node_id
+    return f"{chain}:{node_type}:{canonical_identifier}"
+
+
+def _supports_direct_live_address_history(chain: str) -> bool:
+    """Return True when the compiler can query recent history immediately."""
+    return chain in _DIRECT_LIVE_ADDRESS_HISTORY_CHAINS
+
+
+def _supports_on_demand_address_history(chain: str) -> bool:
+    """Return True when empty frontiers can trigger background ingest."""
+    return chain in _ON_DEMAND_HISTORY_CHAINS
+
+
+def _supports_live_address_history(chain: str) -> bool:
+    """Return True when either direct lookup or on-demand ingest exists."""
+    return _supports_direct_live_address_history(chain) or _supports_on_demand_address_history(chain)
 
 
 def _expansion_cache_key(
@@ -70,15 +152,23 @@ def _expansion_cache_key(
             if isinstance(asset, str) and asset.strip()
         }
     )
+    normalized_tx_hashes = sorted(
+        {
+            tx_hash.strip().lower()
+            for tx_hash in request.options.tx_hashes
+            if isinstance(tx_hash, str) and tx_hash.strip()
+        }
+    )
     fingerprint = {
         "version": 2,
         "session_id": session_id,
-        "seed_node_id": request.seed_node_id,
+        "seed_node_id": _canonical_node_id(request.seed_node_id),
         "operation_type": request.operation_type,
         "depth": request.options.depth,
         "page_size": request.options.page_size,
         "max_results": request.options.max_results,
         "asset_filter": normalized_asset_filter,
+        "tx_hashes": normalized_tx_hashes,
         "min_value_fiat": request.options.min_value_fiat,
         "include_services": request.options.include_services,
         "follow_bridges": request.options.follow_bridges,
@@ -171,9 +261,10 @@ class TraceCompiler:
         _btc = UTXOChainCompiler(postgres_pool, neo4j_driver, redis_client)
         _sol = SolanaChainCompiler(postgres_pool, neo4j_driver, redis_client)
         _tron = TronChainCompiler(postgres_pool, neo4j_driver, redis_client)
-        _xrp = XRPChainCompiler(postgres_pool, neo4j_driver, redis_client)
-        _cosmos = CosmosChainCompiler(postgres_pool, neo4j_driver, redis_client)
-        _sui = SuiChainCompiler(postgres_pool, neo4j_driver, redis_client)
+        self._address_exposure = AddressExposureEnricher(
+            postgres_pool=postgres_pool,
+            redis_client=redis_client,
+        )
         self._chain_compilers: Dict[str, Any] = {
             chain: _evm for chain in _evm.supported_chains
         }
@@ -185,15 +276,6 @@ class TraceCompiler:
         )
         self._chain_compilers.update(
             {chain: _tron for chain in _tron.supported_chains}
-        )
-        self._chain_compilers.update(
-            {chain: _xrp for chain in _xrp.supported_chains}
-        )
-        self._chain_compilers.update(
-            {chain: _cosmos for chain in _cosmos.supported_chains}
-        )
-        self._chain_compilers.update(
-            {chain: _sui for chain in _sui.supported_chains}
         )
 
     async def create_session(
@@ -222,7 +304,12 @@ class TraceCompiler:
         from src.trace_compiler.models import AddressNodeData
 
         session_id = str(uuid.uuid4())
-        _node_id = mk_node(request.seed_chain, "address", request.seed_address)
+        canonical_seed_address = _canonical_node_identifier(
+            request.seed_chain,
+            "address",
+            request.seed_address,
+        )
+        _node_id = mk_node(request.seed_chain, "address", canonical_seed_address)
         _branch = mk_branch(session_id, _node_id, 0)
         _path = mk_path(_branch, 0)
         _lineage = mk_lineage(session_id, _branch, _path, 0)
@@ -242,9 +329,11 @@ class TraceCompiler:
             expandable_directions=["prev", "next", "neighbors"],
             address_data=AddressNodeData(
                 address=request.seed_address,
+                chain=request.seed_chain,
                 address_type="unknown",
             ),
         )
+        root_node = await self._address_exposure.enrich_address_node(root_node)
 
         created_at = datetime.now(timezone.utc)
 
@@ -252,7 +341,6 @@ class TraceCompiler:
         if self._pg is not None:
             try:
                 async with self._pg.acquire() as conn:
-                    # nosemgrep: sql-injection-db-cursor-execute - uses parameterized query ($1, $2, ...)
                     await conn.execute(
                         """
                         INSERT INTO graph_sessions
@@ -280,18 +368,6 @@ class TraceCompiler:
                 logger.warning(
                     "graph_sessions: failed to persist session %s: %s", session_id, exc
                 )
-
-        # Enrich the seed node immediately — callers need sanctions/entity
-        # data visible on the root node before any expansion is attempted.
-        try:
-            from src.trace_compiler.attribution.enricher import enrich_nodes
-            enriched = await enrich_nodes([root_node], redis_client=self._redis)
-            if enriched:
-                root_node = enriched[0]
-            else:
-                logger.warning("Seed node enrichment returned empty list")
-        except Exception as exc:
-            logger.warning("Seed node enrichment failed: %s", exc)
 
         return SessionCreateResponse(
             session_id=session_id,
@@ -324,6 +400,10 @@ class TraceCompiler:
 
         # Compute branch_id first — needed both in the cache-hit path and in
         # the normal compilation path below.
+        canonical_seed_node_id = _canonical_node_id(request.seed_node_id)
+        if canonical_seed_node_id != request.seed_node_id:
+            request = request.model_copy(update={"seed_node_id": canonical_seed_node_id})
+
         _branch = mk_branch(session_id, request.seed_node_id, 0)
 
         # Check Redis cache for a previous identical expansion (15-min TTL).
@@ -345,14 +425,6 @@ class TraceCompiler:
                         edges=cached_edges,
                     )
                     await self._register_bridge_hops(session_id, added_nodes)
-                    # Re-enrich on cache hit so sanctions are always current.
-                    # Pass edges so taint propagation can fire even on cache hits.
-                    try:
-                        from src.trace_compiler.attribution.enricher import enrich_nodes
-                        added_nodes = await enrich_nodes(added_nodes, edges=added_edges, redis_client=self._redis)
-                    except Exception as enrich_exc:
-                        logger.warning("Failed to re-enrich cached nodes: %s", enrich_exc)
-                        # Continue without enrichment - the cached data is still usable
                     # Override session-scoped fields so the caller receives
                     # IDs that match their current session, not the session
                     # that originally populated the cache.
@@ -384,6 +456,8 @@ class TraceCompiler:
 
         added_nodes: List[InvestigationNode] = []
         added_edges: List[InvestigationEdge] = []
+        empty_state: Optional[ExpansionEmptyState] = None
+        ingest_pending = False
 
         compiler = self._chain_compilers.get(chain)
         if compiler is not None and node_type == "address":
@@ -422,12 +496,20 @@ class TraceCompiler:
                         page_size=request.options.page_size,
                         depth=request.options.depth,
                         asset_filter=request.options.asset_filter,
+                        tx_hashes=request.options.tx_hashes,
+                        min_value_fiat=request.options.min_value_fiat,
+                        include_services=request.options.include_services,
+                        follow_bridges=request.options.follow_bridges,
                     )
                     bwd_options = ExpandOptions(
                         max_results=max_bwd,
                         page_size=request.options.page_size,
                         depth=request.options.depth,
                         asset_filter=request.options.asset_filter,
+                        tx_hashes=request.options.tx_hashes,
+                        min_value_fiat=request.options.min_value_fiat,
+                        include_services=request.options.include_services,
+                        follow_bridges=request.options.follow_bridges,
                     )
                     
                     fwd_n, fwd_e = await compiler.expand_next(
@@ -479,41 +561,43 @@ class TraceCompiler:
                 chain,
                 node_type,
             )
-            return ExpansionResponseV2(
-                operation_id=new_operation_id(),
-                operation_type=request.operation_type,
-                session_id=session_id,
-                seed_node_id=request.seed_node_id,
-                seed_lineage_id=request.seed_lineage_id,
-                branch_id=_branch,
-                expansion_depth=0,
-                added_nodes=[],
-                added_edges=[],
-                has_more=False,
-                ingest_pending=False,
-                pagination=PaginationMeta(
-                    page_size=request.options.page_size,
-                    max_results=request.options.max_results,
-                    has_more=False,
-                ),
-                layout_hints=LayoutHints(),
-                chain_context=ChainContext(),
-                asset_context=AssetContext(),
-                timestamp=datetime.now(timezone.utc),
-            )
 
-        # When the event store has no data for this address, queue an
-        # on-demand ingest so future expansions are served from live data.
-        ingest_pending = False
-        if not added_nodes and node_type == "address":
-            try:
-                from src.trace_compiler.ingest.trigger import maybe_trigger_address_ingest
-                ingest_pending = await maybe_trigger_address_ingest(
-                    identifier, chain, self._pg
-                )
-            except Exception as ingest_exc:
-                logger.warning("Failed to trigger address ingest for %s: %s", identifier, ingest_exc)
-                ingest_pending = False
+        if node_type == "address" and not added_nodes and not added_edges:
+            live_nodes, live_edges = await self._expand_from_live_history(
+                session_id=session_id,
+                branch_id=_branch,
+                request=request,
+                chain=chain,
+                seed_address=identifier,
+                chain_compiler=compiler,
+            )
+            if live_nodes or live_edges:
+                added_nodes = live_nodes
+                added_edges = live_edges
+            else:
+                if _supports_on_demand_address_history(chain):
+                    try:
+                        from src.trace_compiler.ingest.trigger import maybe_trigger_address_ingest
+
+                        ingest_pending = await maybe_trigger_address_ingest(
+                            address=_canonical_node_identifier(chain, "address", identifier),
+                            chain=chain,
+                            pg_pool=self._pg,
+                        )
+                    except Exception as exc:
+                        logger.debug(
+                            "On-demand ingest trigger failed for %s/%s: %s",
+                            chain,
+                            identifier,
+                            exc,
+                        )
+
+                if not ingest_pending:
+                    empty_state = await self._build_empty_state(
+                        chain=chain,
+                        address=identifier,
+                        operation_type=request.operation_type,
+                    )
 
         # Build the response
         response = ExpansionResponseV2(
@@ -531,7 +615,6 @@ class TraceCompiler:
                 and request.options.max_results > 0
                 and len(added_nodes) >= request.options.max_results
             ),
-            ingest_pending=ingest_pending,
             pagination=PaginationMeta(
                 page_size=request.options.page_size,
                 max_results=request.options.max_results,
@@ -555,6 +638,8 @@ class TraceCompiler:
                     {e.asset_symbol for e in added_edges if e.asset_symbol}
                 ),
             ),
+            empty_state=empty_state,
+            ingest_pending=ingest_pending,
             timestamp=datetime.now(timezone.utc),
         )
 
@@ -568,21 +653,6 @@ class TraceCompiler:
             )
 
         await self._register_bridge_hops(session_id, added_nodes)
-
-        # Enrich nodes with sanctions, entity labels, and risk taint propagation.
-        # Pass all nodes + edges so the enricher can propagate risk from mixer/
-        # sanctioned service nodes to directly connected address nodes.
-        if added_nodes:
-            import time
-            start_time = time.time()
-            from src.trace_compiler.attribution.enricher import enrich_nodes
-            enriched_nodes = await enrich_nodes(added_nodes, edges=added_edges, redis_client=self._redis)
-            enrichment_time = time.time() - start_time
-            logger.debug(
-                "Enriched %d nodes in %.3fs", len(enriched_nodes), enrichment_time
-            )
-            # Update response with enriched nodes
-            response = response.model_copy(update={"added_nodes": enriched_nodes})
 
         # Cache successful non-empty results in Redis (15-minute TTL).
         if added_nodes and self._redis is not None:
@@ -613,6 +683,223 @@ class TraceCompiler:
                 logger.debug("Redis cache write failed: %s", cache_exc)
 
         return response
+
+    async def _expand_from_live_history(
+        self,
+        *,
+        session_id: str,
+        branch_id: str,
+        request: ExpandRequest,
+        chain: str,
+        seed_address: str,
+        chain_compiler: Any = None,
+    ) -> tuple[List[InvestigationNode], List[InvestigationEdge]]:
+        """Fallback to live address history where the lightweight RPC supports it."""
+        if not _supports_direct_live_address_history(chain):
+            return [], []
+
+        client = get_rpc_client(chain)
+        if client is None:
+            return [], []
+
+        try:
+            transactions = await client.get_address_transactions(
+                seed_address,
+                limit=min(request.options.max_results, 25),
+            )
+        except Exception as exc:
+            logger.debug(
+                "Live address-history lookup failed for %s/%s: %s",
+                chain,
+                seed_address,
+                exc,
+            )
+            return [], []
+
+        if not transactions:
+            return [], []
+
+        seed_node_id = mk_node_id(chain, "address", seed_address)
+        path_id = mk_path_id(branch_id, 0)
+        added_nodes: Dict[str, InvestigationNode] = {}
+        added_edges: Dict[str, InvestigationEdge] = {}
+        native_symbol = _NATIVE_ASSET_SYMBOLS.get(chain)
+        canonical_seed = _canonical_node_identifier(chain, "address", seed_address)
+
+        for tx in transactions:
+            normalized_from = _canonical_node_identifier(
+                chain, "address", tx.from_address or ""
+            )
+            normalized_to = _canonical_node_identifier(
+                chain, "address", tx.to_address or ""
+            )
+            include_forward = (
+                request.operation_type in {"expand_next", "expand_neighbors"}
+                and normalized_from == canonical_seed
+                and normalized_to
+                and normalized_to != canonical_seed
+            )
+            include_backward = (
+                request.operation_type in {"expand_prev", "expand_previous", "expand_neighbors"}
+                and normalized_to == canonical_seed
+                and normalized_from
+                and normalized_from != canonical_seed
+            )
+
+            if include_forward:
+                counterparty = normalized_to
+                source_node_id = seed_node_id
+                target_node_id = mk_node_id(chain, "address", counterparty)
+                direction = "forward"
+            elif include_backward:
+                counterparty = normalized_from
+                source_node_id = mk_node_id(chain, "address", counterparty)
+                target_node_id = seed_node_id
+                direction = "backward"
+            else:
+                continue
+
+            node_id = mk_node_id(chain, "address", counterparty)
+            if node_id not in added_nodes:
+                node = InvestigationNode(
+                    node_id=node_id,
+                    lineage_id=mk_lineage_id(session_id, branch_id, path_id, 1),
+                    node_type="address",
+                    branch_id=branch_id,
+                    path_id=path_id,
+                    depth=1,
+                    display_label=_truncate_identifier(counterparty),
+                    display_sublabel=f"{chain.upper()} live lookup",
+                    chain=chain,
+                    expandable_directions=["prev", "next", "neighbors"],
+                    address_data=AddressNodeData(
+                        address=counterparty,
+                        address_type="account",
+                        chain=chain,
+                    ),
+                )
+                if chain_compiler is not None and hasattr(chain_compiler, "_address_exposure"):
+                    try:
+                        node = await chain_compiler._address_exposure.enrich_node(node)
+                    except Exception as exc:
+                        logger.debug(
+                            "Address exposure enrichment skipped for live node %s: %s",
+                            counterparty,
+                            exc,
+                        )
+                added_nodes[node_id] = node
+
+            tx_hash = getattr(tx, "hash", None) or f"live:{chain}:{counterparty}"
+            edge_key = f"{source_node_id}:{target_node_id}:{tx_hash}"
+            if edge_key in added_edges:
+                continue
+
+            timestamp = tx.timestamp.isoformat() if getattr(tx, "timestamp", None) else None
+            value_native = None
+            raw_value = getattr(tx, "value", None)
+            if raw_value is not None:
+                try:
+                    value_native = float(raw_value)
+                except (TypeError, ValueError):
+                    value_native = None
+
+            added_edges[edge_key] = InvestigationEdge(
+                edge_id=mk_edge_id(source_node_id, target_node_id, branch_id, tx_hash),
+                source_node_id=source_node_id,
+                target_node_id=target_node_id,
+                branch_id=branch_id,
+                path_id=path_id,
+                edge_type="transfer",
+                value_native=value_native,
+                asset_symbol=native_symbol,
+                asset_chain=chain,
+                tx_hash=tx_hash,
+                tx_chain=chain,
+                block_number=getattr(tx, "block_number", None),
+                timestamp=timestamp,
+                direction=direction,
+            )
+
+        return list(added_nodes.values()), list(added_edges.values())
+
+    async def _build_empty_state(
+        self,
+        *,
+        chain: str,
+        address: str,
+        operation_type: str,
+    ) -> ExpansionEmptyState:
+        """Return a frontend-friendly explanation for an empty expansion."""
+        phrase = _operation_phrase(operation_type)
+        live_lookup_supported = _supports_live_address_history(chain)
+        observed_on_chain: Optional[bool] = None
+        known_tx_count: Optional[int] = None
+
+        client = get_rpc_client(chain)
+        address_info = None
+        if client is not None:
+            try:
+                address_info = await client.get_address_info(address)
+            except Exception as exc:
+                logger.debug(
+                    "Address info lookup failed for empty expansion %s/%s: %s",
+                    chain,
+                    address,
+                    exc,
+                )
+
+        if address_info is not None:
+            known_tx_count = getattr(address_info, "transaction_count", None)
+            balance_native = getattr(address_info, "balance", None) or 0.0
+            address_type = getattr(address_info, "type", None)
+            if chain in EVM_CHAINS:
+                observed_on_chain = bool(
+                    (known_tx_count or 0) > 0
+                    or balance_native > 0
+                    or address_type == "contract"
+                )
+            elif chain == "tron":
+                observed_on_chain = balance_native > 0
+            else:
+                observed_on_chain = bool((known_tx_count or 0) > 0 or balance_native > 0)
+
+        if live_lookup_supported:
+            reason = "live_lookup_returned_empty"
+            message = (
+                f"No indexed {chain.upper()} {phrase} activity was found, and a live "
+                "address-history fallback did not surface additional transactions."
+            )
+        elif observed_on_chain:
+            reason = "dataset_missing_activity"
+            message = (
+                f"This {chain.upper()} address appears on-chain, but its {phrase} "
+                "activity is not indexed in the current graph dataset and live "
+                "address-history lookup is not configured for this chain yet."
+            )
+        elif observed_on_chain is False:
+            reason = "no_observed_activity"
+            message = (
+                f"No indexed {chain.upper()} {phrase} activity was found for this "
+                "address, and the lightweight on-chain lookup did not show "
+                "observable activity either."
+            )
+        else:
+            reason = "no_indexed_activity"
+            message = (
+                f"No indexed {chain.upper()} {phrase} activity was found for this "
+                "address in the current graph dataset."
+            )
+
+        return ExpansionEmptyState(
+            reason=reason,
+            message=message,
+            chain=chain,
+            address=address,
+            operation_type=operation_type,
+            live_lookup_supported=live_lookup_supported,
+            observed_on_chain=observed_on_chain,
+            known_tx_count=known_tx_count,
+        )
 
     @staticmethod
     def _bridge_hop_allowlist_key(session_id: str) -> str:

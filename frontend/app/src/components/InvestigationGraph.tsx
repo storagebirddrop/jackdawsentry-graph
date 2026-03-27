@@ -22,6 +22,7 @@ import {
   useNodesState,
   useEdgesState,
   type Node,
+  type NodeChange,
   type Edge,
   type EdgeMouseHandler,
   type NodeMouseHandler,
@@ -31,7 +32,12 @@ import '@xyflow/react/dist/style.css';
 import { useGraphStore, type BranchMeta } from '../store/graphStore';
 import { expandNode } from '../api/client';
 import { computeElkLayout } from '../layout/elkLayout';
-import type { BridgeHopData, ExpandRequest, InvestigationNode } from '../types/graph';
+import type {
+  BridgeHopData,
+  ExpandRequest,
+  InvestigationEdge,
+  InvestigationNode,
+} from '../types/graph';
 
 import AddressNode from './nodes/AddressNode';
 import EntityNode from './nodes/EntityNode';
@@ -52,6 +58,7 @@ import {
   DEFAULT_GRAPH_APPEARANCE,
   type GraphAppearanceState,
 } from './graphAppearance';
+import { saveWorkspace } from '../workspacePersistence';
 import {
   bridgeProtocolLabel,
   bridgeRouteLabel,
@@ -82,6 +89,16 @@ const EDGE_TYPES = {
 
 const NODE_OVERLOAD_THRESHOLD = 500;
 
+type FitViewHandle = {
+  fitView: (options?: {
+    duration?: number;
+    padding?: number;
+    includeHiddenNodes?: boolean;
+    maxZoom?: number;
+    minZoom?: number;
+  }) => void;
+};
+
 interface Props {
   sessionId: string;
   onStartNewInvestigation: () => void;
@@ -103,7 +120,7 @@ function applyFilters(
 ): { nodes: Node[]; edges: Edge[] } {
   let visibleNodes = nodes.filter((node) => {
     const data = node.data as unknown as InvestigationNode;
-    return isNodeVisibleInView(data, appearance.viewMode);
+    return !data.is_hidden && isNodeVisibleInView(data, appearance.viewMode);
   });
   let visibleEdges = edges;
 
@@ -139,6 +156,14 @@ function applyFilters(
     visibleEdges = visibleEdges.filter((e) => {
       const val = (e.data as Record<string, unknown>)?.fiat_value_usd as number | undefined;
       return val === undefined || val >= minFiat;
+    });
+  }
+
+  if (filters.selectedAssets.length > 0) {
+    const selectedAssets = new Set(filters.selectedAssets.map((asset) => asset.toLowerCase()));
+    visibleEdges = visibleEdges.filter((e) => {
+      const sym = (e.data as Record<string, unknown>)?.asset_symbol as string | undefined;
+      return sym !== undefined && selectedAssets.has(sym.toLowerCase());
     });
   }
 
@@ -228,8 +253,11 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
     rfNodes,
     rfEdges,
     setRfPositions,
+    syncRfPositions,
     applyExpansionDelta,
     setExpandingNode,
+    setNodeHidden,
+    restoreAllHiddenNodes,
     expandingNodeIds,
     exportSnapshot,
     importSnapshot,
@@ -263,9 +291,43 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
   const ingestRetryRef = useRef<
     Map<string, { node: Pick<InvestigationNode, 'node_id' | 'lineage_id'>; operation: ExpandRequest['operation_type'] }>
   >(new Map());
+  const reactFlowRef = useRef<FitViewHandle | null>(null);
+  const fitViewTimerRef = useRef<number | null>(null);
+  const autosaveTimerRef = useRef<number | null>(null);
+  const didHydrateManualLayoutRef = useRef(false);
 
   const showNotice = useCallback((message: string, tone: 'info' | 'error' = 'info') => {
     setNotice({ tone, message });
+  }, []);
+
+  const scheduleFitView = useCallback((duration = 260) => {
+    if (typeof window === 'undefined') return;
+
+    if (fitViewTimerRef.current !== null) {
+      window.clearTimeout(fitViewTimerRef.current);
+    }
+
+    fitViewTimerRef.current = window.setTimeout(() => {
+      fitViewTimerRef.current = null;
+      reactFlowRef.current?.fitView({
+        duration,
+        padding: 0.2,
+        includeHiddenNodes: false,
+        maxZoom: 1.15,
+        minZoom: 0.12,
+      });
+    }, 60);
+  }, []);
+
+  useEffect(() => () => {
+    if (fitViewTimerRef.current !== null) {
+      window.clearTimeout(fitViewTimerRef.current);
+      fitViewTimerRef.current = null;
+    }
+    if (autosaveTimerRef.current !== null) {
+      window.clearTimeout(autosaveTimerRef.current);
+      autosaveTimerRef.current = null;
+    }
   }, []);
 
   const branchEntries = useMemo(
@@ -379,6 +441,17 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
     };
   }, [rfNodes]);
 
+  const availableAssets = useMemo(() => {
+    const assets = new Set<string>();
+    for (const edge of rfEdges) {
+      const symbol = (edge.data as Record<string, unknown> | undefined)?.asset_symbol;
+      if (typeof symbol === 'string' && symbol.trim().length > 0) {
+        assets.add(symbol);
+      }
+    }
+    return [...assets].sort((left, right) => left.localeCompare(right));
+  }, [rfEdges]);
+
   const semanticLegend = useMemo(() => {
     const entries = new Map<
       string,
@@ -418,6 +491,15 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
     };
   }, [nodes]);
 
+  const hiddenNodeCount = useMemo(
+    () =>
+      rfNodes.reduce((count, node) => {
+        const data = node.data as unknown as InvestigationNode;
+        return count + (data.is_hidden ? 1 : 0);
+      }, 0),
+    [rfNodes],
+  );
+
   // Keep local RF state in sync with store, applying current filters
   useEffect(() => {
     const { nodes: fn, edges: fe } = applyFilters(
@@ -431,6 +513,21 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
     setEdges(fe);
   }, [rfNodes, rfEdges, filters, appearance, activeBranchIds, rootBranchId, setNodes, setEdges]);
 
+  useEffect(() => {
+    if (typeof window === 'undefined' || !sessionId || rfNodes.length === 0) {
+      return;
+    }
+
+    if (autosaveTimerRef.current !== null) {
+      window.clearTimeout(autosaveTimerRef.current);
+    }
+
+    autosaveTimerRef.current = window.setTimeout(() => {
+      autosaveTimerRef.current = null;
+      saveWorkspace(sessionId, exportSnapshot());
+    }, 320);
+  }, [sessionId, rfNodes, rfEdges, branchMap, exportSnapshot]);
+
   // Incremental ELK layout: only newly added nodes are placed freely.
   // Nodes that have already been laid out are passed to ELK as fixed-position
   // hints (enabling interactiveLayout mode) and their returned positions are
@@ -438,6 +535,26 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
   const layoutedNodeIds = useRef<Set<string>>(new Set());
   const layoutRef = useRef<number | null>(null);
   useEffect(() => {
+    if (rfNodes.length === 0) {
+      layoutedNodeIds.current.clear();
+      didHydrateManualLayoutRef.current = false;
+      return;
+    }
+
+    if (!didHydrateManualLayoutRef.current) {
+      const hasSavedPositions =
+        rfNodes.length > 1
+        && rfNodes.some(
+          (node) => Math.abs(node.position.x) > 1 || Math.abs(node.position.y) > 1,
+        );
+      if (hasSavedPositions) {
+        layoutedNodeIds.current = new Set(rfNodes.map((node) => node.id));
+        didHydrateManualLayoutRef.current = true;
+        return;
+      }
+      didHydrateManualLayoutRef.current = true;
+    }
+
     const newNodes = rfNodes.filter((n) => !layoutedNodeIds.current.has(n.id));
     if (newNodes.length === 0) return; // Nothing new to place.
 
@@ -480,6 +597,7 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
     async (
       node: Pick<InvestigationNode, 'node_id' | 'lineage_id'>,
       operation: ExpandRequest['operation_type'],
+      txHashes?: string[],
     ) => {
       if (expandingNodeIds.has(node.node_id)) return;
       if (rfNodes.length >= NODE_OVERLOAD_THRESHOLD) {
@@ -490,10 +608,20 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
       }
       setExpandingNode(node.node_id, true);
       try {
+        const nodeParts = node.node_id.split(':');
+        const nodeChain = nodeParts[0]?.toUpperCase() ?? 'this';
+        const expandOptions: NonNullable<ExpandRequest['options']> = {};
+        if (txHashes && txHashes.length > 0) {
+          expandOptions.tx_hashes = txHashes;
+        }
+        if (filters.selectedAssets.length > 0) {
+          expandOptions.asset_filter = filters.selectedAssets;
+        }
         const response = await expandNode(sessionId, {
           seed_node_id: node.node_id,
           seed_lineage_id: node.lineage_id,
           operation_type: operation,
+          options: Object.keys(expandOptions).length > 0 ? expandOptions : undefined,
         });
         const deltaNodes = response.nodes ?? response.added_nodes ?? [];
         const deltaEdges = response.edges ?? response.added_edges ?? [];
@@ -516,7 +644,8 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
             );
           } else {
             showNotice(
-              `No indexed ${expandOperationLabel(operation)} activity was found for this node in the current graph dataset.`,
+              response.empty_state?.message
+                ?? `No indexed ${nodeChain} ${expandOperationLabel(operation)} activity was found for this node in the current graph dataset.`,
             );
           }
           return;
@@ -544,7 +673,7 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
         setExpandingNode(node.node_id, false);
       }
     },
-    [sessionId, rfNodes, rfEdges, expandingNodeIds, setExpandingNode, applyExpansionDelta, showNotice],
+    [sessionId, rfNodes, rfEdges, expandingNodeIds, setExpandingNode, applyExpansionDelta, showNotice, filters.selectedAssets],
   );
 
   // Derived set consumed by IngestPendingContext and the enrichedNodes mapping.
@@ -593,6 +722,40 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
     setSelectedEdgeId(edge.id);
     setSelectedNodeId(null);
   }, []);
+
+  const handleNodesChange = useCallback((changes: NodeChange<Node>[]) => {
+    onNodesChange(changes);
+
+    const settledPositions = changes
+      .filter(
+        (change): change is NodeChange<Node> & { type: 'position'; position: { x: number; y: number } } =>
+          change.type === 'position' && Boolean(change.position) && change.dragging !== true,
+      )
+      .map((change) => ({
+        id: change.id,
+        position: change.position,
+      }));
+
+    if (settledPositions.length > 0) {
+      syncRfPositions(settledPositions);
+    }
+  }, [onNodesChange, syncRfPositions]);
+
+  const handleNodeDragStop = useCallback((_event: unknown, node: Node) => {
+    syncRfPositions([{ id: node.id, position: node.position }]);
+  }, [syncRfPositions]);
+
+  const handleHideNode = useCallback((nodeId: string) => {
+    setNodeHidden(nodeId, true);
+    if (selectedNodeId === nodeId) {
+      setSelectedNodeId(null);
+    }
+    showNotice('Node removed from canvas. Use Restore removed to bring it back.');
+  }, [selectedNodeId, setNodeHidden, showNotice]);
+
+  const handleReframeGraph = useCallback(() => {
+    scheduleFitView(180);
+  }, [scheduleFitView]);
 
   const pinnedPathSet = useMemo(() => new Set(pinnedPathIds), [pinnedPathIds]);
   const visibleNodeSemanticById = useMemo(
@@ -705,6 +868,94 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
     () => enrichedEdges.find((edge) => edge.id === selectedEdgeId) ?? null,
     [enrichedEdges, selectedEdgeId],
   );
+  const selectedEdgeData = useMemo(
+    () => (selectedEdge?.data as InvestigationEdge | undefined) ?? null,
+    [selectedEdge],
+  );
+  const visibleInvestigationNodeById = useMemo(
+    () =>
+      new Map(
+        enrichedNodes.map((node) => [node.id, (node.data as unknown as InvestigationNode)]),
+      ),
+    [enrichedNodes],
+  );
+  const selectedEdgeSourceNode = useMemo(
+    () => (selectedEdge ? visibleInvestigationNodeById.get(selectedEdge.source) ?? null : null),
+    [selectedEdge, visibleInvestigationNodeById],
+  );
+  const selectedEdgeTargetNode = useMemo(
+    () => (selectedEdge ? visibleInvestigationNodeById.get(selectedEdge.target) ?? null : null),
+    [selectedEdge, visibleInvestigationNodeById],
+  );
+  const canTraceSelectedEdgeBackward = Boolean(
+    selectedEdgeData?.tx_hash
+    && selectedEdgeSourceNode?.node_type === 'address'
+    && selectedEdgeSourceNode.expandable_directions.includes('prev'),
+  );
+  const canTraceSelectedEdgeForward = Boolean(
+    selectedEdgeData?.tx_hash
+    && selectedEdgeTargetNode?.node_type === 'address'
+    && selectedEdgeTargetNode.expandable_directions.includes('next'),
+  );
+
+  const handleTraceSelectedEdge = useCallback(
+    (direction: 'forward' | 'backward') => {
+      if (!selectedEdgeData?.tx_hash) {
+        showNotice('The selected edge has no transaction hash to focus on.', 'error');
+        return;
+      }
+
+      const endpoint =
+        direction === 'forward' ? selectedEdgeTargetNode : selectedEdgeSourceNode;
+      if (!endpoint || endpoint.node_type !== 'address') {
+        showNotice(
+          'This transaction endpoint is not an address node that can be traced further.',
+          'error',
+        );
+        return;
+      }
+
+      const operation = direction === 'forward' ? 'expand_next' : 'expand_prev';
+      void handleExpand(endpoint, operation, [selectedEdgeData.tx_hash]);
+    },
+    [handleExpand, selectedEdgeData, selectedEdgeSourceNode, selectedEdgeTargetNode, showNotice],
+  );
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (
+        event.defaultPrevented
+        || event.metaKey
+        || event.ctrlKey
+        || event.altKey
+      ) {
+        return;
+      }
+
+      const target = event.target as HTMLElement | null;
+      if (
+        target
+        && (
+          target.tagName === 'INPUT'
+          || target.tagName === 'TEXTAREA'
+          || target.tagName === 'SELECT'
+          || target.isContentEditable
+        )
+      ) {
+        return;
+      }
+
+      if ((event.key === 'Delete' || event.key === 'Backspace') && selectedNodeId) {
+        event.preventDefault();
+        handleHideNode(selectedNodeId);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [handleHideNode, selectedNodeId]);
 
   const selectedPathStory = useMemo(() => {
     if (!selectedNode) return null;
@@ -1128,7 +1379,7 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
       ))}
     <div
       style={{
-        width: '100%',
+        width: '100vw',
         height: '100vh',
         background:
           'radial-gradient(circle at top left, rgba(191,219,254,0.28), transparent 30%), linear-gradient(180deg, #f8fafc 0%, #eef2ff 100%)',
@@ -1162,6 +1413,7 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
             filters.minFiatValue !== null && filters.minFiatValue > 0,
             filters.maxDepth !== undefined && filters.maxDepth < 20,
             filters.assetFilter !== undefined && filters.assetFilter.length > 0,
+            filters.selectedAssets.length > 0,
             filters.bridgeProtocols.length > 0,
             filters.bridgeStatuses.length > 0,
             Boolean(filters.bridgeRoute),
@@ -1203,7 +1455,10 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
               if (!file) return;
               file.text()
                 .then((text) => {
+                  layoutedNodeIds.current.clear();
+                  didHydrateManualLayoutRef.current = false;
                   importSnapshot(text);
+                  showNotice('Snapshot restored. Manual positions and removed nodes are back on canvas.');
                   e.target.value = '';
                 })
                 .catch((error) => {
@@ -1228,6 +1483,27 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
             Boolean(activeSemanticKey),
           ].some(Boolean) ? ' •' : ''}
         </button>
+        <button
+          type="button"
+          onClick={handleReframeGraph}
+          style={toolbarBtnStyle}
+          title="Reframe the visible graph without changing node positions"
+        >
+          Reframe
+        </button>
+        {hiddenNodeCount > 0 && (
+          <button
+            type="button"
+            onClick={() => {
+              restoreAllHiddenNodes();
+              showNotice('Removed nodes restored to the canvas.');
+            }}
+            style={toolbarBtnStyle}
+            title="Restore nodes that were manually removed from the canvas"
+          >
+            Restore Removed · {hiddenNodeCount}
+          </button>
+        )}
         <button
           type="button"
           onClick={() => {
@@ -1913,6 +2189,7 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
           filters={filters}
           onChange={setFilters}
           onClose={() => setFilterVisible(false)}
+          availableAssets={availableAssets}
           availableBridgeProtocols={bridgeFilterOptions.protocols}
           availableBridgeRoutes={bridgeFilterOptions.routes}
         />
@@ -1929,15 +2206,25 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
         edges={enrichedEdges}
         nodeTypes={NODE_TYPES}
         edgeTypes={EDGE_TYPES}
-        onNodesChange={onNodesChange}
+        onNodesChange={handleNodesChange}
         onEdgesChange={onEdgesChange}
         onNodeClick={handleNodeClick}
+        onNodeDragStop={handleNodeDragStop}
         onEdgeClick={handleEdgeClick}
         onPaneClick={() => {
           setSelectedNodeId(null);
           setSelectedEdgeId(null);
         }}
+        onInit={(instance) => {
+          reactFlowRef.current = instance;
+          scheduleFitView(0);
+        }}
         fitView
+        fitViewOptions={{
+          padding: 0.2,
+          includeHiddenNodes: false,
+          maxZoom: 1.15,
+        }}
         minZoom={0.1}
         maxZoom={2.2}
         panOnDrag={appearance.interactionMode === 'grab'}
@@ -1974,6 +2261,16 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
         semanticMeta={selectedSemanticMeta}
         semanticVisibleCount={selectedSemanticCount}
         activeSemanticKey={activeSemanticKey}
+        canTraceEdgeBackward={canTraceSelectedEdgeBackward}
+        canTraceEdgeForward={canTraceSelectedEdgeForward}
+        onTraceEdgeBackward={() => handleTraceSelectedEdge('backward')}
+        onTraceEdgeForward={() => handleTraceSelectedEdge('forward')}
+        onExpandNode={(operation) => {
+          const nodeData = (selectedNode?.data as InvestigationNode | undefined) ?? null;
+          if (!nodeData) return;
+          void handleExpand(nodeData, operation);
+        }}
+        onHideNode={handleHideNode}
         onClose={() => {
           setSelectedNodeId(null);
           setSelectedEdgeId(null);

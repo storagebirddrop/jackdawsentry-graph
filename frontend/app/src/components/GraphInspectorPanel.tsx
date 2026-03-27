@@ -76,6 +76,12 @@ interface Props {
   activeSemanticKey?: string | null;
   onFocusSemanticKey?: (key: string) => void;
   onClearSemanticFocus?: () => void;
+  canTraceEdgeForward?: boolean;
+  canTraceEdgeBackward?: boolean;
+  onTraceEdgeForward?: () => void;
+  onTraceEdgeBackward?: () => void;
+  onExpandNode?: (operation: 'expand_prev' | 'expand_next' | 'expand_neighbors') => void;
+  onHideNode?: (nodeId: string) => void;
 }
 
 export default function GraphInspectorPanel({
@@ -104,6 +110,12 @@ export default function GraphInspectorPanel({
   activeSemanticKey = null,
   onFocusSemanticKey,
   onClearSemanticFocus,
+  canTraceEdgeForward = false,
+  canTraceEdgeBackward = false,
+  onTraceEdgeForward,
+  onTraceEdgeBackward,
+  onExpandNode,
+  onHideNode,
 }: Props) {
   const selectedNode = useMemo(
     () => (node?.data as InvestigationNode | undefined) ?? null,
@@ -182,9 +194,17 @@ export default function GraphInspectorPanel({
           activeSemanticKey={activeSemanticKey}
           onFocusSemanticKey={onFocusSemanticKey}
           onClearSemanticFocus={onClearSemanticFocus}
+          onExpandNode={onExpandNode}
+          onHideNode={onHideNode}
         />
       ) : selectedEdge ? (
-        <EdgeInspectorContent edge={selectedEdge} />
+        <EdgeInspectorContent
+          edge={selectedEdge}
+          canTraceForward={canTraceEdgeForward}
+          canTraceBackward={canTraceEdgeBackward}
+          onTraceForward={onTraceEdgeForward}
+          onTraceBackward={onTraceEdgeBackward}
+        />
       ) : null}
     </aside>
   );
@@ -233,6 +253,8 @@ function NodeInspectorContent({
   activeSemanticKey,
   onFocusSemanticKey,
   onClearSemanticFocus,
+  onExpandNode,
+  onHideNode,
 }: {
   node: InvestigationNode;
   onFocusBridgeRoute?: (route: string) => void;
@@ -255,6 +277,8 @@ function NodeInspectorContent({
   activeSemanticKey: string | null;
   onFocusSemanticKey?: (key: string) => void;
   onClearSemanticFocus?: () => void;
+  onExpandNode?: (operation: 'expand_prev' | 'expand_next' | 'expand_neighbors') => void;
+  onHideNode?: (nodeId: string) => void;
 }) {
   const accent = getChainColor(node.chain ?? (node.address_data as AddressNodeData | undefined)?.chain);
   const badges = semanticBadges(node);
@@ -270,7 +294,7 @@ function NodeInspectorContent({
           <div style={glyphSurfaceStyle(accent)}>
             <GraphGlyph kind={nodeGlyphKind(node)} accent={accent} />
           </div>
-          <div style={{ flex: 1 }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
             <div style={titleBadgeStyle}>{node.node_type.replace(/_/g, ' ')}</div>
             <div style={heroTitleStyle}>{title}</div>
             {subtitle && <div style={heroSubtitleStyle}>{subtitle}</div>}
@@ -349,6 +373,39 @@ function NodeInspectorContent({
           )}
         </Section>
       )}
+
+      <Section title="Workspace actions">
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          {node.expandable_directions.includes('prev') && onExpandNode && (
+            <button type="button" onClick={() => onExpandNode('expand_prev')} style={actionButtonStyle}>
+              Expand previous
+            </button>
+          )}
+          {node.expandable_directions.includes('next') && onExpandNode && (
+            <button type="button" onClick={() => onExpandNode('expand_next')} style={actionButtonStyle}>
+              Expand next
+            </button>
+          )}
+          {node.expandable_directions.includes('neighbors') && onExpandNode && (
+            <button type="button" onClick={() => onExpandNode('expand_neighbors')} style={actionButtonStyle}>
+              Expand around
+            </button>
+          )}
+          {onHideNode && (
+            <button
+              type="button"
+              onClick={() => onHideNode(node.node_id)}
+              style={{
+                ...actionButtonStyle,
+                color: '#b91c1c',
+                borderColor: 'rgba(239,68,68,0.26)',
+              }}
+            >
+              Remove from canvas
+            </button>
+          )}
+        </div>
+      </Section>
 
       <Section title="Graph lineage">
         <KeyValue label="Branch">{shortHash(node.branch_id, 10, 6)}</KeyValue>
@@ -625,6 +682,7 @@ function BridgeSection({
   };
   const activity = node.activity_summary;
   const destinationChain = hop.destination_chain ?? hop.dest_chain;
+  const destinationAddress = hop.destination_address ?? activity?.destination_address;
   const destinationAsset = hop.destination_asset ?? hop.dest_asset;
   const confidence = hop.correlation_confidence ?? hop.correlation_conf;
   const protocolLabel = bridgeProtocolLabel(hop.protocol_id);
@@ -651,6 +709,11 @@ function BridgeSection({
       <KeyValue label="Route">
         {routeLabel}
       </KeyValue>
+      {destinationAddress && (
+        <KeyValue label="Destination">
+          <code style={codeStyle}>{destinationAddress}</code>
+        </KeyValue>
+      )}
       <KeyValue label="Assets">
         {bridgeAssetRouteLabel({
           source_asset: hop.source_asset,
@@ -841,7 +904,19 @@ function UtxoSection({ node }: { node: InvestigationNode }) {
   );
 }
 
-function EdgeInspectorContent({ edge }: { edge: InvestigationEdge }) {
+function EdgeInspectorContent({
+  edge,
+  canTraceForward,
+  canTraceBackward,
+  onTraceForward,
+  onTraceBackward,
+}: {
+  edge: InvestigationEdge;
+  canTraceForward: boolean;
+  canTraceBackward: boolean;
+  onTraceForward?: () => void;
+  onTraceBackward?: () => void;
+}) {
   const activity = edge.activity_summary;
   return (
     <div style={{ display: 'grid', gap: 18, marginTop: 18 }}>
@@ -870,6 +945,27 @@ function EdgeInspectorContent({ edge }: { edge: InvestigationEdge }) {
         </KeyValue>
         <KeyValue label="Change output">{edge.is_suspected_change ? 'Yes' : 'No'}</KeyValue>
       </Section>
+
+      {edge.tx_hash && (canTraceForward || canTraceBackward) && (
+        <Section title="Selective trace">
+          <div style={{ color: '#475569', fontSize: 12, lineHeight: 1.55 }}>
+            Continue the investigation using only this transaction hash instead of
+            expanding every transfer attached to the endpoint address.
+          </div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {canTraceBackward && onTraceBackward && (
+              <button type="button" onClick={onTraceBackward} style={actionButtonStyle}>
+                Trace input only
+              </button>
+            )}
+            {canTraceForward && onTraceForward && (
+              <button type="button" onClick={onTraceForward} style={actionButtonStyle}>
+                Trace output only
+              </button>
+            )}
+          </div>
+        </Section>
+      )}
     </div>
   );
 }
@@ -1000,16 +1096,19 @@ const panelStyle: React.CSSProperties = {
   position: 'absolute',
   top: 0,
   right: 0,
-  width: 360,
+  width: 'min(440px, 96vw)',
+  maxWidth: 'calc(100vw - 8px)',
   height: '100%',
   zIndex: 120,
   background: 'rgba(255,255,255,0.96)',
   borderLeft: '1px solid rgba(148, 163, 184, 0.35)',
-  padding: 20,
+  padding: 18,
   overflowY: 'auto',
+  overflowX: 'hidden',
   boxShadow: '-16px 0 38px rgba(15, 23, 42, 0.08)',
   backdropFilter: 'blur(14px)',
   fontFamily: '"IBM Plex Sans", "Segoe UI", sans-serif',
+  boxSizing: 'border-box',
 };
 
 const collapsedPanelStyle: React.CSSProperties = {
@@ -1099,6 +1198,7 @@ const heroCardStyle: React.CSSProperties = {
   borderRadius: 18,
   background: 'linear-gradient(180deg, rgba(248,250,252,0.98), rgba(241,245,249,0.94))',
   border: '1px solid rgba(148, 163, 184, 0.28)',
+  overflow: 'hidden',
 };
 
 const titleBadgeStyle: React.CSSProperties = {
@@ -1120,6 +1220,8 @@ const heroTitleStyle: React.CSSProperties = {
   lineHeight: 1.15,
   fontWeight: 700,
   marginTop: 10,
+  overflowWrap: 'anywhere',
+  wordBreak: 'break-word',
 };
 
 const heroSubtitleStyle: React.CSSProperties = {
@@ -1127,6 +1229,8 @@ const heroSubtitleStyle: React.CSSProperties = {
   fontSize: 13,
   lineHeight: 1.5,
   marginTop: 6,
+  overflowWrap: 'anywhere',
+  wordBreak: 'break-word',
 };
 
 const sectionStyle: React.CSSProperties = {
@@ -1134,6 +1238,7 @@ const sectionStyle: React.CSSProperties = {
   borderRadius: 18,
   background: '#ffffff',
   border: '1px solid rgba(148, 163, 184, 0.22)',
+  overflow: 'hidden',
 };
 
 const sectionTitleStyle: React.CSSProperties = {
@@ -1160,13 +1265,22 @@ const rowValueStyle: React.CSSProperties = {
   color: '#0f172a',
   fontSize: 13,
   lineHeight: 1.5,
+  minWidth: 0,
+  overflowWrap: 'anywhere',
   wordBreak: 'break-word',
 };
 
 const codeStyle: React.CSSProperties = {
+  display: 'block',
   fontFamily: '"IBM Plex Mono", "SFMono-Regular", monospace',
   fontSize: 12,
-  color: '#1e293b',
+  color: '#0f172a',
+  background: 'transparent',
+  padding: 0,
+  borderRadius: 0,
+  whiteSpace: 'normal',
+  overflowWrap: 'anywhere',
+  wordBreak: 'break-word',
 };
 
 const emptyCardStyle: React.CSSProperties = {
@@ -1194,8 +1308,10 @@ const actionButtonStyle: React.CSSProperties = {
   borderRadius: 999,
   border: '1px solid rgba(148, 163, 184, 0.3)',
   background: 'rgba(255,255,255,0.92)',
+  color: '#334155',
   fontSize: 12,
   fontWeight: 700,
+  lineHeight: 1.2,
   cursor: 'pointer',
 };
 

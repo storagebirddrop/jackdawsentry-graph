@@ -93,10 +93,12 @@ export interface BridgeHopData {
   mechanism: string;
   source_chain: string;
   destination_chain?: string;
+  destination_address?: string;
   source_asset?: string;
   destination_asset?: string;
   source_amount?: number;
   destination_amount?: number | null;
+  destination_tx_hash?: string;
   correlation_confidence: number;
   status: 'pending' | 'completed' | 'failed';
   time_delta_seconds?: number;
@@ -211,6 +213,7 @@ export interface ActivitySummary {
   destination_chain?: string;
   source_tx_hash?: string;
   destination_tx_hash?: string;
+  destination_address?: string;
   order_id?: string;
   asset_symbol?: string;
   canonical_asset_id?: string;
@@ -245,14 +248,14 @@ export type NodeData =
 export interface InvestigationNode {
   node_id: string;
   node_type: NodeType;
-  node_data: NodeData;
+  node_data?: NodeData;
   chain?: string;
   display_label?: string;
   display_sublabel?: string;
   entity_name?: string;
+  entity_type?: string;
   entity_category?: string;
   risk_score?: number;
-  // Top-level sanctioned flag set by the enricher (mirrors address_data.is_sanctioned).
   sanctioned?: boolean;
   balance_fiat?: number;
   address_data?: AddressNodeData;  // shorthand alias used by some compilers
@@ -272,10 +275,109 @@ export interface InvestigationNode {
   lineage_id: string;
   depth: number;
   expandable_directions: Array<'next' | 'prev' | 'neighbors'>;
+  is_expanded?: boolean;
+  is_pinned?: boolean;
+  is_hidden?: boolean;
+  is_highlighted?: boolean;
   is_seed?: boolean;
   activity_summary?: ActivitySummary;
   /** Branch color index (0-7) assigned from branch_id hash */
   branch_color_index?: number;
+}
+
+const EVM_CHAINS = new Set([
+  'ethereum',
+  'bsc',
+  'polygon',
+  'arbitrum',
+  'base',
+  'avalanche',
+  'optimism',
+  'starknet',
+  'injective',
+]);
+
+function canonicalizeNodeId(nodeId: string): string {
+  const parts = nodeId.split(':');
+  if (parts.length < 3) {
+    return nodeId;
+  }
+
+  const chain = parts[0] ?? '';
+  const nodeType = parts[1] ?? '';
+  const identifier = parts.slice(2).join(':');
+  if (nodeType === 'address' && EVM_CHAINS.has(chain) && identifier.startsWith('0x')) {
+    const lowered = identifier.toLowerCase();
+    return lowered === identifier ? nodeId : `${chain}:${nodeType}:${lowered}`;
+  }
+  return nodeId;
+}
+
+export function getInvestigationNodeData(node: InvestigationNode): NodeData | undefined {
+  switch (node.node_type) {
+    case 'address':
+      return node.address_data ?? node.node_data;
+    case 'entity':
+      return node.entity_data ?? node.node_data;
+    case 'service':
+      return node.service_data ?? node.entity_data ?? node.node_data;
+    case 'bridge_hop':
+      return node.bridge_hop_data ?? node.node_data;
+    case 'swap_event':
+      return node.swap_event_data ?? node.node_data;
+    case 'lightning_channel_open':
+      return node.lightning_channel_open_data ?? node.node_data;
+    case 'lightning_channel_close':
+      return node.lightning_channel_close_data ?? node.node_data;
+    case 'btc_sidechain_peg_in':
+    case 'btc_sidechain_peg_out':
+      return node.btc_sidechain_peg_data ?? node.node_data;
+    case 'atomic_swap':
+      return node.atomic_swap_data ?? node.node_data;
+    case 'utxo':
+      return node.utxo_data ?? node.node_data;
+    case 'solana_instruction':
+      return node.instruction_data ?? node.node_data;
+    case 'cluster_summary':
+      return node.cluster_summary ?? node.node_data;
+    default:
+      return node.node_data;
+  }
+}
+
+export function normalizeInvestigationNode(node: InvestigationNode): InvestigationNode {
+  const nodeData = getInvestigationNodeData(node);
+  const canonicalNodeId = canonicalizeNodeId(node.node_id);
+
+  if ((!nodeData || node.node_data === nodeData) && canonicalNodeId === node.node_id) {
+    return node;
+  }
+
+  const normalizedNode: InvestigationNode = {
+    ...node,
+    node_id: canonicalNodeId,
+    ...(nodeData ? { node_data: nodeData } : {}),
+  };
+
+  if (
+    normalizedNode.node_type === 'address'
+    && normalizedNode.address_data
+    && EVM_CHAINS.has(normalizedNode.chain ?? '')
+    && normalizedNode.address_data.address.startsWith('0x')
+  ) {
+    const normalizedAddress = normalizedNode.address_data.address.toLowerCase();
+    const normalizedAddressData = {
+      ...normalizedNode.address_data,
+      address: normalizedAddress,
+    };
+    return {
+      ...normalizedNode,
+      address_data: normalizedAddressData,
+      node_data: normalizedAddressData,
+    };
+  }
+
+  return normalizedNode;
 }
 
 export interface InvestigationEdge {
@@ -295,6 +397,21 @@ export interface InvestigationEdge {
   branch_id: string;
   /** Same branch_color_index as the source node */
   branch_color_index?: number;
+}
+
+export function normalizeInvestigationEdge(edge: InvestigationEdge): InvestigationEdge {
+  const sourceNodeId = canonicalizeNodeId(edge.source_node_id);
+  const targetNodeId = canonicalizeNodeId(edge.target_node_id);
+
+  if (sourceNodeId === edge.source_node_id && targetNodeId === edge.target_node_id) {
+    return edge;
+  }
+
+  return {
+    ...edge,
+    source_node_id: sourceNodeId,
+    target_node_id: targetNodeId,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -323,11 +440,24 @@ export interface AssetContext {
   canonical_asset_ids: string[];
 }
 
+export interface ExpansionEmptyState {
+  reason: string;
+  message: string;
+  chain: string;
+  address?: string;
+  operation_type?: 'expand_next' | 'expand_prev' | 'expand_neighbors';
+  live_lookup_supported?: boolean;
+  observed_on_chain?: boolean;
+  known_tx_count?: number;
+}
+
 export interface ExpansionResponseV2 {
   session_id: string;
   branch_id: string;
   operation_id: string;
   operation_type: 'expand_next' | 'expand_prev' | 'expand_neighbors' | 'create_session';
+  seed_node_id?: string;
+  seed_lineage_id?: string | null;
   nodes: InvestigationNode[];
   edges: InvestigationEdge[];
   added_nodes?: InvestigationNode[];
@@ -336,8 +466,7 @@ export interface ExpansionResponseV2 {
   chain_context: ChainContext;
   pagination?: PaginationMeta;
   asset_context?: AssetContext;
-  /** True when expansion was empty because historical data is not yet in the
-   *  event store.  The frontend should poll /ingest/status and retry expand. */
+  empty_state?: ExpansionEmptyState;
   ingest_pending?: boolean;
 }
 
@@ -364,6 +493,7 @@ export interface ExpandRequest {
     depth?: number;
     asset_filter?: string[];
     chain_filter?: string[];
+    tx_hashes?: string[];
     min_value_fiat?: number;
     max_results?: number;
     include_services?: boolean;

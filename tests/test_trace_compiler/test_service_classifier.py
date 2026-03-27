@@ -11,19 +11,17 @@ Verifies:
 """
 
 import pytest
-from unittest.mock import AsyncMock
 
 from src.trace_compiler.services.service_classifier import ServiceClassifier
 from src.trace_compiler.chains.evm import EVMChainCompiler
 from src.trace_compiler.models import ExpandOptions
 
 # Well-known contract fixtures
-UNISWAP_V3_ROUTER    = "0xe592427a0aece92de3edee1f18e0157c05861564"
-TORNADO_10ETH        = "0x910cbd523d972eb0a6f4cae4618ad62622b39dbf"
-THORCHAIN_ETH        = "0xd37bbe5744d730a1d98d8dc97c42f0ca46ad7146"  # bridge — must be excluded
-RANDOM_ADDR          = "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
-PANCAKESWAP_V3_BSC   = "0x13f4ea83d0bd40e75c8222255bc855a974568dd4"
-CAMELOT_ARBITRUM     = "0xc873fecbd354f5a56e00e710b90ef4201db2448d"
+UNISWAP_V3_ROUTER = "0xe592427a0aece92de3edee1f18e0157c05861564"
+TORNADO_10ETH     = "0x910cbd523d972eb0a6f4cae4618ad62622b39dbf"
+TORNADO_ROUTER    = "0xd90e2f925da726b50c4ed8d0fb90ad053324f31b"
+THORCHAIN_ETH     = "0xd37bbe5744d730a1d98d8dc97c42f0ca46ad7146"  # bridge — must be excluded
+RANDOM_ADDR       = "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
 TX_HASH           = "0x" + "ab" * 32
 SEED              = "0x" + "cc" * 20
 SEED_NODE_ID      = f"ethereum:address:{SEED}"
@@ -59,6 +57,11 @@ def test_tornado_cash_service_type():
     assert r.service_type == "mixer"
 
 
+def test_tornado_router_detected():
+    c = ServiceClassifier()
+    assert c.is_service_contract("ethereum", TORNADO_ROUTER) is True
+
+
 def test_uniswap_service_type():
     c = ServiceClassifier()
     r = c.get_record("ethereum", UNISWAP_V3_ROUTER)
@@ -81,62 +84,6 @@ def test_wrong_chain_returns_none():
     """Uniswap V3 router on ethereum should not match on bitcoin."""
     c = ServiceClassifier()
     assert c.is_service_contract("bitcoin", UNISWAP_V3_ROUTER) is False
-
-
-def test_pancakeswap_v3_detected_on_bsc():
-    c = ServiceClassifier()
-    assert c.is_service_contract("bsc", PANCAKESWAP_V3_BSC) is True
-
-
-def test_pancakeswap_v3_detected_on_ethereum():
-    c = ServiceClassifier()
-    assert c.is_service_contract("ethereum", PANCAKESWAP_V3_BSC) is True
-
-
-def test_pancakeswap_v3_protocol_id():
-    c = ServiceClassifier()
-    r = c.get_record("bsc", PANCAKESWAP_V3_BSC)
-    assert r is not None
-    assert r.protocol_id == "pancakeswap_v3"
-    assert r.service_type == "dex"
-
-
-def test_pancakeswap_v3_not_on_wrong_chain():
-    """PancakeSwap V3 SmartRouter is not registered on Arbitrum."""
-    c = ServiceClassifier()
-    assert c.is_service_contract("arbitrum", PANCAKESWAP_V3_BSC) is False
-
-
-def test_pancakeswap_v2_and_v3_both_registered_on_bsc():
-    """Both PancakeSwap V2 and V3 routers are known on BSC with distinct protocol_ids."""
-    c = ServiceClassifier()
-    pancake_v2_bsc = "0x10ed43c718714eb63d5aa57b78b54704e256024e"
-    assert c.is_service_contract("bsc", pancake_v2_bsc) is True
-    assert c.is_service_contract("bsc", PANCAKESWAP_V3_BSC) is True
-    r_v2 = c.get_record("bsc", pancake_v2_bsc)
-    r_v3 = c.get_record("bsc", PANCAKESWAP_V3_BSC)
-    assert r_v2.protocol_id == "pancakeswap_v2"
-    assert r_v3.protocol_id == "pancakeswap_v3"
-    assert r_v2.display_name == "PancakeSwap V2"
-
-
-def test_camelot_detected_on_arbitrum():
-    c = ServiceClassifier()
-    assert c.is_service_contract("arbitrum", CAMELOT_ARBITRUM) is True
-
-
-def test_camelot_protocol_id():
-    c = ServiceClassifier()
-    r = c.get_record("arbitrum", CAMELOT_ARBITRUM)
-    assert r is not None
-    assert r.protocol_id == "camelot"
-    assert r.service_type == "dex"
-
-
-def test_camelot_not_on_ethereum():
-    """Camelot is Arbitrum-only; the router address must not match on Ethereum."""
-    c = ServiceClassifier()
-    assert c.is_service_contract("ethereum", CAMELOT_ARBITRUM) is False
 
 
 # ---------------------------------------------------------------------------
@@ -277,8 +224,6 @@ async def test_process_row_known_service_backward():
 async def test_evm_build_graph_service_row_produces_service_node():
     """EVM _build_graph replaces known service address with service node."""
     evm = EVMChainCompiler()
-    evm._fetch_tx_token_transfers = AsyncMock(return_value=[])
-    evm._fetch_tx_native_leg = AsyncMock(return_value=None)
     rows = [
         {
             "counterparty": UNISWAP_V3_ROUTER,
@@ -312,8 +257,6 @@ async def test_evm_build_graph_service_row_produces_service_node():
 async def test_evm_build_graph_service_nodes_are_transaction_specific():
     """Multiple transfers to the same protocol produce one service node per tx."""
     evm = EVMChainCompiler()
-    evm._fetch_tx_token_transfers = AsyncMock(return_value=[])
-    evm._fetch_tx_native_leg = AsyncMock(return_value=None)
     # Two transfers to the same Uniswap V3 contract
     rows = [
         {
@@ -349,171 +292,6 @@ async def test_evm_build_graph_service_nodes_are_transaction_specific():
     assert all(node.node_type == "service" for node in nodes)
     assert nodes[0].node_id != nodes[1].node_id
     assert len(edges) == 2
-
-
-@pytest.mark.asyncio
-async def test_evm_build_graph_promotes_dex_row_into_swap_event():
-    """A DEX interaction with matching inbound/outbound token legs becomes swap_event."""
-    evm = EVMChainCompiler()
-    evm._fetch_tx_token_transfers = AsyncMock(
-        return_value=[
-            {
-                "transfer_index": 0,
-                "asset_symbol": "USDC",
-                "canonical_asset_id": "usd-coin",
-                "from_address": SEED,
-                "to_address": UNISWAP_V3_ROUTER,
-                "amount_normalized": 1500.0,
-            },
-            {
-                "transfer_index": 1,
-                "asset_symbol": "WETH",
-                "canonical_asset_id": "weth",
-                "from_address": UNISWAP_V3_ROUTER,
-                "to_address": SEED,
-                "amount_normalized": 0.5,
-            },
-        ]
-    )
-    evm._fetch_tx_native_leg = AsyncMock(return_value=None)
-    rows = [
-        {
-            "counterparty": UNISWAP_V3_ROUTER,
-            "tx_hash": TX_HASH,
-            "value_native": 1500.0,
-            "asset_symbol": "USDC",
-            "canonical_asset_id": "usd-coin",
-            "timestamp": "2026-01-01T00:00:00Z",
-        }
-    ]
-
-    nodes, edges = await evm._build_graph(
-        rows=rows,
-        session_id="sess",
-        branch_id="br",
-        path_sequence=0,
-        depth=0,
-        seed_address=SEED,
-        chain="ethereum",
-        direction="forward",
-        options=_opts(),
-        prices=None,
-    )
-
-    assert len(nodes) == 1
-    assert nodes[0].node_type == "swap_event"
-    assert nodes[0].swap_event_data is not None
-    assert nodes[0].swap_event_data.protocol_id == "uniswap_v3"
-    assert nodes[0].swap_event_data.input_asset == "USDC"
-    assert nodes[0].swap_event_data.output_asset == "WETH"
-    assert {edge.edge_type for edge in edges} == {"swap_input", "swap_output"}
-
-
-@pytest.mark.asyncio
-async def test_evm_build_graph_promotes_native_to_token_swap():
-    """Native asset legs should still produce swap_event when ERC-20 output exists."""
-    evm = EVMChainCompiler()
-    evm._fetch_tx_token_transfers = AsyncMock(
-        return_value=[
-            {
-                "transfer_index": 0,
-                "asset_symbol": "USDC",
-                "canonical_asset_id": "usd-coin",
-                "from_address": UNISWAP_V3_ROUTER,
-                "to_address": SEED,
-                "amount_normalized": 3200.0,
-            }
-        ]
-    )
-    evm._fetch_tx_native_leg = AsyncMock(
-        return_value={
-            "from_address": SEED,
-            "to_address": UNISWAP_V3_ROUTER,
-            "value_native": 1.25,
-            "timestamp": "2026-01-02T00:00:00Z",
-        }
-    )
-    rows = [
-        {
-            "counterparty": UNISWAP_V3_ROUTER,
-            "tx_hash": TX_HASH,
-            "value_native": 1.25,
-            "asset_symbol": "ETH",
-            "canonical_asset_id": "ethereum",
-            "timestamp": "2026-01-02T00:00:00Z",
-        }
-    ]
-
-    nodes, edges = await evm._build_graph(
-        rows=rows,
-        session_id="sess",
-        branch_id="br",
-        path_sequence=0,
-        depth=0,
-        seed_address=SEED,
-        chain="ethereum",
-        direction="forward",
-        options=_opts(),
-        prices=None,
-    )
-
-    assert len(nodes) == 1
-    assert nodes[0].node_type == "swap_event"
-    assert nodes[0].swap_event_data is not None
-    assert nodes[0].swap_event_data.input_asset == "ETH"
-    assert nodes[0].swap_event_data.output_asset == "USDC"
-    assert nodes[0].activity_summary is not None
-    assert nodes[0].activity_summary.protocol_type == "dex"
-    assert len(edges) == 2
-
-
-@pytest.mark.asyncio
-async def test_evm_build_graph_falls_back_to_service_when_swap_context_is_incomplete():
-    """Known DEX hits without both swap legs must stay generic service nodes."""
-    evm = EVMChainCompiler()
-    evm._fetch_tx_token_transfers = AsyncMock(
-        return_value=[
-            {
-                "transfer_index": 0,
-                "asset_symbol": "USDC",
-                "canonical_asset_id": "usd-coin",
-                "from_address": SEED,
-                "to_address": UNISWAP_V3_ROUTER,
-                "amount_normalized": 500.0,
-            }
-        ]
-    )
-    evm._fetch_tx_native_leg = AsyncMock(return_value=None)
-    rows = [
-        {
-            "counterparty": UNISWAP_V3_ROUTER,
-            "tx_hash": TX_HASH,
-            "value_native": 500.0,
-            "asset_symbol": "USDC",
-            "canonical_asset_id": "usd-coin",
-            "timestamp": "2026-01-03T00:00:00Z",
-        }
-    ]
-
-    nodes, edges = await evm._build_graph(
-        rows=rows,
-        session_id="sess",
-        branch_id="br",
-        path_sequence=0,
-        depth=0,
-        seed_address=SEED,
-        chain="ethereum",
-        direction="forward",
-        options=_opts(),
-        prices=None,
-    )
-
-    assert len(nodes) == 1
-    assert nodes[0].node_type == "service"
-    assert nodes[0].service_data is not None
-    assert nodes[0].service_data.protocol_id == "uniswap_v3"
-    assert len(edges) == 1
-    assert edges[0].edge_type == "service_deposit"
 
 
 @pytest.mark.asyncio

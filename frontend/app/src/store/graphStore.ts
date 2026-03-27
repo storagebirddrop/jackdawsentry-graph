@@ -16,6 +16,10 @@ import type {
   InvestigationEdge,
   ExpansionResponseV2,
 } from '../types/graph';
+import {
+  normalizeInvestigationEdge as normalizeEdge,
+  normalizeInvestigationNode as normalizeNode,
+} from '../types/graph';
 
 // ---------------------------------------------------------------------------
 // Branch color palette (8 colors, cycling by branch_id hash)
@@ -49,13 +53,14 @@ export function branchColor(branchId: string): string {
 // ---------------------------------------------------------------------------
 
 export function toRfNode(inv: InvestigationNode): Node {
+  const normalized = normalizeNode(inv);
   const colorIdx = branchColorIndex(inv.branch_id);
   return {
-    id: inv.node_id,
-    type: inv.node_type,
+    id: normalized.node_id,
+    type: normalized.node_type,
     position: { x: 0, y: 0 }, // ELK layout will set real positions
     data: {
-      ...inv,
+      ...normalized,
       branch_color_index: colorIdx,
       branch_color: BRANCH_COLORS[colorIdx],
     },
@@ -64,7 +69,6 @@ export function toRfNode(inv: InvestigationNode): Node {
 
 export function toRfEdge(inv: InvestigationEdge): Edge {
   const colorIdx = branchColorIndex(inv.branch_id);
-  const isBridgeEdge = inv.edge_type === 'bridge_source' || inv.edge_type === 'bridge_dest';
   return {
     id: inv.edge_id,
     source: inv.source_node_id,
@@ -75,17 +79,30 @@ export function toRfEdge(inv: InvestigationEdge): Edge {
       branch_color_index: colorIdx,
       branch_color: BRANCH_COLORS[colorIdx],
     },
-    style: {
-      stroke: BRANCH_COLORS[colorIdx],
-      strokeWidth: isBridgeEdge ? 2.6 : 2,
-      strokeDasharray: isBridgeEdge ? '7 5' : undefined,
-    },
-    animated: isBridgeEdge,
+    style: { stroke: BRANCH_COLORS[colorIdx], strokeWidth: 2 },
+    animated: inv.edge_type === 'bridge_hop',
     markerEnd: {
       type: MarkerType.ArrowClosed,
       color: BRANCH_COLORS[colorIdx],
     },
   };
+}
+
+function edgeHasKnownEndpoints(edge: InvestigationEdge, nodeIds: Set<string>): boolean {
+  return nodeIds.has(edge.source_node_id) && nodeIds.has(edge.target_node_id);
+}
+
+function sanitizeEdges(
+  edges: Iterable<InvestigationEdge>,
+  nodeIds: Set<string>,
+): InvestigationEdge[] {
+  const sanitized: InvestigationEdge[] = [];
+  for (const edge of edges) {
+    if (edgeHasKnownEndpoints(edge, nodeIds)) {
+      sanitized.push(edge);
+    }
+  }
+  return sanitized;
 }
 
 // ---------------------------------------------------------------------------
@@ -145,6 +162,9 @@ export interface GraphState {
   initSession: (sessionId: string, rootNode: InvestigationNode) => void;
   applyExpansionDelta: (response: ExpansionResponseV2) => void;
   setRfPositions: (positions: Map<string, { x: number; y: number }>) => void;
+  syncRfPositions: (nodes: Array<Pick<Node, 'id' | 'position'>>) => void;
+  setNodeHidden: (nodeId: string, hidden: boolean) => void;
+  restoreAllHiddenNodes: () => void;
   setExpandingNode: (nodeId: string, expanding: boolean) => void;
   reset: () => void;
 
@@ -169,35 +189,36 @@ export const useGraphStore = create<GraphState>((set, get) => ({
   maxNodes: 500,
 
   initSession(sessionId, rootNode) {
+    const normalizedRoot = normalizeNode(rootNode);
     const nodeMap = new Map<string, InvestigationNode>();
-    nodeMap.set(rootNode.node_id, rootNode);
+    nodeMap.set(normalizedRoot.node_id, normalizedRoot);
     const seedBranch: BranchMeta = {
-      branchId: rootNode.branch_id,
-      color: branchColor(rootNode.branch_id),
-      seedNodeId: rootNode.node_id,
-      minDepth: rootNode.depth,
-      maxDepth: rootNode.depth,
+      branchId: normalizedRoot.branch_id,
+      color: branchColor(normalizedRoot.branch_id),
+      seedNodeId: normalizedRoot.node_id,
+      minDepth: normalizedRoot.depth,
+      maxDepth: normalizedRoot.depth,
       nodeCount: 1,
     };
     set({
       sessionId,
       nodeMap,
       edgeMap: new Map(),
-      rfNodes: [toRfNode(rootNode)],
+      rfNodes: [toRfNode(normalizedRoot)],
       rfEdges: [],
       expandingNodeIds: new Set(),
-      branchMap: new Map([[rootNode.branch_id, seedBranch]]),
+      branchMap: new Map([[normalizedRoot.branch_id, seedBranch]]),
     });
   },
 
   applyExpansionDelta(response) {
     const { nodeMap, edgeMap, branchMap } = get();
-    const deltaNodes = response.nodes ?? response.added_nodes ?? [];
-    const deltaEdges = response.edges ?? response.added_edges ?? [];
+    const deltaNodes = (response.nodes ?? response.added_nodes ?? []).map(normalizeNode);
+    const deltaEdges = (response.edges ?? response.added_edges ?? []).map(normalizeEdge);
 
     // Create new Maps to ensure immutability
     const newNodeMap = new Map(nodeMap);
-    const newEdgeMap = new Map(edgeMap);
+    let newEdgeMap = new Map(edgeMap);
     let changed = false;
 
     // Merge new nodes (existing nodes are NOT replaced — preserves position)
@@ -207,12 +228,27 @@ export const useGraphStore = create<GraphState>((set, get) => ({
         changed = true;
       }
     }
+    const validNodeIds = new Set(newNodeMap.keys());
     for (const edge of deltaEdges) {
+      if (!edgeHasKnownEndpoints(edge, validNodeIds)) {
+        changed = true;
+        continue;
+      }
       if (!newEdgeMap.has(edge.edge_id)) {
         newEdgeMap.set(edge.edge_id, edge);
         changed = true;
       }
     }
+
+    const sanitizedEdgeMap = new Map<string, InvestigationEdge>();
+    for (const [edgeId, edge] of newEdgeMap) {
+      if (edgeHasKnownEndpoints(edge, validNodeIds)) {
+        sanitizedEdgeMap.set(edgeId, edge);
+      } else {
+        changed = true;
+      }
+    }
+    newEdgeMap = sanitizedEdgeMap;
 
     if (!changed) return;
 
@@ -282,6 +318,69 @@ export const useGraphStore = create<GraphState>((set, get) => ({
     }));
   },
 
+  syncRfPositions(nodes) {
+    if (nodes.length === 0) return;
+    const positions = new Map(
+      nodes.map((node) => [node.id, node.position]),
+    );
+    get().setRfPositions(positions);
+  },
+
+  setNodeHidden(nodeId, hidden) {
+    set((state) => {
+      const existing = state.nodeMap.get(nodeId);
+      if (!existing || existing.is_hidden === hidden) {
+        return state;
+      }
+
+      const nextNodeMap = new Map(state.nodeMap);
+      const nextNode = { ...existing, is_hidden: hidden };
+      nextNodeMap.set(nodeId, nextNode);
+
+      return {
+        nodeMap: nextNodeMap,
+        rfNodes: state.rfNodes.map((node) =>
+          node.id === nodeId
+            ? {
+                ...node,
+                data: {
+                  ...((node.data as unknown) as InvestigationNode),
+                  is_hidden: hidden,
+                },
+              }
+            : node,
+        ),
+      };
+    });
+  },
+
+  restoreAllHiddenNodes() {
+    set((state) => {
+      let changed = false;
+      const nextNodeMap = new Map(state.nodeMap);
+      for (const [nodeId, node] of nextNodeMap) {
+        if (!node.is_hidden) continue;
+        nextNodeMap.set(nodeId, { ...node, is_hidden: false });
+        changed = true;
+      }
+
+      if (!changed) {
+        return state;
+      }
+
+      return {
+        nodeMap: nextNodeMap,
+        rfNodes: state.rfNodes.map((node) => ({
+          ...node,
+          data: {
+            ...((node.data as unknown) as InvestigationNode),
+            is_hidden: false,
+          },
+        })),
+      };
+    });
+  },
+
   setExpandingNode(nodeId, expanding) {
     set((state) => {
       const next = new Set(state.expandingNodeIds);
@@ -326,18 +425,22 @@ export const useGraphStore = create<GraphState>((set, get) => ({
         positions: Record<string, { x: number; y: number }>;
         branches?: BranchMeta[];
       };
+      const normalizedNodes = data.nodes.map(normalizeNode);
+      const normalizedEdges = data.edges.map(normalizeEdge);
       const nodeMap = new Map<string, InvestigationNode>(
-        data.nodes.map((n) => [n.node_id, n]),
+        normalizedNodes.map((n) => [n.node_id, n]),
       );
+      const validNodeIds = new Set(nodeMap.keys());
+      const sanitizedSnapshotEdges = sanitizeEdges(normalizedEdges, validNodeIds);
       const edgeMap = new Map<string, InvestigationEdge>(
-        data.edges.map((e) => [e.edge_id, e]),
+        sanitizedSnapshotEdges.map((e) => [e.edge_id, e]),
       );
-      const rfNodes = data.nodes.map((n) => {
+      const rfNodes = normalizedNodes.map((n) => {
         const rf = toRfNode(n);
         const pos = data.positions[n.node_id];
         return pos ? { ...rf, position: pos } : rf;
       });
-      const rfEdges = data.edges.map(toRfEdge);
+      const rfEdges = sanitizedSnapshotEdges.map(toRfEdge);
       // Restore branchMap from snapshot if present; otherwise re-derive it.
       const branchMap = data.branches 
         ? new Map<string, BranchMeta>(data.branches.map((b) => [b.branchId, b]))

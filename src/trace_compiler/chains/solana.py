@@ -171,10 +171,18 @@ class SolanaChainCompiler(BaseChainCompiler):
             return []
         limit = min(options.max_results, _SQL_FETCH_LIMIT)
         rows: List[Dict[str, Any]] = []
+        asset_filter = [asset.upper() for asset in (options.asset_filter or [])]
+        include_native = not asset_filter or "SOL" in asset_filter
 
         # SPL token transfers (from_address is the sender wallet / ATA authority)
         try:
-            sql = """
+            params: List[Any] = [address, limit]
+            asset_clause = ""
+            if asset_filter:
+                asset_clause = "AND UPPER(asset_symbol) = ANY($3)"
+                params.append(asset_filter)
+
+            sql = f"""
                 SELECT
                     tx_hash,
                     to_address        AS counterparty,
@@ -185,17 +193,20 @@ class SolanaChainCompiler(BaseChainCompiler):
                 FROM raw_token_transfers
                 WHERE blockchain = 'solana'
                   AND from_address = $1
+                  {asset_clause}
                 ORDER BY timestamp DESC, tx_hash ASC
                 LIMIT $2
             """
             async with self._pg.acquire() as conn:
-                spl_rows = await conn.fetch(sql, address, limit)
+                spl_rows = await conn.fetch(sql, *params)
             rows.extend(dict(r) for r in spl_rows)
         except Exception as exc:
             logger.debug("SolanaChainCompiler outbound SPL failed for %s: %s", address, exc)
 
         # Native SOL transfers
         try:
+            if not include_native:
+                return rows
             sql = """
                 SELECT
                     tx_hash,
@@ -228,9 +239,17 @@ class SolanaChainCompiler(BaseChainCompiler):
             return []
         limit = min(options.max_results, _SQL_FETCH_LIMIT)
         rows: List[Dict[str, Any]] = []
+        asset_filter = [asset.upper() for asset in (options.asset_filter or [])]
+        include_native = not asset_filter or "SOL" in asset_filter
 
         try:
-            sql = """
+            params: List[Any] = [address, limit]
+            asset_clause = ""
+            if asset_filter:
+                asset_clause = "AND UPPER(asset_symbol) = ANY($3)"
+                params.append(asset_filter)
+
+            sql = f"""
                 SELECT
                     tx_hash,
                     from_address      AS counterparty,
@@ -241,16 +260,19 @@ class SolanaChainCompiler(BaseChainCompiler):
                 FROM raw_token_transfers
                 WHERE blockchain = 'solana'
                   AND to_address = $1
+                  {asset_clause}
                 ORDER BY timestamp DESC, tx_hash ASC
                 LIMIT $2
             """
             async with self._pg.acquire() as conn:
-                spl_rows = await conn.fetch(sql, address, limit)
+                spl_rows = await conn.fetch(sql, *params)
             rows.extend(dict(r) for r in spl_rows)
         except Exception as exc:
             logger.debug("SolanaChainCompiler inbound SPL failed for %s: %s", address, exc)
 
         try:
+            if not include_native:
+                return rows
             sql = """
                 SELECT
                     tx_hash,

@@ -1,24 +1,21 @@
 """
-Dedicated ingestion runtime for the standalone graph product.
+Lightweight runtime dedicated to graph ingestion and raw event-store backfill.
 
-This process keeps live collectors and raw-event-store backfill outside the
-request-serving graph API so the lightweight investigation UI/API stack stays
-lean by default.
+This keeps the standalone graph stack's ingestion service separate from the
+request-serving graph API while preserving a small health surface for Docker.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import signal
-from contextlib import suppress
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
 
 from src.api.config import settings
 from src.api.database import close_databases
 from src.api.database import init_databases
-from src.api.database import start_connection_monitoring
-from src.api.database import stop_connection_monitoring
-from src.collectors.manager import CollectorManager
 
 logging.basicConfig(
     level=getattr(logging, settings.LOG_LEVEL),
@@ -27,71 +24,13 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def _install_signal_handlers(stop_event: asyncio.Event) -> None:
-    """Install SIGINT/SIGTERM handlers that trigger graceful shutdown."""
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        with suppress(NotImplementedError):
-            loop.add_signal_handler(sig, stop_event.set)
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Boot the collector manager in the background and stop it cleanly."""
+    logger.info("Starting Jackdaw Sentry Graph Ingest runtime...")
 
-
-async def _shutdown_runtime(manager: CollectorManager | None) -> None:
-    """Close collector/runtime resources gracefully."""
-    errors: list[Exception] = []
-
-    if manager is not None:
-        try:
-            await manager.stop_all()
-        except Exception as exc:  # pragma: no cover - shutdown best effort
-            logger.error("Failed to stop collector manager cleanly: %s", exc, exc_info=True)
-            errors.append(exc)
-
-    try:
-        await stop_connection_monitoring()
-    except Exception as exc:  # pragma: no cover - shutdown best effort
-        logger.error("Failed to stop connection monitoring: %s", exc, exc_info=True)
-        errors.append(exc)
-
-    try:
-        from src.collectors.rpc.factory import close_all_clients
-
-        await close_all_clients()
-    except Exception as exc:  # pragma: no cover - shutdown best effort
-        logger.error("Failed to close RPC clients: %s", exc, exc_info=True)
-        errors.append(exc)
-
-    try:
-        await close_databases()
-    except Exception as exc:  # pragma: no cover - shutdown best effort
-        logger.error("Failed to close databases: %s", exc, exc_info=True)
-        errors.append(exc)
-
-    if errors:
-        logger.warning("Graph ingest runtime shutdown completed with %s error(s)", len(errors))
-    else:
-        logger.info("Graph ingest runtime shutdown complete")
-
-
-async def run_graph_ingest_runtime(
-    stop_event: asyncio.Event | None = None,
-) -> None:
-    """Run the dedicated collector/backfill runtime until a stop signal arrives."""
-    local_stop_event = stop_event or asyncio.Event()
-    if stop_event is None:
-        _install_signal_handlers(local_stop_event)
-
-    manager: CollectorManager | None = None
-    manager_task: asyncio.Task[None] | None = None
-
-    logger.info("Starting Jackdaw Sentry Graph ingest runtime...")
-    if not settings.DUAL_WRITE_RAW_EVENT_STORE:
-        logger.warning(
-            "DUAL_WRITE_RAW_EVENT_STORE is disabled; collectors will not populate raw event tables",
-        )
-    if not settings.AUTO_BACKFILL_RAW_EVENT_STORE:
-        logger.warning(
-            "AUTO_BACKFILL_RAW_EVENT_STORE is disabled; only live collector ingestion will run",
-        )
+    collector_manager = None
+    collector_task: asyncio.Task | None = None
 
     try:
         await init_databases()
@@ -100,33 +39,92 @@ async def run_graph_ingest_runtime(
 
         migrations_ok = await run_database_migrations(profile="graph")
         if not migrations_ok:
-            logger.warning("Graph migrations were not fully applied for the ingest runtime")
+            logger.warning("Graph migrations were not fully applied for ingest runtime")
 
-        await start_connection_monitoring()
+        from src.collectors.manager import CollectorManager
 
-        manager = CollectorManager()
-        await manager.initialize()
-
-        manager_task = asyncio.create_task(manager.start_all())
-        await local_stop_event.wait()
-    except asyncio.CancelledError:
+        collector_manager = CollectorManager()
+        await collector_manager.initialize()
+        collector_task = asyncio.create_task(collector_manager.start_all())
+        app.state.collector_manager = collector_manager
+        app.state.collector_task = collector_task
+        logger.info("Graph ingest collectors started")
+    except Exception:
+        logger.exception("Failed to initialize graph ingest runtime")
+        if collector_task is not None:
+            collector_task.cancel()
+            await asyncio.gather(collector_task, return_exceptions=True)
+        await close_databases()
         raise
-    finally:
-        if manager is not None:
-            await _shutdown_runtime(manager)
-        if manager_task is not None:
-            manager_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await manager_task
+
+    yield
+
+    logger.info("Shutting down Jackdaw Sentry Graph Ingest runtime...")
+    if collector_manager is not None:
+        try:
+            await collector_manager.stop()
+        except Exception:
+            logger.exception("Collector manager stop failed during shutdown")
+    if collector_task is not None:
+        collector_task.cancel()
+        await asyncio.gather(collector_task, return_exceptions=True)
+    await close_databases()
 
 
-def main() -> None:
-    """Entry point for ``python -m src.api.graph_ingest_runtime``."""
-    try:
-        asyncio.run(run_graph_ingest_runtime())
-    except KeyboardInterrupt:  # pragma: no cover - normal CLI shutdown path
-        logger.info("Graph ingest runtime interrupted")
+app = FastAPI(
+    title="Jackdaw Sentry Graph Ingest",
+    description="Standalone ingestion and backfill runtime for the graph stack",
+    version="1.0.0",
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
+    lifespan=lifespan,
+)
+
+
+@app.get("/health", tags=["Health"])
+async def health_check():
+    """Basic container health probe."""
+    return {
+        "status": "healthy",
+        "service": "Jackdaw Sentry Graph Ingest",
+        "version": "1.0.0",
+    }
+
+
+@app.get("/health/detailed", tags=["Health"])
+async def detailed_health_check():
+    """Detailed health probe including backing datastore status."""
+    from src.api.database import check_database_health
+
+    db_health = await check_database_health()
+    manager = getattr(app.state, "collector_manager", None)
+    collector_count = len(manager.collectors) if manager is not None else 0
+    return {
+        "status": "healthy" if all(db_health.values()) else "degraded",
+        "service": "Jackdaw Sentry Graph Ingest",
+        "version": "1.0.0",
+        "databases": db_health,
+        "collector_count": collector_count,
+    }
+
+
+@app.get("/", tags=["Root"])
+async def root():
+    """Runtime metadata."""
+    return {
+        "name": "Jackdaw Sentry Graph Ingest",
+        "health": "/health",
+        "details": "/health/detailed",
+    }
 
 
 if __name__ == "__main__":
-    main()
+    import uvicorn
+
+    uvicorn.run(
+        "src.api.graph_ingest_runtime:app",
+        host="0.0.0.0",
+        port=8000,
+        log_level="info",
+    )

@@ -5,6 +5,9 @@
   <img src="assets/branding/jackdaw-sentry/generated/logo-lockup-light.svg" alt="Jackdaw Sentry Graph" width="560">
 </picture>
 
+Support via Lightning / Nostr:
+`npub1p0jkd532p3c0za2s7fugq0tx30xm2e4v03n6udkqze6ercyf5fesgsy9fv@npub.cash`
+
 Standalone investigation graph for blockchain tracing and session-based graph exploration.
 
 ## Repo Posture
