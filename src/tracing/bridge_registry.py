@@ -384,9 +384,46 @@ BRIDGE_REGISTRY: Dict[str, BridgeProtocol] = {
                 "4hfUykhqmD7ZRvNh1HuzVKEY7ToENixtdUKZspNDCrEM",  # Atomiq swap program
                 "3KHSFpEK6bsjg3bqcxQ9qssJYtRCMi2S9TYVe4q6CQc",   # BTC relay program
             ],
-            # starknet: contract address not yet confirmed — add here when found
-            # citrea:   contract address not yet confirmed — add here when found
-            # botanix:  contract address not yet confirmed — add here when found
+            # starknet/citrea/botanix: Atomiq contracts are SDK-managed canonical
+            # deployments (swapContract, spvVaultContract, btcRelayContract) —
+            # not published as fixed addresses.  Detection via the public API is
+            # the reliable path; on-chain contract matching is not feasible here.
+        },
+    ),
+
+    # StarkGate — official StarkWare bridge connecting Ethereum L1 to Starknet L2.
+    # Mechanism: lock ETH/ERC-20 on L1, mint equivalent tokens on L2 (and reverse).
+    #
+    # L1 contracts (Ethereum mainnet):
+    #   StarknetTokenBridge  0xF5b6Ee2CAEb6769659f6C091D209DfdCaF3F69Eb  — main bridge
+    #   StarkgateManager     0x0c5aE94f8939182F2D06097025324D1E537d5B60  — route manager
+    #   StarkgateRegistry    0x1268cc171c54F2000402DfF20E93E60DF4c96812  — token registry
+    #
+    # L2 contract (Starknet mainnet, felt252 format):
+    #   StarknetTokenBridge  0x0616757a151c21f9be8775098d591c2807316d992bbc3bb1a5c1821630589256
+    #
+    # Native L2 token addresses (relevant for identifying bridged assets on Starknet):
+    #   ETH   0x049d36570d4e46f48e99674bd3fcc84644ddd6b96f7c741b1562b82f9e004dc7
+    #   STRK  0x04718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d
+    #
+    # No public correlation API — hop status must be resolved via on-chain data or
+    # the Voyager / Starkscan explorers (voyager.online, starkscan.co).
+    "starkgate": BridgeProtocol(
+        protocol_id="starkgate",
+        display_name="StarkGate",
+        mechanism="lock_mint",
+        api_base=None,
+        status_endpoint=None,
+        supported_chains=["ethereum", "starknet"],
+        known_contract_addresses={
+            "ethereum": [
+                "0xf5b6ee2caeb6769659f6c091d209dfdcaf3f69eb",  # StarknetTokenBridge (L1)
+                "0x0c5ae94f8939182f2d06097025324d1e537d5b60",  # StarkgateManager
+                "0x1268cc171c54f2000402dff20e93e60df4c96812",  # StarkgateRegistry
+            ],
+            "starknet": [
+                "0x0616757a151c21f9be8775098d591c2807316d992bbc3bb1a5c1821630589256",  # StarknetTokenBridge (L2)
+            ],
         },
     ),
 
