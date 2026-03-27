@@ -618,6 +618,133 @@ class BridgeHopCompiler:
         }
 
     # ------------------------------------------------------------------
+    # Atomiq Exchange public API lookup
+    # ------------------------------------------------------------------
+
+    async def _atomiq_api_lookup(
+        self,
+        tx_hash: str,
+        source_chain: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Query the Atomiq Exchange public API to resolve both legs of an atomic swap.
+
+        Atomiq connects Bitcoin (L1 + Lightning) to Solana via trustless HTLCs
+        and PrTLCs.  Their public API requires no authentication and can be
+        queried by Solana tx signature or Bitcoin tx hash, returning the full
+        cross-chain swap record including both-side amounts, addresses, and status.
+
+        Args:
+            tx_hash:      Solana tx signature (base58) or Bitcoin tx hash (hex).
+            source_chain: ``"solana"`` or ``"bitcoin"`` — determines query parameter.
+
+        Returns:
+            Synthetic correlation dict compatible with ``build_hop_node`` /
+            ``build_dest_node``, or None on any failure or no-match.
+        """
+        try:
+            import aiohttp
+        except ImportError:
+            logger.debug("BridgeHopCompiler: aiohttp unavailable, skipping Atomiq lookup")
+            return None
+
+        if source_chain == "solana":
+            params: Dict[str, Any] = {"txInit": tx_hash, "chain": "SOLANA", "limit": 10}
+        elif source_chain == "bitcoin":
+            params = {"btcTxId": tx_hash, "limit": 10}
+        else:
+            return None
+
+        try:
+            timeout = aiohttp.ClientTimeout(total=8)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(
+                    "https://api.atomiq.exchange/api/GetSwapList",
+                    params=params,
+                ) as resp:
+                    if resp.status != 200:
+                        logger.debug(
+                            "BridgeHopCompiler: Atomiq API HTTP %s for %s",
+                            resp.status,
+                            tx_hash[:16],
+                        )
+                        return None
+                    data = await resp.json()
+        except Exception as exc:
+            logger.debug(
+                "BridgeHopCompiler: Atomiq API request failed for %s: %s",
+                tx_hash[:16],
+                exc,
+            )
+            return None
+
+        items = data.get("data") or []
+        if not items:
+            return None
+
+        item = items[0]
+        direction = item.get("direction", "")   # "ToBTC" or "FromBTC"
+        swap_type = item.get("type", "CHAIN")   # "CHAIN" or "LN"
+        finished = bool(item.get("finished"))
+        success = bool(item.get("success"))
+
+        if finished and success:
+            status = "completed"
+        elif finished:
+            status = "failed"
+        else:
+            status = "pending"
+
+        btc_chain = "lightning" if swap_type == "LN" else "bitcoin"
+
+        if direction == "ToBTC":
+            dest_chain = btc_chain
+            src_asset = item.get("tokenName") or ""
+            dest_asset = "BTC"
+            src_amount = float(item.get("tokenAmount") or 0.0)
+            dest_amount_raw = item.get("btcAmount")
+            dest_amount = float(dest_amount_raw) if dest_amount_raw else None
+            dest_address = item.get("btcAddress")
+            dest_tx = item.get("btcTx")
+        else:
+            # FromBTC: Bitcoin → Solana
+            dest_chain = "solana"
+            src_asset = "BTC"
+            dest_asset = item.get("tokenName") or ""
+            btc_amt = item.get("btcAmount")
+            src_amount = float(btc_amt) if btc_amt else 0.0
+            tok_amt = item.get("tokenAmount")
+            dest_amount = float(tok_amt) if tok_amt else None
+            dest_address = item.get("clientWallet")
+            dest_tx = item.get("txFinish") or item.get("txInit")
+
+        logger.info(
+            "BridgeHopCompiler: Atomiq API resolved %s→%s for tx %s "
+            "(status=%s, dest_addr=%s)",
+            source_chain,
+            dest_chain,
+            tx_hash[:16],
+            status,
+            (dest_address or "")[:16],
+        )
+
+        return {
+            "protocol": "atomiq",
+            "mechanism": "atomic_swap",
+            "source_chain": source_chain,
+            "destination_chain": dest_chain,
+            "destination_address": dest_address,
+            "source_asset": src_asset,
+            "destination_asset": dest_asset,
+            "source_amount": src_amount,
+            "destination_amount": dest_amount,
+            "time_delta_seconds": None,
+            "correlation_confidence": 1.0,
+            "status": status,
+            "order_id": item.get("id"),
+            "destination_tx_hash": dest_tx,
+        }
+
+    # ------------------------------------------------------------------
     # Unified entry point used by chain compiler _build_graph()
     # ------------------------------------------------------------------
 
@@ -684,6 +811,13 @@ class BridgeHopCompiler:
                 contract_address=to_address,
                 source_chain=source_chain,
             )
+
+        # Atomiq atomic swap: query the public API to resolve both legs.
+        # The API is authoritative (confidence=1.0), unauthenticated, and
+        # returns the Bitcoin tx hash, destination address, amounts, and status
+        # directly from Atomiq's swap database.  Covers Solana→BTC and BTC→Solana.
+        if correlation is None and protocol.protocol_id == "atomiq":
+            correlation = await self._atomiq_api_lookup(tx_hash, source_chain)
 
         hop_node = self.build_hop_node(
             protocol=protocol,

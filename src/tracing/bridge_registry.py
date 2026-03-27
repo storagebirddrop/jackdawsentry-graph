@@ -346,6 +346,33 @@ BRIDGE_REGISTRY: Dict[str, BridgeProtocol] = {
         },
     ),
 
+    # Atomiq Exchange — trustless cross-chain atomic swap protocol connecting
+    # Bitcoin (L1 + Lightning) to Solana via HTLCs and PrTLCs.  No custodian,
+    # no intermediary: the swap either completes atomically on both sides or
+    # both sides refund after timeout.
+    #
+    # Solana program IDs confirmed from Anchor.toml in atomiq-contracts-solana.
+    # The protocol operates on Bitcoin-native L2s (Citrea, Botanix) on the EVM
+    # side; mainstream EVM chains (Ethereum, BSC, Polygon) are not supported.
+    #
+    # Public API (no auth required) at api.atomiq.exchange supports lookups by
+    # Solana tx signature (txInit/txFinish) and Bitcoin tx hash (btcTxId),
+    # returning both legs of the swap in a single response.
+    "atomiq": BridgeProtocol(
+        protocol_id="atomiq",
+        display_name="Atomiq Exchange",
+        mechanism="atomic_swap",
+        api_base="https://api.atomiq.exchange/api",
+        status_endpoint="/GetSwapList",
+        supported_chains=["bitcoin", "lightning", "solana"],
+        known_contract_addresses={
+            "solana": [
+                "4hfUykhqmD7ZRvNh1HuzVKEY7ToENixtdUKZspNDCrEM",  # Atomiq swap program
+                "3KHSFpEK6bsjg3bqcxQ9qssJYtRCMi2S9TYVe4q6CQc",   # BTC relay program
+            ],
+        },
+    ),
+
     # Bridgers (bridgers.xyz) — custodial cross-chain swap bridge focused on
     # ETH/BSC ↔ TRC-20 (Tron) routes.  Unlike decentralised bridges, Bridgers
     # operates a custodial backend; there is no public correlation API.
