@@ -347,29 +347,46 @@ BRIDGE_REGISTRY: Dict[str, BridgeProtocol] = {
     ),
 
     # Atomiq Exchange — trustless cross-chain atomic swap protocol connecting
-    # Bitcoin (L1 + Lightning) to Solana via HTLCs and PrTLCs.  No custodian,
-    # no intermediary: the swap either completes atomically on both sides or
-    # both sides refund after timeout.
+    # Bitcoin (L1 + Lightning) to Solana, Starknet, and Bitcoin-native L2s
+    # via HTLCs and PrTLCs.  No custodian, no intermediary: the swap either
+    # completes atomically on both sides or both sides refund after timeout.
+    #
+    # Supported smart-contract chains:
+    #   Solana       — collector + trace compiler fully operational.
+    #   Starknet     — collector + trace compiler operational; Atomiq contract
+    #                  address on Starknet not yet confirmed (add to
+    #                  known_contract_addresses when found).
+    #   Citrea       — Bitcoin L2 (EVM-compatible); explorer: explorer.mainnet.citrea.xyz
+    #                  (Blockscout-based).  No collector yet.
+    #   Botanix      — Bitcoin L2 (EVM-compatible); explorer: botanixscan.io.
+    #                  No collector yet.
+    #
+    # Starknet explorers (for manual verification):
+    #   Voyager — voyager.online
+    #   ViewBlock — viewblock.io/starknet
+    #   OKLink — oklink.com/starknet
     #
     # Solana program IDs confirmed from Anchor.toml in atomiq-contracts-solana.
-    # The protocol operates on Bitcoin-native L2s (Citrea, Botanix) on the EVM
-    # side; mainstream EVM chains (Ethereum, BSC, Polygon) are not supported.
+    # Mainstream EVM chains (Ethereum, BSC, Polygon) are not supported by Atomiq.
     #
     # Public API (no auth required) at api.atomiq.exchange supports lookups by
-    # Solana tx signature (txInit/txFinish) and Bitcoin tx hash (btcTxId),
-    # returning both legs of the swap in a single response.
+    # Solana tx signature (txInit/txFinish) and Bitcoin tx hash (btcTxId).
+    # The chainId parameter accepts: SOLANA, CITREA, STARKNET, BOTANIX, ALPEN.
     "atomiq": BridgeProtocol(
         protocol_id="atomiq",
         display_name="Atomiq Exchange",
         mechanism="atomic_swap",
         api_base="https://api.atomiq.exchange/api",
         status_endpoint="/GetSwapList",
-        supported_chains=["bitcoin", "lightning", "solana"],
+        supported_chains=["bitcoin", "lightning", "solana", "starknet", "citrea", "botanix"],
         known_contract_addresses={
             "solana": [
                 "4hfUykhqmD7ZRvNh1HuzVKEY7ToENixtdUKZspNDCrEM",  # Atomiq swap program
                 "3KHSFpEK6bsjg3bqcxQ9qssJYtRCMi2S9TYVe4q6CQc",   # BTC relay program
             ],
+            # starknet: contract address not yet confirmed — add here when found
+            # citrea:   contract address not yet confirmed — add here when found
+            # botanix:  contract address not yet confirmed — add here when found
         },
     ),
 
