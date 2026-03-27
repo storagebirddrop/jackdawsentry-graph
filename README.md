@@ -14,6 +14,8 @@ Most professional tracing tools require Chainalysis, Elliptic, or similar subscr
 
 The ingest service is the core of that accessibility — it rehydrates traces using free-tier RPC endpoints so that the graph can expand even when you have no access to industry data feeds.
 
+A public demo will be made available online when possible. That said, performance on a shared instance will always be limited — for serious investigation work, running this locally or self-hosted is strongly encouraged. The self-hosted path is a first-class goal of this project, not an afterthought.
+
 Hard things this tool is specifically designed to handle:
 - tracing through smart contracts (EVM DEX swaps, aggregator hops, bridge contracts)
 - following cross-chain flows where assets bridge between networks
