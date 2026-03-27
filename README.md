@@ -83,21 +83,17 @@ This repository is intentionally narrower than the private Jackdaw Sentry platfo
 - `src/tracing/` — bridge protocol registry, cross-chain bridge tracer, bridge log decoder
 - `src/services/` — sanctions screening, price oracle, contract info, entity attribution
 - `frontend/app/` — React 19 + TypeScript investigation graph (Zustand, XYFlow, ELK layout)
-- `frontend/graph-login.html` — static login shell served ahead of the app
-
 ## Quick Start
 
 ```bash
 cp .env.example .env
 docker compose -f docker-compose.graph.yml up -d --build
-python scripts/dev/create_dev_user.py --username analyst --password <your-password>
 ```
 
 Browse:
 
 ```text
-http://localhost:8081/login
-http://localhost:8081/app/
+http://localhost:8081/
 ```
 
 API docs stay disabled by default. Set `EXPOSE_API_DOCS=true` only when you
