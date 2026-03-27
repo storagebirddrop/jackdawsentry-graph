@@ -90,7 +90,7 @@ This repository is intentionally narrower than the private Jackdaw Sentry platfo
 ```bash
 cp .env.example .env
 docker compose -f docker-compose.graph.yml up -d --build
-python scripts/dev/create_dev_user.py --username analyst --password change-me-now
+python scripts/dev/create_dev_user.py --username analyst --password <your-password>
 ```
 
 Browse:
@@ -246,19 +246,14 @@ Repo verification helpers:
 ```bash
 python scripts/quality/boundary_audit.py
 python scripts/quality/public_readiness_audit.py
-python scripts/quality/live_abuse_probe.py --username analyst --password change-me-now
+python scripts/quality/live_abuse_probe.py --username analyst --password <your-password>
 python scripts/dev/load_perf_fixture_dataset.py
-python scripts/quality/live_perf_probe.py --username analyst --password change-me-now
+python scripts/quality/live_perf_probe.py --username analyst --password <your-password>
 ```
 
 `load_perf_fixture_dataset.py` seeds both a dense local hub and a bridge/cross-chain
 fixture slice so the live perf probe can exercise bridge-hop rendering and
 status polling instead of only same-chain address expansion.
-
-Local graph login:
-
-- username: `analyst`
-- password: `change-me-now`
 
 ## Support
 
