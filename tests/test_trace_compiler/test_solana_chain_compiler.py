@@ -138,6 +138,33 @@ async def test_fetch_inbound_asset_filter_includes_sol_when_selected():
     assert mock_conn.fetch.await_count == 2
 
 
+@pytest.mark.asyncio
+async def test_fetch_outbound_asset_filter_accepts_exact_mint_selector():
+    mock_pg = MagicMock()
+    mock_conn = AsyncMock()
+    mock_conn.fetch = AsyncMock(return_value=[_row(COUNTERPARTY, symbol="USDC")])
+    mock_pg.acquire = MagicMock(return_value=AsyncMock(
+        __aenter__=AsyncMock(return_value=mock_conn),
+        __aexit__=AsyncMock(return_value=False),
+    ))
+
+    compiler = SolanaChainCompiler(postgres_pool=mock_pg)
+    await compiler._fetch_outbound(
+        SEED,
+        ExpandOptions(
+            max_results=10,
+            asset_filter=["asset:solana:EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"],
+        ),
+    )
+
+    _, address, limit, symbol_filters, canonical_filters, asset_filters = mock_conn.fetch.await_args.args
+    assert address == SEED
+    assert limit == 10
+    assert symbol_filters is None
+    assert canonical_filters is None
+    assert asset_filters == ["epjfwdd5aufqssqem2qn1xzybapc8g4weggkzwytdt1v"]
+
+
 # ---------------------------------------------------------------------------
 # _build_graph — plain address nodes
 # ---------------------------------------------------------------------------

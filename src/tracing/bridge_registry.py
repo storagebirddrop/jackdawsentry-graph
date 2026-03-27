@@ -30,6 +30,7 @@ class BridgeProtocol:
     #   liquidity    — Stargate, Across: AMM liquidity pools on both sides
     #   custodial    — Bridgers: assets held by a centralised custodian; operator
     #                  releases equivalent tokens on the destination chain
+    #   atomic_swap  — Atomiq: hash time-lock contract (HTLC) peer-to-peer swap
     mechanism: str
     supported_chains: List[str]
     # Contract addresses per chain — used to detect bridge ingress in on-chain data.
@@ -378,7 +379,7 @@ BRIDGE_REGISTRY: Dict[str, BridgeProtocol] = {
         mechanism="atomic_swap",
         api_base="https://api.atomiq.exchange/api",
         status_endpoint="/GetSwapList",
-        supported_chains=["bitcoin", "lightning", "solana", "starknet", "citrea", "botanix"],
+        supported_chains=["bitcoin", "lightning", "solana", "starknet", "citrea", "botanix", "alpen"],
         known_contract_addresses={
             "solana": [
                 "4hfUykhqmD7ZRvNh1HuzVKEY7ToENixtdUKZspNDCrEM",  # Atomiq swap program

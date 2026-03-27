@@ -48,6 +48,7 @@ except ImportError:
 
 
 from src.api.config import settings
+from src.services.token_metadata import TokenMetadataRecord
 
 from .base import Address
 from .base import BaseCollector
@@ -77,6 +78,7 @@ class EthereumCollector(BaseCollector):
         self.latest_block_cache = None
         self.cache_timeout = 30  # seconds
         self._token_symbol_cache: Dict[str, str] = {}
+        self._token_name_cache: Dict[str, str] = {}
         self._token_decimals_cache: Dict[str, int] = {}
 
     def get_stablecoin_contracts(self) -> Dict[str, str]:
@@ -886,6 +888,72 @@ class EthereumCollector(BaseCollector):
 
         self._token_symbol_cache[contract_key] = fallback
         return fallback
+
+    async def get_token_name(self, contract_address: str) -> Optional[str]:
+        """Get a token name from the contract when available."""
+        contract_key = contract_address.lower()
+        cached = self._token_name_cache.get(contract_key)
+        if cached:
+            return cached
+
+        try:
+            if not self.w3:
+                return None
+
+            checksum_address = to_checksum_address(contract_address)
+            name = (
+                self.w3.eth.contract(address=checksum_address)
+                .functions.name()
+                .call()
+            )
+            if isinstance(name, bytes):
+                name = name.decode("utf-8", errors="ignore").strip("\x00")
+            name_text = str(name).strip()
+            if name_text:
+                self._token_name_cache[contract_key] = name_text
+                return name_text
+        except Exception as e:
+            logger.debug(f"Error getting name for {contract_address}: {e}")
+
+        return None
+
+    async def _fetch_token_metadata(
+        self, asset_address: str
+    ) -> Optional[TokenMetadataRecord]:
+        """Resolve ERC-20/BEP-20 metadata from the token contract."""
+        symbol = await self.get_token_symbol(asset_address)
+        name = await self.get_token_name(asset_address)
+        decimals = await self.get_token_decimals(asset_address)
+
+        fallback = (
+            f"{asset_address[:6]}...{asset_address[-4:]}"
+            if len(asset_address) > 12
+            else asset_address
+        )
+        if symbol == fallback:
+            symbol = None
+        if symbol is None and name is None and decimals is None:
+            return None
+
+        token_standard = "bep20" if self.blockchain == "bsc" else "erc20"
+        canonical_asset_id = None
+        if symbol:
+            canonical_asset_id = self._infer_canonical_asset_id(
+                symbol,
+                asset_contract=asset_address,
+                asset_name=name,
+                token_standard=token_standard,
+            )
+        return TokenMetadataRecord(
+            blockchain=self.blockchain,
+            asset_address=asset_address,
+            symbol=symbol,
+            name=name,
+            decimals=decimals,
+            token_standard=token_standard,
+            canonical_asset_id=canonical_asset_id,
+            source="evm_contract_call",
+        )
 
     async def get_token_decimals(self, contract_address: str) -> int:
         """Get token decimals from contract"""

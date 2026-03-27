@@ -110,6 +110,85 @@ class _GenericTransferChainCompiler(BaseChainCompiler):
         """
         return addr.lower()
 
+    def _normalized_asset_filters(
+        self,
+        chain: str,
+        options: ExpandOptions,
+    ) -> tuple[list[str], list[str], list[str], bool]:
+        """Return normalized symbol, canonical-id, address, and native filters."""
+        raw_values = [
+            str(value).strip()
+            for value in (options.asset_filter or [])
+            if str(value).strip()
+        ]
+        symbol_filters: set[str] = set()
+        canonical_filters: set[str] = set()
+        asset_address_filters: set[str] = set()
+        native_selected = False
+        normalized_chain = (chain or "").strip().lower()
+
+        for value in raw_values:
+            lowered = value.lower()
+            if lowered.startswith("symbol:"):
+                symbol_filters.add(value.split(":", 1)[1].strip().upper())
+                continue
+            if lowered.startswith("canonical:"):
+                canonical_filters.add(value.split(":", 1)[1].strip().lower())
+                continue
+            if lowered.startswith("native:"):
+                selector_chain = value.split(":", 1)[1].strip().lower()
+                if selector_chain == normalized_chain:
+                    native_selected = True
+                continue
+            if lowered.startswith("asset:"):
+                parts = value.split(":", 2)
+                if len(parts) == 3 and parts[1].strip().lower() == normalized_chain:
+                    asset_address_filters.add(parts[2].strip().lower())
+                continue
+            symbol_filters.add(value.upper())
+            canonical_filters.add(lowered)
+
+        return (
+            sorted(symbol_filters),
+            sorted(canonical_filters),
+            sorted(asset_address_filters),
+            native_selected,
+        )
+
+    def _include_native_asset(self, chain: str, options: ExpandOptions) -> bool:
+        """Return True when the native asset should be included for a query."""
+        if not options.asset_filter:
+            return True
+        symbol_filters, canonical_filters, _, native_selected = self._normalized_asset_filters(
+            chain,
+            options,
+        )
+        native_symbol = self._native_symbol(chain).upper()
+        native_asset_id = self._native_canonical_asset_id(chain)
+        return native_selected or native_symbol in symbol_filters or (
+            native_asset_id is not None and native_asset_id.lower() in canonical_filters
+        )
+
+    def _include_token_assets(self, chain: str, options: ExpandOptions) -> bool:
+        """Return True when non-native token transfers should be queried."""
+        if not options.asset_filter:
+            return True
+        (
+            symbol_filters,
+            canonical_filters,
+            asset_address_filters,
+            _native_selected,
+        ) = self._normalized_asset_filters(chain, options)
+        native_symbol = self._native_symbol(chain).upper()
+        native_asset_id = self._native_canonical_asset_id(chain)
+        symbol_only = {value for value in symbol_filters if value != native_symbol}
+        canonical_only = {
+            value
+            for value in canonical_filters
+            if native_asset_id is None or value != native_asset_id.lower()
+        }
+        return bool(symbol_only or canonical_only or asset_address_filters)
+
     async def _try_swap_promotion(
         self,
         *,
@@ -222,33 +301,32 @@ class _GenericTransferChainCompiler(BaseChainCompiler):
             return []
         try:
             limit = min(options.max_results, SQL_FETCH_LIMIT)
-            sql = """
-                SELECT
-                    tx_hash,
-                    to_address    AS counterparty,
-                    value_native,
-                    NULL          AS asset_symbol,
-                    NULL          AS canonical_asset_id,
-                    timestamp,
-                    tx_type
-                FROM raw_transactions
-                WHERE blockchain = $1
-                  AND from_address = $2
-                  AND to_address IS NOT NULL
-                ORDER BY timestamp DESC, tx_hash ASC
-                LIMIT $3
-            """
-            async with self._pg.acquire() as conn:
-                rows = await conn.fetch(sql, chain, address, limit)
+            result = []
 
-            result = [dict(r) for r in rows]
+            if self._include_native_asset(chain, options):
+                sql = """
+                    SELECT
+                        tx_hash,
+                        to_address    AS counterparty,
+                        value_native,
+                        NULL          AS asset_symbol,
+                        NULL          AS canonical_asset_id,
+                        NULL          AS asset_address,
+                        timestamp,
+                        tx_type
+                    FROM raw_transactions
+                    WHERE blockchain = $1
+                      AND from_address = $2
+                      AND to_address IS NOT NULL
+                    ORDER BY timestamp DESC, tx_hash ASC
+                    LIMIT $3
+                """
+                async with self._pg.acquire() as conn:
+                    rows = await conn.fetch(sql, chain, address, limit)
+                result = [dict(r) for r in rows]
 
             # Merge token transfers for the same addresses.
-            native_symbol = self._native_symbol(chain).upper()
-            if not options.asset_filter or any(
-                af.upper() != native_symbol
-                for af in options.asset_filter
-            ):
+            if self._include_token_assets(chain, options):
                 token_rows = await self._fetch_outbound_token_transfers(
                     address, chain, options
                 )
@@ -282,33 +360,32 @@ class _GenericTransferChainCompiler(BaseChainCompiler):
             return []
         try:
             limit = min(options.max_results, SQL_FETCH_LIMIT)
-            sql = """
-                SELECT
-                    tx_hash,
-                    from_address  AS counterparty,
-                    value_native,
-                    NULL          AS asset_symbol,
-                    NULL          AS canonical_asset_id,
-                    timestamp,
-                    tx_type
-                FROM raw_transactions
-                WHERE blockchain = $1
-                  AND to_address = $2
-                  AND from_address IS NOT NULL
-                ORDER BY timestamp DESC, tx_hash ASC
-                LIMIT $3
-            """
-            async with self._pg.acquire() as conn:
-                rows = await conn.fetch(sql, chain, address, limit)
+            result = []
 
-            result = [dict(r) for r in rows]
+            if self._include_native_asset(chain, options):
+                sql = """
+                    SELECT
+                        tx_hash,
+                        from_address  AS counterparty,
+                        value_native,
+                        NULL          AS asset_symbol,
+                        NULL          AS canonical_asset_id,
+                        NULL          AS asset_address,
+                        timestamp,
+                        tx_type
+                    FROM raw_transactions
+                    WHERE blockchain = $1
+                      AND to_address = $2
+                      AND from_address IS NOT NULL
+                    ORDER BY timestamp DESC, tx_hash ASC
+                    LIMIT $3
+                """
+                async with self._pg.acquire() as conn:
+                    rows = await conn.fetch(sql, chain, address, limit)
+                result = [dict(r) for r in rows]
 
             # Merge token transfers for the same addresses.
-            native_symbol = self._native_symbol(chain).upper()
-            if not options.asset_filter or any(
-                af.upper() != native_symbol
-                for af in options.asset_filter
-            ):
+            if self._include_token_assets(chain, options):
                 token_rows = await self._fetch_inbound_token_transfers(
                     address, chain, options
                 )
@@ -339,27 +416,68 @@ class _GenericTransferChainCompiler(BaseChainCompiler):
             return []
         try:
             limit = min(options.max_results, SQL_FETCH_LIMIT)
-            asset_clause = ""
-            params: list = [chain, address, limit]
-            if options.asset_filter:
-                placeholders = ", ".join(
-                    f"${i + 4}" for i in range(len(options.asset_filter))
-                )
-                asset_clause = f"AND UPPER(asset_symbol) IN ({placeholders})"
-                params.extend(a.upper() for a in options.asset_filter)
+            (
+                symbol_filters,
+                canonical_filters,
+                asset_address_filters,
+                _native_selected,
+            ) = self._normalized_asset_filters(chain, options)
+            params: list = [
+                chain,
+                address,
+                limit,
+                symbol_filters or None,
+                canonical_filters or None,
+                asset_address_filters or None,
+            ]
 
-            sql = f"""
+            sql = """
                 SELECT
-                    tx_hash,
-                    to_address       AS counterparty,
-                    amount_normalized AS value_native,
-                    asset_symbol,
-                    canonical_asset_id,
-                    timestamp
-                FROM raw_token_transfers
-                WHERE blockchain = $1
-                  AND from_address = $2
-                  {asset_clause}
+                    rtt.tx_hash,
+                    rtt.to_address       AS counterparty,
+                    rtt.amount_normalized AS value_native,
+                    COALESCE(
+                        NULLIF(tmc.symbol, ''),
+                        NULLIF(rtt.asset_symbol, ''),
+                        rtt.asset_contract
+                    ) AS asset_symbol,
+                    COALESCE(
+                        NULLIF(tmc.canonical_asset_id, ''),
+                        NULLIF(rtt.canonical_asset_id, '')
+                    ) AS canonical_asset_id,
+                    rtt.asset_contract AS asset_address,
+                    rtt.timestamp
+                FROM raw_token_transfers rtt
+                LEFT JOIN token_metadata_cache tmc
+                  ON tmc.blockchain = rtt.blockchain
+                 AND tmc.asset_address = rtt.asset_contract
+                WHERE rtt.blockchain = $1
+                  AND rtt.from_address = $2
+                  AND (
+                    ($4::text[] IS NULL AND $5::text[] IS NULL AND $6::text[] IS NULL)
+                    OR (
+                        $4::text[] IS NOT NULL
+                        AND UPPER(
+                            COALESCE(
+                                NULLIF(tmc.symbol, ''),
+                                NULLIF(rtt.asset_symbol, '')
+                            )
+                        ) = ANY($4)
+                    )
+                    OR (
+                        $5::text[] IS NOT NULL
+                        AND LOWER(
+                            COALESCE(
+                                NULLIF(tmc.canonical_asset_id, ''),
+                                NULLIF(rtt.canonical_asset_id, '')
+                            )
+                        ) = ANY($5)
+                    )
+                    OR (
+                        $6::text[] IS NOT NULL
+                        AND LOWER(COALESCE(rtt.asset_contract, '')) = ANY($6)
+                    )
+                  )
                 ORDER BY timestamp DESC, tx_hash ASC
                 LIMIT $3
             """
@@ -392,24 +510,72 @@ class _GenericTransferChainCompiler(BaseChainCompiler):
             return []
         try:
             limit = min(options.max_results, SQL_FETCH_LIMIT)
-            asset_filter = options.asset_filter or []
+            (
+                symbol_filters,
+                canonical_filters,
+                asset_address_filters,
+                _native_selected,
+            ) = self._normalized_asset_filters(chain, options)
             sql = """
                 SELECT
-                    tx_hash,
-                    from_address      AS counterparty,
-                    amount_normalized AS value_native,
-                    asset_symbol,
-                    canonical_asset_id,
-                    timestamp
-                FROM raw_token_transfers
-                WHERE blockchain = $1
-                  AND to_address = $2
-                  AND ($3::text[] IS NULL OR UPPER(asset_symbol) = ANY(SELECT UPPER(x) FROM unnest($3) x))
+                    rtt.tx_hash,
+                    rtt.from_address      AS counterparty,
+                    rtt.amount_normalized AS value_native,
+                    COALESCE(
+                        NULLIF(tmc.symbol, ''),
+                        NULLIF(rtt.asset_symbol, ''),
+                        rtt.asset_contract
+                    ) AS asset_symbol,
+                    COALESCE(
+                        NULLIF(tmc.canonical_asset_id, ''),
+                        NULLIF(rtt.canonical_asset_id, '')
+                    ) AS canonical_asset_id,
+                    rtt.asset_contract AS asset_address,
+                    rtt.timestamp
+                FROM raw_token_transfers rtt
+                LEFT JOIN token_metadata_cache tmc
+                  ON tmc.blockchain = rtt.blockchain
+                 AND tmc.asset_address = rtt.asset_contract
+                WHERE rtt.blockchain = $1
+                  AND rtt.to_address = $2
+                  AND (
+                    ($3::text[] IS NULL AND $4::text[] IS NULL AND $5::text[] IS NULL)
+                    OR (
+                        $3::text[] IS NOT NULL
+                        AND UPPER(
+                            COALESCE(
+                                NULLIF(tmc.symbol, ''),
+                                NULLIF(rtt.asset_symbol, '')
+                            )
+                        ) = ANY($3)
+                    )
+                    OR (
+                        $4::text[] IS NOT NULL
+                        AND LOWER(
+                            COALESCE(
+                                NULLIF(tmc.canonical_asset_id, ''),
+                                NULLIF(rtt.canonical_asset_id, '')
+                            )
+                        ) = ANY($4)
+                    )
+                    OR (
+                        $5::text[] IS NOT NULL
+                        AND LOWER(COALESCE(rtt.asset_contract, '')) = ANY($5)
+                    )
+                  )
                 ORDER BY timestamp DESC, tx_hash ASC
-                LIMIT $4
+                LIMIT $6
             """
             async with self._pg.acquire() as conn:
-                rows = await conn.fetch(sql, chain, address, asset_filter or None, limit)
+                rows = await conn.fetch(
+                    sql,
+                    chain,
+                    address,
+                    symbol_filters or None,
+                    canonical_filters or None,
+                    asset_address_filters or None,
+                    limit,
+                )
             return [dict(r) for r in rows]
         except Exception as exc:
             # nosemgrep: python-logger-credential-disclosure - logging exception, not credentials
@@ -773,6 +939,8 @@ class _GenericTransferChainCompiler(BaseChainCompiler):
                     self._native_symbol(chain) if value_native else None
                 ),
                 canonical_asset_id=canonical_asset_id,
+                asset_address=row.get("asset_address"),
+                asset_chain=chain,
                 tx_hash=tx_hash or None,
                 tx_chain=chain,
                 timestamp=_ts_str,
@@ -1080,6 +1248,7 @@ class _GenericTransferChainCompiler(BaseChainCompiler):
             value_native=final_input_amount,
             asset_symbol=input_leg.asset_symbol,
             canonical_asset_id=input_leg.canonical_asset_id,
+            asset_chain=chain,
             tx_hash=tx_hash,
             tx_chain=chain,
             timestamp=timestamp,
@@ -1097,6 +1266,7 @@ class _GenericTransferChainCompiler(BaseChainCompiler):
             value_native=final_output_amount,
             asset_symbol=output_leg.asset_symbol,
             canonical_asset_id=output_leg.canonical_asset_id,
+            asset_chain=chain,
             tx_hash=tx_hash,
             tx_chain=chain,
             timestamp=timestamp,

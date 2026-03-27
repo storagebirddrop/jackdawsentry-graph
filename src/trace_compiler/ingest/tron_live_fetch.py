@@ -104,7 +104,18 @@ def _tron_hex(address: str) -> Optional[str]:
             return None
 
     if len(addr) == 50:
-        # Already 25-byte hex with checksum
+        # 25-byte hex with checksum — validate hex characters and embedded checksum
+        if not all(c in "0123456789abcdefABCDEF" for c in addr):
+            return None
+        try:
+            raw = bytes.fromhex(addr)
+            payload = raw[:21]
+            checksum_stored = raw[21:]
+            checksum_expected = hashlib.sha256(hashlib.sha256(payload).digest()).digest()[:4]
+            if checksum_stored != checksum_expected:
+                return None
+        except Exception:
+            return None
         return addr.lower()
 
     return None
@@ -255,6 +266,7 @@ async def _persist(
     stored = 0
     try:
         async with pg_pool.acquire() as conn:
+            tx_stored = 0
             async with conn.transaction():
 
                 # --- Native TRX transfers (TransferContract only) -----------------
@@ -307,7 +319,7 @@ async def _persist(
                             status,
                         )
                         if result != "INSERT 0 0":
-                            stored += 1
+                            tx_stored += 1
                     except Exception as exc:
                         logger.debug(
                             "tron_live_fetch: skipping native tx %s: %s",
@@ -371,13 +383,15 @@ async def _persist(
                             ts,
                         )
                         if result != "INSERT 0 0":
-                            stored += 1
+                            tx_stored += 1
                     except Exception as exc:
                         logger.debug(
                             "tron_live_fetch: skipping trc20 tx %s: %s",
                             row.get("transaction_id"),
                             exc,
                         )
+
+            stored += tx_stored
 
     except Exception as exc:
         logger.warning(

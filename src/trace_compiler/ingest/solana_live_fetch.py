@@ -37,6 +37,8 @@ import json
 
 import aiohttp
 
+from src.services.canonical_assets import resolve_canonical_asset_identity
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_RPC = "https://api.mainnet-beta.solana.com"
@@ -65,14 +67,6 @@ _MINT_SYMBOLS: Dict[str, str] = {
     "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN": "JUP",
     "WENWENvqqNya429ubCdR81ZmD69brwQaaBYY6p3LCpk": "WEN",
     "SNSNkV9zfG5ZKWQs6x4hxvBRV6s8SqMfSGCtECDvdMd": "SNS",
-}
-
-_CANONICAL_ASSET: Dict[str, str] = {
-    "USDC": "usdc",
-    "USDT": "usdt",
-    "WSOL": "sol",
-    "ETH": "eth",
-    "BTC": "wbtc",
 }
 
 _SYSTEM_PROGRAM = "11111111111111111111111111111111"
@@ -364,7 +358,13 @@ def _parse_transaction(
         senders = [c for c in changes if c["delta"] < 0]
         receivers = [c for c in changes if c["delta"] > 0]
         symbol = _mint_label(mint)
-        canonical = _CANONICAL_ASSET.get(symbol) if symbol else None
+        identity = resolve_canonical_asset_identity(
+            blockchain="solana",
+            asset_address=mint,
+            symbol=symbol,
+            token_standard="spl",
+        )
+        canonical = identity.canonical_asset_id
 
         # Pair senders and receivers to avoid cartesian inflation.
         # 1:1 by index when counts match; otherwise map each receiver to the

@@ -24,6 +24,7 @@ from .cosmos import CosmosCollector
 from .ethereum import EthereumCollector
 from .solana import SolanaCollector
 from .starknet import StarknetCollector
+from .token_metadata_backfill import TokenMetadataBackfillWorker
 from .sui import SuiCollector
 from .tron import TronCollector
 from .xrpl import XrplCollector
@@ -44,6 +45,7 @@ class CollectorManager:
         self.is_running = False
         self.backfill_worker: Optional[EventStoreBackfillWorker] = None
         self.address_ingest_worker: Optional[AddressIngestWorker] = None
+        self.token_metadata_backfill_worker: Optional[TokenMetadataBackfillWorker] = None
         self.metrics = {
             "total_collectors": 0,
             "running_collectors": 0,
@@ -286,6 +288,10 @@ class CollectorManager:
         self.address_ingest_worker = AddressIngestWorker(self.collectors)
         tasks.append(asyncio.create_task(self.address_ingest_worker.start()))
 
+        if settings.TOKEN_METADATA_BACKFILL_ENABLED:
+            self.token_metadata_backfill_worker = TokenMetadataBackfillWorker(self.collectors)
+            tasks.append(asyncio.create_task(self.token_metadata_backfill_worker.start()))
+
         # Wait for all tasks
         await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -307,6 +313,9 @@ class CollectorManager:
 
         if self.address_ingest_worker is not None:
             await self.address_ingest_worker.stop()
+
+        if self.token_metadata_backfill_worker is not None:
+            await self.token_metadata_backfill_worker.stop()
 
         # Stop all collectors (dedupe to avoid double-stopping aliased collectors)
         tasks = []

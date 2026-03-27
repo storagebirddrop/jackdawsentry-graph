@@ -681,41 +681,50 @@ class BridgeHopCompiler:
         if not items:
             return None
 
-        item = items[0]
-        direction = item.get("direction", "")   # "ToBTC" or "FromBTC"
-        swap_type = item.get("type", "CHAIN")   # "CHAIN" or "LN"
-        finished = bool(item.get("finished"))
-        success = bool(item.get("success"))
+        try:
+            item = items[0]
+            direction = item.get("direction", "")   # "ToBTC" or "FromBTC"
+            swap_type = item.get("type", "CHAIN")   # "CHAIN" or "LN"
+            finished = bool(item.get("finished"))
+            success = bool(item.get("success"))
 
-        if finished and success:
-            status = "completed"
-        elif finished:
-            status = "failed"
-        else:
-            status = "pending"
+            if finished and success:
+                status = "completed"
+            elif finished:
+                status = "failed"
+            else:
+                status = "pending"
 
-        btc_chain = "lightning" if swap_type == "LN" else "bitcoin"
+            btc_chain = "lightning" if swap_type == "LN" else "bitcoin"
 
-        if direction == "ToBTC":
-            dest_chain = btc_chain
-            src_asset = item.get("tokenName") or ""
-            dest_asset = "BTC"
-            src_amount = float(item.get("tokenAmount") or 0.0)
-            dest_amount_raw = item.get("btcAmount")
-            dest_amount = float(dest_amount_raw) if dest_amount_raw else None
-            dest_address = item.get("btcAddress")
-            dest_tx = item.get("btcTx")
-        else:
-            # FromBTC: Bitcoin → Solana
-            dest_chain = "solana"
-            src_asset = "BTC"
-            dest_asset = item.get("tokenName") or ""
-            btc_amt = item.get("btcAmount")
-            src_amount = float(btc_amt) if btc_amt else 0.0
-            tok_amt = item.get("tokenAmount")
-            dest_amount = float(tok_amt) if tok_amt else None
-            dest_address = item.get("clientWallet")
-            dest_tx = item.get("txFinish") or item.get("txInit")
+            if direction == "ToBTC":
+                dest_chain = btc_chain
+                src_asset = item.get("tokenName") or ""
+                dest_asset = "BTC"
+                src_amount = float(item.get("tokenAmount") or 0.0)
+                dest_amount_raw = item.get("btcAmount")
+                dest_amount = float(dest_amount_raw) if dest_amount_raw else None
+                dest_address = item.get("btcAddress")
+                dest_tx = item.get("btcTx")
+            else:
+                # FromBTC: Bitcoin → Solana
+                dest_chain = "solana"
+                src_asset = "BTC"
+                dest_asset = item.get("tokenName") or ""
+                btc_amt = item.get("btcAmount")
+                src_amount = float(btc_amt) if btc_amt else 0.0
+                tok_amt = item.get("tokenAmount")
+                dest_amount = float(tok_amt) if tok_amt else None
+                dest_address = item.get("clientWallet")
+                dest_tx = item.get("txFinish") or item.get("txInit")
+        except (ValueError, TypeError) as exc:
+            logger.error(
+                "BridgeHopCompiler: failed to parse Atomiq response for %s on %s: %s",
+                tx_hash[:16],
+                source_chain,
+                exc,
+            )
+            return None
 
         logger.info(
             "BridgeHopCompiler: Atomiq API resolved %s→%s for tx %s "

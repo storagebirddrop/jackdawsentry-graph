@@ -202,6 +202,32 @@ async def test_expand_next_includes_token_transfer_rows():
     assert any(e.asset_symbol == "USDC" for e in edges)
 
 
+@pytest.mark.asyncio
+async def test_fetch_outbound_token_transfers_accepts_asset_address_selector():
+    conn = MagicMock()
+    conn.fetch = AsyncMock(return_value=[])
+    pg = MagicMock()
+    pg.acquire = MagicMock(return_value=_AsyncCtxMgr(conn))
+    c = _make_compiler(pg=pg)
+
+    await c._fetch_outbound_token_transfers(
+        "0xseed",
+        "ethereum",
+        ExpandOptions(
+            max_results=10,
+            asset_filter=["asset:ethereum:0xdac17f958d2ee523a2206206994597c13d831ec7"],
+        ),
+    )
+
+    _, chain, address, limit, symbol_filters, canonical_filters, asset_filters = conn.fetch.await_args.args
+    assert chain == "ethereum"
+    assert address == "0xseed"
+    assert limit == 10
+    assert symbol_filters is None
+    assert canonical_filters is None
+    assert asset_filters == ["0xdac17f958d2ee523a2206206994597c13d831ec7"]
+
+
 # ---------------------------------------------------------------------------
 # Neo4j fallback
 # ---------------------------------------------------------------------------

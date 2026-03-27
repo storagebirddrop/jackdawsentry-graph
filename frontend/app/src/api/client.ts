@@ -6,6 +6,7 @@
  */
 
 import type {
+  AssetCatalogResponse,
   SessionCreateRequest,
   SessionCreateResponse,
   ExpandRequest,
@@ -111,6 +112,24 @@ export async function expandNode(
     body: JSON.stringify(req),
   });
   return normalizeExpansionResponse(await handleResponse<ExpansionResponseV2>(res));
+}
+
+/** Load the asset catalog available to the current session. */
+export async function getSessionAssets(
+  sessionId: string,
+  chains: string[] = [],
+): Promise<AssetCatalogResponse> {
+  const params = new URLSearchParams();
+  for (const chain of chains) {
+    const normalized = chain.trim().toLowerCase();
+    if (normalized) params.append('chains', normalized);
+  }
+  const suffix = params.toString() ? `?${params.toString()}` : '';
+  const res = await fetch(
+    `${API_BASE}/graph/sessions/${sessionId}/assets${suffix}`,
+    { headers: authHeaders(), credentials: 'same-origin' },
+  );
+  return handleResponse<AssetCatalogResponse>(res);
 }
 
 /** Poll bridge hop resolution status. */

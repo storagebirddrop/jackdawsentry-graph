@@ -30,14 +30,16 @@ import {
 import '@xyflow/react/dist/style.css';
 
 import { useGraphStore, type BranchMeta } from '../store/graphStore';
-import { expandNode } from '../api/client';
+import { expandNode, getSessionAssets } from '../api/client';
 import { computeElkLayout } from '../layout/elkLayout';
 import type {
+  AssetCatalogItem,
   BridgeHopData,
   ExpandRequest,
   InvestigationEdge,
   InvestigationNode,
 } from '../types/graph';
+import { assetSelectionKeysForEdge, preferredAssetSelectionKeyForEdge } from '../types/graph';
 
 import AddressNode from './nodes/AddressNode';
 import EntityNode from './nodes/EntityNode';
@@ -50,7 +52,12 @@ import LightningChannelOpenNode from './nodes/LightningChannelOpenNode';
 import LightningChannelCloseNode from './nodes/LightningChannelCloseNode';
 import BtcSidechainPegNode from './nodes/BtcSidechainPegNode';
 import AtomicSwapNode from './nodes/AtomicSwapNode';
-import FilterPanel, { type FilterState, DEFAULT_FILTERS } from './FilterPanel';
+import FilterPanel, {
+  type AssetCatalogScopeMode,
+  type FilterState,
+  DEFAULT_ASSET_CATALOG_SCOPE,
+  DEFAULT_FILTERS,
+} from './FilterPanel';
 import GraphAppearancePanel from './GraphAppearancePanel';
 import GraphInspectorPanel, { type PathStory } from './GraphInspectorPanel';
 import InvestigationEdgeComponent from './edges/InvestigationEdge';
@@ -58,7 +65,12 @@ import {
   DEFAULT_GRAPH_APPEARANCE,
   type GraphAppearanceState,
 } from './graphAppearance';
-import { saveWorkspace } from '../workspacePersistence';
+import {
+  extractSnapshotWorkspacePreferences,
+  loadSessionWorkspacePreferences,
+  saveSessionWorkspacePreferences,
+  saveWorkspace,
+} from '../workspacePersistence';
 import {
   bridgeProtocolLabel,
   bridgeRouteLabel,
@@ -162,8 +174,8 @@ function applyFilters(
   if (filters.selectedAssets.length > 0) {
     const selectedAssets = new Set(filters.selectedAssets.map((asset) => asset.toLowerCase()));
     visibleEdges = visibleEdges.filter((e) => {
-      const sym = (e.data as Record<string, unknown>)?.asset_symbol as string | undefined;
-      return sym !== undefined && selectedAssets.has(sym.toLowerCase());
+      const edgeData = (e.data ?? {}) as unknown as InvestigationEdge;
+      return assetSelectionKeysForEdge(edgeData).some((key) => selectedAssets.has(key));
     });
   }
 
@@ -276,6 +288,9 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
   const [inspectorCollapsed, setInspectorCollapsed] = useState(false);
   const [briefingVisible, setBriefingVisible] = useState(false);
   const [notice, setNotice] = useState<{ tone: 'info' | 'error'; message: string } | null>(null);
+  const [assetCatalog, setAssetCatalog] = useState<AssetCatalogItem[]>([]);
+  const [assetCatalogScope, setAssetCatalogScope] = useState<AssetCatalogScopeMode>(DEFAULT_ASSET_CATALOG_SCOPE);
+  const [pinnedAssetKeys, setPinnedAssetKeys] = useState<string[]>([]);
   const [bridgeRouteHistory, setBridgeRouteHistory] = useState<string[]>([]);
   const [activeBranchIds, setActiveBranchIds] = useState<string[]>([]);
   const [branchHistory, setBranchHistory] = useState<string[]>([]);
@@ -295,6 +310,12 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
   const fitViewTimerRef = useRef<number | null>(null);
   const autosaveTimerRef = useRef<number | null>(null);
   const didHydrateManualLayoutRef = useRef(false);
+  const didHydrateSessionPrefsRef = useRef(false);
+  const lastSavedPrefsRef = useRef<{
+    selectedAssets: string[];
+    pinnedAssetKeys: string[];
+    assetCatalogScope: string;
+  } | null>(null);
 
   const showNotice = useCallback((message: string, tone: 'info' | 'error' = 'info') => {
     setNotice({ tone, message });
@@ -329,6 +350,24 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
       autosaveTimerRef.current = null;
     }
   }, []);
+
+  useEffect(() => {
+    didHydrateSessionPrefsRef.current = false;
+    const savedPreferences = loadSessionWorkspacePreferences(sessionId);
+    if (savedPreferences) {
+      setFilters((current) => ({
+        ...current,
+        selectedAssets: savedPreferences.selectedAssets,
+      }));
+      setPinnedAssetKeys(savedPreferences.pinnedAssetKeys);
+      setAssetCatalogScope(savedPreferences.assetCatalogScope);
+    } else {
+      setFilters((current) => ({ ...current, selectedAssets: [] }));
+      setPinnedAssetKeys([]);
+      setAssetCatalogScope(DEFAULT_ASSET_CATALOG_SCOPE);
+    }
+    didHydrateSessionPrefsRef.current = true;
+  }, [sessionId]);
 
   const branchEntries = useMemo(
     () =>
@@ -441,16 +480,90 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
     };
   }, [rfNodes]);
 
-  const availableAssets = useMemo(() => {
-    const assets = new Set<string>();
+  const catalogChains = useMemo(() => {
+    const chains = new Set<string>();
+    for (const node of rfNodes) {
+      const data = node.data as unknown as InvestigationNode;
+      const chain = data.chain ?? data.address_data?.chain;
+      if (chain) chains.add(chain.toLowerCase());
+    }
+    return [...chains].sort((left, right) => left.localeCompare(right));
+  }, [rfNodes]);
+
+  const fallbackAssets = useMemo<AssetCatalogItem[]>(() => {
+    const assets = new Map<string, AssetCatalogItem>();
     for (const edge of rfEdges) {
-      const symbol = (edge.data as Record<string, unknown> | undefined)?.asset_symbol;
-      if (typeof symbol === 'string' && symbol.trim().length > 0) {
-        assets.add(symbol);
+      const data = (edge.data ?? {}) as unknown as InvestigationEdge;
+      const symbol = data.asset_symbol?.trim();
+      if (!symbol) continue;
+      const assetKey = preferredAssetSelectionKeyForEdge(data) ?? symbol;
+      const existing = assets.get(assetKey);
+      if (existing) {
+        existing.observed_transfer_count += 1;
+        continue;
+      }
+      assets.set(assetKey, {
+        asset_key: assetKey,
+        symbol,
+        canonical_asset_id: data.canonical_asset_id,
+        canonical_symbol: undefined,
+        identity_status: 'unknown',
+        variant_kind: 'unknown',
+        blockchains: data.asset_chain ? [data.asset_chain] : [],
+        token_standards: [],
+        observed_transfer_count: 1,
+        sample_asset_address: data.asset_address,
+        is_native: false,
+      });
+    }
+    return [...assets.values()].sort((left, right) => left.symbol.localeCompare(right.symbol));
+  }, [rfEdges]);
+
+  const sessionAvailableAssets = assetCatalog.length > 0 ? assetCatalog : fallbackAssets;
+
+  const lensScopedGraphForAssets = useMemo(
+    () => applyFilters(
+      rfNodes,
+      rfEdges,
+      {
+        ...filters,
+        selectedAssets: [],
+        assetFilter: '',
+      },
+      appearance,
+      { activeBranchIds, rootBranchId },
+    ),
+    [rfNodes, rfEdges, filters, appearance, activeBranchIds, rootBranchId],
+  );
+
+  const visibleLensAssetKeys = useMemo(() => {
+    const keys = new Set<string>();
+    for (const edge of lensScopedGraphForAssets.edges) {
+      const data = (edge.data ?? {}) as unknown as InvestigationEdge;
+      for (const key of assetSelectionKeysForEdge(data)) {
+        keys.add(key);
       }
     }
-    return [...assets].sort((left, right) => left.localeCompare(right));
-  }, [rfEdges]);
+    return keys;
+  }, [lensScopedGraphForAssets.edges]);
+
+  const visibleLensAssets = useMemo(
+    () => sessionAvailableAssets.filter((asset) => visibleLensAssetKeys.has(asset.asset_key)),
+    [sessionAvailableAssets, visibleLensAssetKeys],
+  );
+
+  const availableAssets = useMemo(() => {
+    if (assetCatalogScope !== 'visible') {
+      return sessionAvailableAssets;
+    }
+    const selectedAssetSet = new Set(filters.selectedAssets);
+    const pinnedAssetSet = new Set(pinnedAssetKeys);
+    return sessionAvailableAssets.filter((asset) => (
+      visibleLensAssetKeys.has(asset.asset_key)
+      || selectedAssetSet.has(asset.asset_key)
+      || pinnedAssetSet.has(asset.asset_key)
+    ));
+  }, [assetCatalogScope, filters.selectedAssets, pinnedAssetKeys, sessionAvailableAssets, visibleLensAssetKeys]);
 
   const semanticLegend = useMemo(() => {
     const entries = new Map<
@@ -514,6 +627,56 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
   }, [rfNodes, rfEdges, filters, appearance, activeBranchIds, rootBranchId, setNodes, setEdges]);
 
   useEffect(() => {
+    let cancelled = false;
+
+    async function loadAssetCatalog() {
+      try {
+        const response = await getSessionAssets(sessionId, catalogChains);
+        if (!cancelled) {
+          setAssetCatalog(response.items ?? []);
+        }
+      } catch (error) {
+        console.warn('Failed to load session asset catalog', error);
+        if (!cancelled) {
+          setAssetCatalog([]);
+        }
+      }
+    }
+
+    void loadAssetCatalog();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId, catalogChains]);
+
+  useEffect(() => {
+    if (!didHydrateSessionPrefsRef.current) {
+      return;
+    }
+    const next = { selectedAssets: filters.selectedAssets, pinnedAssetKeys, assetCatalogScope };
+    const prev = lastSavedPrefsRef.current;
+    if (
+      prev !== null &&
+      prev.assetCatalogScope === next.assetCatalogScope &&
+      prev.selectedAssets.length === next.selectedAssets.length &&
+      prev.selectedAssets.every((v, i) => v === next.selectedAssets[i]) &&
+      prev.pinnedAssetKeys.length === next.pinnedAssetKeys.length &&
+      prev.pinnedAssetKeys.every((v, i) => v === next.pinnedAssetKeys[i])
+    ) {
+      return;
+    }
+    lastSavedPrefsRef.current = next;
+    saveSessionWorkspacePreferences(sessionId, next);
+  }, [sessionId, filters.selectedAssets, pinnedAssetKeys, assetCatalogScope]);
+
+  const currentSnapshotWorkspacePreferences = useMemo(() => ({
+    selectedAssets: filters.selectedAssets,
+    pinnedAssetKeys,
+    assetCatalogScope,
+  }), [filters.selectedAssets, pinnedAssetKeys, assetCatalogScope]);
+
+  useEffect(() => {
     if (typeof window === 'undefined' || !sessionId || rfNodes.length === 0) {
       return;
     }
@@ -524,9 +687,11 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
 
     autosaveTimerRef.current = window.setTimeout(() => {
       autosaveTimerRef.current = null;
-      saveWorkspace(sessionId, exportSnapshot());
+      saveWorkspace(sessionId, exportSnapshot({
+        workspacePreferences: currentSnapshotWorkspacePreferences,
+      }));
     }, 320);
-  }, [sessionId, rfNodes, rfEdges, branchMap, exportSnapshot]);
+  }, [sessionId, rfNodes, rfEdges, branchMap, exportSnapshot, currentSnapshotWorkspacePreferences]);
 
   // Incremental ELK layout: only newly added nodes are placed freely.
   // Nodes that have already been laid out are passed to ELK as fixed-position
@@ -1244,6 +1409,9 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
       `Session ${sessionId}`,
       `Canvas view: ${appearance.viewMode} / ${appearance.interactionMode}`,
       `Visible graph: ${nodes.length} nodes and ${edges.length} edges`,
+      `Asset picker scope: ${assetCatalogScope === 'visible' ? 'visible lens' : 'full session'}`,
+      pinnedAssetKeys.length > 0 ? `Pinned assets: ${pinnedAssetKeys.length}` : null,
+      filters.selectedAssets.length > 0 ? `Selected assets: ${filters.selectedAssets.length}` : null,
       filters.bridgeRoute ? `Route focus: ${filters.bridgeRoute}` : null,
       filters.bridgeProtocols.length > 0
         ? `Bridge protocol focus: ${filters.bridgeProtocols.map((protocolId) => bridgeProtocolLabel(protocolId)).join(', ')}`
@@ -1332,6 +1500,7 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
     activeSemanticEntry,
     appearance.interactionMode,
     appearance.viewMode,
+    assetCatalogScope,
     branchCompareHeadline,
     branchCompareSummaries,
     branchMetaById,
@@ -1339,7 +1508,9 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
     edges.length,
     filters.bridgeProtocols,
     filters.bridgeRoute,
+    filters.selectedAssets.length,
     nodes.length,
+    pinnedAssetKeys.length,
     pinnedPathStories,
     semanticLegend.entries,
     sessionId,
@@ -1430,7 +1601,9 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
         </button>
         <button
           onClick={() => {
-            const json = exportSnapshot();
+            const json = exportSnapshot({
+              workspacePreferences: currentSnapshotWorkspacePreferences,
+            });
             const a = document.createElement('a');
             const blobUrl = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
             a.href = blobUrl;
@@ -1457,8 +1630,25 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
                 .then((text) => {
                   layoutedNodeIds.current.clear();
                   didHydrateManualLayoutRef.current = false;
-                  importSnapshot(text);
-                  showNotice('Snapshot restored. Manual positions and removed nodes are back on canvas.');
+                  const restored = importSnapshot(text);
+                  if (!restored) {
+                    throw new Error('Snapshot import failed.');
+                  }
+                  const snapshotPreferences = extractSnapshotWorkspacePreferences(text);
+                  if (snapshotPreferences) {
+                    setFilters((current) => ({
+                      ...current,
+                      selectedAssets: snapshotPreferences.selectedAssets,
+                    }));
+                    setPinnedAssetKeys(snapshotPreferences.pinnedAssetKeys);
+                    setAssetCatalogScope(snapshotPreferences.assetCatalogScope);
+                    saveSessionWorkspacePreferences(sessionId, snapshotPreferences);
+                  } else {
+                    setFilters((current) => ({ ...current, selectedAssets: [] }));
+                    setPinnedAssetKeys([]);
+                    setAssetCatalogScope(DEFAULT_ASSET_CATALOG_SCOPE);
+                  }
+                  showNotice('Snapshot restored. Manual positions, removed nodes, and asset workspace state are back on canvas.');
                   e.target.value = '';
                 })
                 .catch((error) => {
@@ -2190,6 +2380,12 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
           onChange={setFilters}
           onClose={() => setFilterVisible(false)}
           availableAssets={availableAssets}
+          sessionAssetCount={sessionAvailableAssets.length}
+          visibleAssetCount={visibleLensAssets.length}
+          assetCatalogScope={assetCatalogScope}
+          onAssetCatalogScopeChange={setAssetCatalogScope}
+          pinnedAssetKeys={pinnedAssetKeys}
+          onPinnedAssetKeysChange={setPinnedAssetKeys}
           availableBridgeProtocols={bridgeFilterOptions.protocols}
           availableBridgeRoutes={bridgeFilterOptions.routes}
         />

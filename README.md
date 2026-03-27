@@ -239,12 +239,16 @@ npm run build
 
 Repo verification helpers:
 
+> **Authentication setup:** The default dev stack runs with `GRAPH_AUTH_DISABLED=true` (no
+> login required). If you have enabled auth, create your first user with
+> `python scripts/dev/create_user.py` before running the probes below.
+
 ```bash
 python scripts/quality/boundary_audit.py
 python scripts/quality/public_readiness_audit.py
-python scripts/quality/live_abuse_probe.py --username analyst --password <your-password>
+python scripts/quality/live_abuse_probe.py --username <your-username> --password <your-password>
 python scripts/dev/load_perf_fixture_dataset.py
-python scripts/quality/live_perf_probe.py --username analyst --password <your-password>
+python scripts/quality/live_perf_probe.py --username <your-username> --password <your-password>
 ```
 
 `load_perf_fixture_dataset.py` seeds both a dense local hub and a bridge/cross-chain

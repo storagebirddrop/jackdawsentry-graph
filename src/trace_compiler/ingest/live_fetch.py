@@ -24,6 +24,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import aiohttp
 
+from src.services.canonical_assets import resolve_canonical_asset_identity
+
 logger = logging.getLogger(__name__)
 
 # Etherscan v2 multi-chain API (single key, chainid param selects network)
@@ -38,19 +40,6 @@ _CHAIN_IDS: Dict[str, int] = {
     "base": 8453,
     "optimism": 10,
     "avalanche": 43114,
-}
-
-# Canonical asset IDs for common ERC-20 symbols
-_CANONICAL_ASSET: Dict[str, str] = {
-    "USDT": "usdt",
-    "USDC": "usdc",
-    "ETH": "eth",
-    "WETH": "weth",
-    "DAI": "dai",
-    "WBTC": "wbtc",
-    "BUSD": "busd",
-    "MATIC": "matic",
-    "BNB": "bnb",
 }
 
 _REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=20)
@@ -288,8 +277,15 @@ async def _persist(
                         amount_raw = int(row.get("value", 0) or 0)
                         amount_norm = amount_raw / (10 ** decimals) if amount_raw else 0.0
                         symbol = (row.get("tokenSymbol") or "").upper() or None
-                        canonical = _CANONICAL_ASSET.get(symbol) if symbol else None
                         contract = (row.get("contractAddress") or "").lower() or None
+                        identity = resolve_canonical_asset_identity(
+                            blockchain=chain,
+                            asset_address=contract,
+                            symbol=symbol,
+                            name=row.get("tokenName"),
+                            token_standard="bep20" if chain == "bsc" else "erc20",
+                        )
+                        canonical = identity.canonical_asset_id
 
                         result = await conn.execute(
                             """

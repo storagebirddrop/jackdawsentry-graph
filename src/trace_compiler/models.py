@@ -412,6 +412,7 @@ class InvestigationEdge(BaseModel):
     value_fiat: Optional[float] = None
     asset_symbol: Optional[str] = None
     canonical_asset_id: Optional[str] = None
+    asset_address: Optional[str] = None
     asset_chain: Optional[str] = None
 
     # Provenance
@@ -571,6 +572,34 @@ class SessionCreateResponse(BaseModel):
     session_id: str
     root_node: InvestigationNode
     created_at: datetime
+
+
+class AssetCatalogItem(BaseModel):
+    """Session-scoped asset metadata for the explorer picker."""
+
+    asset_key: str
+    symbol: str
+    display_name: Optional[str] = None
+    canonical_asset_id: Optional[str] = None
+    canonical_symbol: Optional[str] = None
+    identity_status: str = "unknown"
+    variant_kind: str = "unknown"
+    blockchains: List[str] = []
+    token_standards: List[str] = []
+    observed_transfer_count: int = 0
+    last_seen_at: Optional[datetime] = None
+    sample_asset_address: Optional[str] = None
+    is_native: bool = False
+
+
+class AssetCatalogResponse(BaseModel):
+    """Response for GET /api/v1/graph/sessions/{session_id}/assets."""
+
+    session_id: str
+    seed_chain: str
+    chains_present: List[str]
+    items: List[AssetCatalogItem]
+    generated_at: datetime
 
 
 class NodeStateSnapshot(BaseModel):

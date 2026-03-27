@@ -27,6 +27,9 @@ from src.api.config import settings
 from src.api.database import get_neo4j_session
 from src.api.database import get_postgres_connection
 from src.api.database import get_redis_connection
+from src.services.canonical_assets import resolve_canonical_asset_identity
+from src.services.token_metadata import TokenMetadataRecord
+from src.services.token_metadata import get_token_metadata_cache
 
 logger = logging.getLogger(__name__)
 
@@ -45,11 +48,11 @@ class TokenTransfer:
     blockchain: str
     transfer_index: int
     asset_type: str  # erc20 | native | spl | trc20 | bep20 | internal
-    asset_symbol: str
+    asset_symbol: Optional[str]
     from_address: str
     to_address: str
     amount_raw: str  # raw integer string (no decimals applied)
-    amount_normalized: float  # human-readable amount
+    amount_normalized: Optional[float]  # human-readable amount
     asset_contract: Optional[str] = None
     fiat_value_at_transfer: Optional[float] = None
     # Canonical cross-chain asset identity (e.g. "usdt", "usdc", "btc").
@@ -184,6 +187,7 @@ class BaseCollector(ABC):
         self.is_running = False
         self.last_block_processed = 0
         self.collection_interval = config.get("collection_interval", 60)  # seconds
+        self._token_metadata_cache = get_token_metadata_cache()
 
         # Performance metrics
         self.metrics = {
@@ -231,6 +235,12 @@ class BaseCollector(ABC):
         """Get address transaction history"""
         pass
 
+    async def _fetch_token_metadata(
+        self, asset_address: str
+    ) -> Optional[TokenMetadataRecord]:
+        """Resolve metadata for one token contract or mint."""
+        return None
+
     def _default_token_asset_type(self) -> str:
         """Return the chain-default fungible token type label."""
         if self.blockchain == "solana":
@@ -249,111 +259,256 @@ class BaseCollector(ABC):
             return asset_contract
         return self.blockchain.upper()
 
-    def _infer_canonical_asset_id(self, asset_symbol: str) -> Optional[str]:
-        """Infer a canonical asset identifier for common token symbols."""
-        return {
-            "USDT": "usdt",
-            "USDC": "usdc",
-            "WETH": "weth",
-            "ETH": "eth",
-            "WBTC": "wbtc",
-            "BTC": "btc",
-            "BNB": "bnb",
-            "BUSD": "busd",
-            "SOL": "sol",
-            "TRX": "tron",
-            "DAI": "dai",
-            "JUP": "jup",
-            "BONK": "bonk",
-        }.get(asset_symbol.upper())
+    def _infer_canonical_asset_id(
+        self,
+        asset_symbol: str,
+        *,
+        asset_contract: Optional[str] = None,
+        asset_name: Optional[str] = None,
+        token_standard: Optional[str] = None,
+    ) -> Optional[str]:
+        """Infer the economic canonical asset ID for a token or native asset."""
+        identity = resolve_canonical_asset_identity(
+            blockchain=self.blockchain,
+            asset_address=asset_contract,
+            symbol=asset_symbol,
+            name=asset_name,
+            token_standard=token_standard,
+            is_native=(token_standard or "").strip().lower() == "native",
+        )
+        return identity.canonical_asset_id
+
+    def _coerce_int(self, value: Any) -> Optional[int]:
+        """Return an integer for *value* when possible."""
+        if value is None or value == "":
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _coerce_raw_amount(self, value: Any, decimals: Optional[int]) -> Optional[str]:
+        """Normalize a raw integer token amount into a string."""
+        if value is None or value == "":
+            return None
+        if isinstance(value, str) and value.isdigit():
+            return value
+        if isinstance(value, int):
+            return str(value)
+        if decimals is None:
+            return None
+        try:
+            scaled = (Decimal(str(value)) * (Decimal(10) ** decimals)).to_integral_value(
+                rounding=ROUND_HALF_UP
+            )
+            return str(int(scaled))
+        except (InvalidOperation, TypeError, ValueError):
+            return None
+
+    def _coerce_normalized_amount(
+        self,
+        amount_normalized: Any,
+        amount_raw: Optional[str],
+        decimals: Optional[int],
+    ) -> Optional[float]:
+        """Return a human-readable token amount when possible."""
+        if amount_normalized is not None and amount_normalized != "":
+            try:
+                return float(amount_normalized)
+            except (TypeError, ValueError):
+                pass
+        if amount_raw is None or decimals is None:
+            return None
+        try:
+            return float(Decimal(amount_raw) / (Decimal(10) ** decimals))
+        except (InvalidOperation, TypeError, ValueError, ZeroDivisionError):
+            return None
+
+    def _build_seed_token_metadata(
+        self,
+        tx: Transaction,
+        asset_contract: str,
+        raw_transfer: Dict[str, Any],
+    ) -> Optional[TokenMetadataRecord]:
+        """Build a metadata seed from whatever the collector already knows."""
+        symbol = raw_transfer.get("asset_symbol") or raw_transfer.get("symbol")
+        if symbol not in (None, ""):
+            symbol = str(symbol).strip().upper()
+        else:
+            symbol = None
+
+        name = raw_transfer.get("name") or raw_transfer.get("asset_name")
+        decimals = self._coerce_int(raw_transfer.get("decimals"))
+        token_standard = raw_transfer.get("token_standard") or raw_transfer.get("asset_type")
+        canonical_asset_id = raw_transfer.get("canonical_asset_id")
+        if canonical_asset_id is None and symbol:
+            canonical_asset_id = self._infer_canonical_asset_id(
+                symbol,
+                asset_contract=asset_contract,
+                asset_name=name,
+                token_standard=token_standard,
+            )
+
+        if (
+            symbol is None
+            and name is None
+            and decimals is None
+            and token_standard is None
+            and canonical_asset_id is None
+        ):
+            return None
+
+        return TokenMetadataRecord(
+            blockchain=tx.blockchain,
+            asset_address=asset_contract,
+            symbol=symbol,
+            name=name,
+            decimals=decimals,
+            token_standard=token_standard,
+            canonical_asset_id=canonical_asset_id,
+            source="collector_seed",
+        )
 
     def _coerce_token_transfer(
         self,
-        transfer: TokenTransfer | Dict[str, Any],
-        *,
-        tx_hash: str,
+        tx: Transaction,
         transfer_index: int,
-    ) -> TokenTransfer:
+        transfer: TokenTransfer | Dict[str, Any],
+    ) -> Optional[tuple[TokenTransfer, Optional[TokenMetadataRecord]]]:
         """Convert a loose collector token payload into a TokenTransfer."""
         if isinstance(transfer, TokenTransfer):
-            return transfer
+            return transfer, None
+        if not isinstance(transfer, dict):
+            return None
 
         asset_contract = (
             transfer.get("asset_contract")
             or transfer.get("contract_address")
             or transfer.get("mint")
         )
+        from_address = str(transfer.get("from_address") or "")
+        to_address = str(transfer.get("to_address") or "")
+        if not asset_contract or not from_address or not to_address:
+            return None
+
         raw_symbol = transfer.get("asset_symbol") or transfer.get("symbol")
         asset_symbol = (
             str(raw_symbol).strip().upper()
             if raw_symbol not in (None, "")
-            else self._default_token_symbol(asset_contract)
+            else None
         )
 
-        decimals_raw = transfer.get("decimals")
-        try:
-            decimals = max(0, int(decimals_raw)) if decimals_raw is not None else 0
-        except (TypeError, ValueError):
-            decimals = 0
+        decimals = self._coerce_int(transfer.get("decimals"))
+        amount_raw = self._coerce_raw_amount(
+            transfer.get("amount_raw", transfer.get("amount")),
+            decimals,
+        )
+        if amount_raw is None:
+            amount_raw = "0"
 
-        amount_raw_value = transfer.get("amount_raw")
-        amount_normalized_value = transfer.get("amount_normalized")
-        legacy_amount = transfer.get("amount")
+        amount_normalized = self._coerce_normalized_amount(
+            transfer.get("amount_normalized", transfer.get("amount")),
+            amount_raw,
+            decimals,
+        )
 
-        amount_raw_str: Optional[str]
-        if amount_raw_value is not None:
-            amount_raw_str = str(amount_raw_value)
-        elif legacy_amount is not None:
-            try:
-                scaled = (
-                    Decimal(str(legacy_amount))
-                    * (Decimal(10) ** decimals)
-                ).to_integral_value(rounding=ROUND_HALF_UP)
-                amount_raw_str = str(int(scaled))
-            except (InvalidOperation, ValueError, TypeError):
-                amount_raw_str = str(legacy_amount)
-        else:
-            amount_raw_str = "0"
-
-        if amount_normalized_value is not None:
-            amount_normalized = float(amount_normalized_value)
-        elif legacy_amount is not None:
-            amount_normalized = float(legacy_amount)
-        else:
-            try:
-                if decimals > 0:
-                    amount_normalized = float(Decimal(amount_raw_str) / (Decimal(10) ** decimals))
-                else:
-                    amount_normalized = float(amount_raw_str)
-            except (InvalidOperation, ValueError, TypeError):
-                amount_normalized = 0.0
-
-        return TokenTransfer(
-            tx_hash=tx_hash,
+        token_transfer = TokenTransfer(
+            tx_hash=tx.hash,
             blockchain=self.blockchain,
-            transfer_index=transfer.get("transfer_index", transfer_index),
+            transfer_index=int(transfer.get("transfer_index", transfer_index)),
             asset_type=str(transfer.get("asset_type") or self._default_token_asset_type()),
             asset_symbol=asset_symbol,
-            from_address=str(transfer.get("from_address") or ""),
-            to_address=str(transfer.get("to_address") or ""),
-            amount_raw=amount_raw_str,
+            from_address=from_address,
+            to_address=to_address,
+            amount_raw=amount_raw,
             amount_normalized=amount_normalized,
             asset_contract=asset_contract,
             fiat_value_at_transfer=transfer.get("fiat_value_at_transfer"),
             canonical_asset_id=(
                 transfer.get("canonical_asset_id")
-                or self._infer_canonical_asset_id(asset_symbol)
+                or (
+                    self._infer_canonical_asset_id(
+                        asset_symbol,
+                        asset_contract=asset_contract,
+                        asset_name=transfer.get("name") or transfer.get("asset_name"),
+                        token_standard=str(
+                            transfer.get("asset_type") or self._default_token_asset_type()
+                        ),
+                    )
+                    if asset_symbol
+                    else None
+                )
             ),
         )
+        seed = self._build_seed_token_metadata(tx, asset_contract, transfer)
+        return token_transfer, seed
 
-    def _normalize_token_transfers(self, tx: Transaction) -> None:
-        """Normalize collector token payloads into TokenTransfer objects."""
+    async def normalize_token_transfers(self, tx: Transaction) -> List[TokenTransfer]:
+        """Normalize collector token payloads and hydrate cached token metadata."""
         if not tx.token_transfers:
-            return
-        tx.token_transfers = [
-            self._coerce_token_transfer(transfer, tx_hash=tx.hash, transfer_index=index)
-            for index, transfer in enumerate(tx.token_transfers)
-        ]
+            return []
+
+        normalized: List[TokenTransfer] = []
+        for index, raw_transfer in enumerate(tx.token_transfers):
+            seed: Optional[TokenMetadataRecord] = None
+            if isinstance(raw_transfer, TokenTransfer):
+                transfer = raw_transfer
+            else:
+                converted = self._coerce_token_transfer(tx, index, raw_transfer)
+                if converted is None:
+                    continue
+                transfer, seed = converted
+
+            metadata: Optional[TokenMetadataRecord] = None
+            if transfer.asset_contract:
+                resolver = None
+                should_resolve_inline = (
+                    self.blockchain == "solana"
+                    or transfer.asset_symbol is None
+                    or transfer.amount_normalized is None
+                    or transfer.canonical_asset_id is None
+                    or (seed is not None and seed.decimals is None)
+                )
+                if should_resolve_inline:
+                    async def _resolver(
+                        asset_address: str = transfer.asset_contract,
+                    ) -> Optional[TokenMetadataRecord]:
+                        return await self._fetch_token_metadata(asset_address)
+
+                    resolver = _resolver
+
+                metadata = await self._token_metadata_cache.get_metadata(
+                    tx.blockchain,
+                    transfer.asset_contract,
+                    resolver=resolver,
+                    seed=seed,
+                )
+
+            if metadata is not None:
+                if not transfer.asset_symbol:
+                    transfer.asset_symbol = metadata.symbol
+                if transfer.amount_normalized is None and metadata.decimals is not None:
+                    transfer.amount_normalized = self._coerce_normalized_amount(
+                        None,
+                        transfer.amount_raw,
+                        metadata.decimals,
+                    )
+                if transfer.canonical_asset_id is None:
+                    transfer.canonical_asset_id = metadata.canonical_asset_id
+
+            if not transfer.asset_symbol:
+                transfer.asset_symbol = self._default_token_symbol(transfer.asset_contract)
+            if transfer.canonical_asset_id is None and transfer.asset_symbol:
+                transfer.canonical_asset_id = self._infer_canonical_asset_id(
+                    transfer.asset_symbol,
+                    asset_contract=transfer.asset_contract,
+                    token_standard=transfer.asset_type,
+                )
+
+            normalized.append(transfer)
+
+        tx.token_transfers = normalized
+        return normalized
 
     async def start(self):
         """Start the collector"""
@@ -466,7 +621,7 @@ class BaseCollector(ABC):
             if not tx:
                 return
 
-            self._normalize_token_transfers(tx)
+            await self.normalize_token_transfers(tx)
 
             # Store transaction in Neo4j using the bipartite model.
             await self.store_transaction(tx)

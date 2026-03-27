@@ -224,6 +224,14 @@ class Settings(BaseSettings):
     BACKFILL_BLOCK_BATCH_SIZE: int = 2
     BACKFILL_CHAINS_PER_CYCLE: int = 4
     BACKFILL_BLOCK_TIMEOUT_SECONDS: int = 45
+    TOKEN_METADATA_REFRESH_INTERVAL_SECONDS: int = 7 * 24 * 60 * 60
+    TOKEN_METADATA_REDIS_TTL_SECONDS: int = 24 * 60 * 60
+    TOKEN_METADATA_ERROR_BACKOFF_SECONDS: int = 60 * 60
+    TOKEN_METADATA_MAX_ERROR_BACKOFF_SECONDS: int = 24 * 60 * 60
+    TOKEN_METADATA_BACKFILL_ENABLED: bool = True
+    TOKEN_METADATA_BACKFILL_INTERVAL_SECONDS: int = 45
+    TOKEN_METADATA_BACKFILL_BATCH_SIZE: int = 25
+    TOKEN_METADATA_ASSET_CATALOG_LIMIT: int = 250
 
     # =============================================================================
     # Development Configuration
@@ -329,6 +337,7 @@ class Settings(BaseSettings):
         "RATE_LIMIT_ENABLED",
         "DUAL_WRITE_RAW_EVENT_STORE",
         "AUTO_BACKFILL_RAW_EVENT_STORE",
+        "TOKEN_METADATA_BACKFILL_ENABLED",
         mode="before",
     )
     @classmethod

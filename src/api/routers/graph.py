@@ -35,6 +35,7 @@ from src.api.auth import PERMISSIONS
 from src.api.auth import User
 from src.api.auth import check_permissions
 from src.api.config import get_supported_blockchains
+from src.api.config import settings
 from src.api.graph_dependencies import get_edge_price_oracle
 from src.api.graph_dependencies import get_known_bridge_addresses as load_known_bridge_addresses
 from src.api.graph_dependencies import get_known_dex_addresses as load_known_dex_addresses
@@ -49,6 +50,9 @@ from src.api.database import get_neo4j_read_session
 from src.api.database import get_neo4j_session
 from src.api.database import get_postgres_pool
 from src.collectors.rpc.factory import get_rpc_client
+from src.services.canonical_assets import build_asset_selector_key
+from src.services.canonical_assets import native_asset_identity
+from src.services.canonical_assets import resolve_canonical_asset_identity
 
 logger = logging.getLogger(__name__)
 
@@ -2002,6 +2006,8 @@ async def _get_trace_compiler():
 
 
 from src.trace_compiler.models import (  # noqa: E402
+    AssetCatalogItem,
+    AssetCatalogResponse,
     BridgeHopStatusResponse,
     ExpandRequest,
     ExpansionResponseV2,
@@ -2035,6 +2041,107 @@ _NATIVE_ASSET: dict[str, str] = {
     "dogecoin": "DOGE",
     "lightning": "BTC",
 }
+
+_NATIVE_CANONICAL_ASSET_ID: dict[str, str] = {
+    "ethereum": "ethereum",
+    "bsc": "binancecoin",
+    "polygon": "matic-network",
+    "arbitrum": "ethereum",
+    "base": "ethereum",
+    "avalanche": "avalanche-2",
+    "optimism": "ethereum",
+    "starknet": "ethereum",
+    "injective": "injective-protocol",
+    "tron": "tron",
+    "solana": "solana",
+    "xrp": "ripple",
+    "cosmos": "cosmos",
+    "sui": "sui",
+    "bitcoin": "btc",
+    "litecoin": "ltc",
+    "bitcoin_cash": "bch",
+    "dogecoin": "doge",
+    "lightning": "btc",
+}
+
+
+def _normalize_asset_catalog_chains(
+    requested_chains: list[str],
+    *,
+    seed_chain: str,
+) -> list[str]:
+    supported = set(get_supported_blockchains())
+    normalized: list[str] = []
+    for chain in requested_chains:
+        value = (chain or "").strip().lower()
+        if value and value in supported and value not in normalized:
+            normalized.append(value)
+    if not normalized and seed_chain in supported:
+        normalized.append(seed_chain)
+    return normalized
+
+
+def _asset_catalog_key(
+    *,
+    symbol: Optional[str],
+    canonical_asset_id: Optional[str],
+    blockchain: str,
+    asset_address: Optional[str],
+    is_native: bool = False,
+) -> str:
+    if is_native and symbol:
+        return symbol.upper()
+    if canonical_asset_id:
+        return canonical_asset_id.lower()
+    if symbol:
+        return symbol.upper()
+    if asset_address:
+        return f"{blockchain}:{asset_address}"
+    return blockchain
+
+
+def _identity_status_rank(value: Optional[str]) -> int:
+    """Return a stable rank for canonical asset identity confidence."""
+    if value == "verified":
+        return 2
+    if value == "heuristic":
+        return 1
+    return 0
+
+
+def _asset_variant_rank(value: Optional[str]) -> int:
+    """Return a stable display rank for asset variants."""
+    order = {
+        "native": 4,
+        "canonical": 3,
+        "wrapped": 2,
+        "bridged": 1,
+        "unknown": 0,
+    }
+    return order.get(str(value or "").strip().lower(), 0)
+
+
+def _asset_catalog_sort_key(item: "AssetCatalogItem") -> tuple:
+    """Prefer verified/core assets while pushing one-off unknowns to the back."""
+    last_seen = item.last_seen_at
+    if isinstance(last_seen, datetime):
+        recency_score = last_seen.timestamp()
+    else:
+        recency_score = 0.0
+    long_tail_unknown = (
+        item.identity_status == "unknown"
+        and item.observed_transfer_count <= 2
+    )
+    return (
+        1 if long_tail_unknown else 0,
+        -_asset_variant_rank(item.variant_kind),
+        -_identity_status_rank(item.identity_status),
+        -min(len(item.blockchains), 4),
+        -item.observed_transfer_count,
+        -recency_score,
+        item.symbol.lower(),
+        item.asset_key,
+    )
 
 
 @router.get("/resolve-tx", response_model=TxResolveResponse)
@@ -2328,6 +2435,258 @@ async def get_session_ingest_status(
         completed_at=row["completed_at"],
         tx_count=row["tx_count"],
         error=row["error"],
+    )
+
+
+@router.get(
+    "/sessions/{session_id}/assets",
+    response_model=AssetCatalogResponse,
+)
+async def get_session_asset_catalog(
+    session_id: str,
+    chains: List[str] = Query(
+        default=[],
+        description="Optional chain scope for the asset picker. Defaults to the session seed chain.",
+    ),
+    current_user: User = Depends(check_permissions([PERMISSIONS["read_blockchain"]])),
+):
+    """Return a session-scoped asset catalog for the explorer filter panel."""
+    row = await _get_owned_session_row(session_id, current_user)
+    seed_chain = str(row.get("seed_chain") or "").strip().lower()
+    target_chains = _normalize_asset_catalog_chains(chains, seed_chain=seed_chain)
+    if not target_chains:
+        return AssetCatalogResponse(
+            session_id=session_id,
+            seed_chain=seed_chain,
+            chains_present=[],
+            items=[],
+            generated_at=datetime.now(timezone.utc),
+        )
+
+    try:
+        pg = get_postgres_pool()
+        async with pg.acquire() as conn:
+            token_rows = await conn.fetch(
+                """
+                SELECT
+                    rt.blockchain,
+                    rt.asset_contract AS asset_address,
+                    COALESCE(
+                        NULLIF(tmc.symbol, ''),
+                        NULLIF(rt.asset_symbol, ''),
+                        rt.asset_contract
+                    ) AS symbol,
+                    COALESCE(
+                        NULLIF(tmc.name, ''),
+                        NULLIF(rt.asset_symbol, ''),
+                        rt.asset_contract
+                    ) AS display_name,
+                    COALESCE(
+                        NULLIF(tmc.canonical_asset_id, ''),
+                        NULLIF(rt.canonical_asset_id, '')
+                    ) AS canonical_asset_id,
+                    COALESCE(
+                        NULLIF(tmc.token_standard, ''),
+                        'token'
+                    ) AS token_standard,
+                    COUNT(*)::BIGINT AS observed_transfer_count,
+                    MAX(rt.timestamp) AS last_seen_at
+                FROM raw_token_transfers rt
+                LEFT JOIN token_metadata_cache tmc
+                  ON tmc.blockchain = rt.blockchain
+                 AND tmc.asset_address = rt.asset_contract
+                WHERE rt.blockchain = ANY($1::text[])
+                  AND rt.asset_contract IS NOT NULL
+                  AND rt.asset_contract <> ''
+                GROUP BY
+                    rt.blockchain,
+                    rt.asset_contract,
+                    COALESCE(
+                        NULLIF(tmc.symbol, ''),
+                        NULLIF(rt.asset_symbol, ''),
+                        rt.asset_contract
+                    ),
+                    COALESCE(
+                        NULLIF(tmc.name, ''),
+                        NULLIF(rt.asset_symbol, ''),
+                        rt.asset_contract
+                    ),
+                    COALESCE(
+                        NULLIF(tmc.canonical_asset_id, ''),
+                        NULLIF(rt.canonical_asset_id, '')
+                    ),
+                    COALESCE(
+                        NULLIF(tmc.token_standard, ''),
+                        'token'
+                    )
+                ORDER BY observed_transfer_count DESC, last_seen_at DESC
+                LIMIT $2
+                """,
+                target_chains,
+                max(50, settings.TOKEN_METADATA_ASSET_CATALOG_LIMIT * 3),
+            )
+            native_rows = await conn.fetch(
+                """
+                SELECT
+                    blockchain,
+                    COUNT(*)::BIGINT AS observed_transfer_count,
+                    MAX(timestamp) AS last_seen_at
+                FROM raw_transactions
+                WHERE blockchain = ANY($1::text[])
+                  AND value_native IS NOT NULL
+                  AND value_native > 0
+                GROUP BY blockchain
+                ORDER BY observed_transfer_count DESC, last_seen_at DESC
+                """,
+                target_chains,
+            )
+    except Exception as exc:
+        logger.warning(
+            "Failed to build asset catalog for session %s (%s): %s",
+            session_id,
+            target_chains,
+            exc,
+        )
+        raise HTTPException(status_code=503, detail="Asset catalog unavailable") from exc
+
+    items_by_key: dict[str, AssetCatalogItem] = {}
+    asset_address_aliases: dict[str, str] = {}
+
+    for raw in token_rows:
+        blockchain = str(raw["blockchain"])
+        symbol = str(raw["symbol"] or "").strip()
+        canonical_asset_id = raw["canonical_asset_id"]
+        asset_address = raw["asset_address"]
+        identity = resolve_canonical_asset_identity(
+            blockchain=blockchain,
+            asset_address=asset_address,
+            symbol=symbol,
+            name=raw["display_name"],
+            token_standard=raw["token_standard"],
+        )
+        resolved_canonical_asset_id = (
+            identity.canonical_asset_id or canonical_asset_id
+        )
+        asset_address_key = (
+            f"{blockchain}:{str(asset_address).lower()}"
+            if asset_address is not None
+            else None
+        )
+        asset_key = build_asset_selector_key(
+            blockchain=blockchain,
+            asset_address=asset_address,
+            symbol=symbol or identity.canonical_symbol,
+            canonical_asset_id=resolved_canonical_asset_id,
+            identity_status=identity.identity_status,
+            variant_kind=identity.variant_kind,
+        )
+        if asset_address_key and asset_address_key in asset_address_aliases:
+            asset_key = asset_address_aliases[asset_address_key]
+        existing = items_by_key.get(asset_key)
+        if existing is None:
+            existing = AssetCatalogItem(
+                asset_key=asset_key,
+                symbol=symbol or identity.canonical_symbol or str(asset_address),
+                display_name=raw["display_name"] or identity.canonical_name,
+                canonical_asset_id=resolved_canonical_asset_id,
+                canonical_symbol=identity.canonical_symbol,
+                identity_status=identity.identity_status,
+                variant_kind=identity.variant_kind,
+                blockchains=[],
+                token_standards=[],
+                observed_transfer_count=0,
+                last_seen_at=raw["last_seen_at"],
+                sample_asset_address=asset_address,
+                is_native=False,
+            )
+            items_by_key[asset_key] = existing
+        if asset_address_key:
+            asset_address_aliases[asset_address_key] = asset_key
+
+        if blockchain not in existing.blockchains:
+            existing.blockchains.append(blockchain)
+        token_standard = str(raw["token_standard"] or "").strip()
+        if token_standard and token_standard not in existing.token_standards:
+            existing.token_standards.append(token_standard)
+        existing.observed_transfer_count += int(raw["observed_transfer_count"] or 0)
+        if existing.display_name in (None, "", existing.sample_asset_address):
+            existing.display_name = raw["display_name"] or identity.canonical_name
+        if existing.sample_asset_address is None:
+            existing.sample_asset_address = asset_address
+        if existing.canonical_asset_id is None:
+            existing.canonical_asset_id = resolved_canonical_asset_id
+        if existing.canonical_symbol is None:
+            existing.canonical_symbol = identity.canonical_symbol
+        if _identity_status_rank(identity.identity_status) > _identity_status_rank(
+            existing.identity_status
+        ):
+            existing.identity_status = identity.identity_status
+            existing.variant_kind = identity.variant_kind
+        if existing.last_seen_at is None or (
+            raw["last_seen_at"] is not None and raw["last_seen_at"] > existing.last_seen_at
+        ):
+            existing.last_seen_at = raw["last_seen_at"]
+
+    for raw in native_rows:
+        blockchain = str(raw["blockchain"])
+        identity = native_asset_identity(blockchain)
+        symbol = identity.canonical_symbol or _NATIVE_ASSET.get(blockchain)
+        if not symbol or identity.canonical_asset_id is None:
+            continue
+        asset_key = build_asset_selector_key(
+            blockchain=blockchain,
+            asset_address=None,
+            symbol=symbol,
+            canonical_asset_id=identity.canonical_asset_id,
+            identity_status=identity.identity_status,
+            variant_kind=identity.variant_kind,
+            is_native=True,
+        )
+        existing = items_by_key.get(asset_key)
+        if existing is None:
+            existing = AssetCatalogItem(
+                asset_key=asset_key,
+                symbol=symbol,
+                display_name=identity.canonical_name or f"{symbol} native asset",
+                canonical_asset_id=identity.canonical_asset_id,
+                canonical_symbol=identity.canonical_symbol,
+                identity_status=identity.identity_status,
+                variant_kind=identity.variant_kind,
+                blockchains=[blockchain],
+                token_standards=["native"],
+                observed_transfer_count=int(raw["observed_transfer_count"] or 0),
+                last_seen_at=raw["last_seen_at"],
+                sample_asset_address=None,
+                is_native=True,
+            )
+            items_by_key[asset_key] = existing
+            continue
+
+        if blockchain not in existing.blockchains:
+            existing.blockchains.append(blockchain)
+        if "native" not in existing.token_standards:
+            existing.token_standards.append("native")
+        existing.observed_transfer_count += int(raw["observed_transfer_count"] or 0)
+        if existing.last_seen_at is None or (
+            raw["last_seen_at"] is not None and raw["last_seen_at"] > existing.last_seen_at
+        ):
+            existing.last_seen_at = raw["last_seen_at"]
+        if existing.canonical_asset_id is None:
+            existing.canonical_asset_id = identity.canonical_asset_id
+        if existing.canonical_symbol is None:
+            existing.canonical_symbol = identity.canonical_symbol
+
+    items = sorted(
+        items_by_key.values(),
+        key=_asset_catalog_sort_key,
+    )[: settings.TOKEN_METADATA_ASSET_CATALOG_LIMIT]
+
+    return AssetCatalogResponse(
+        session_id=session_id,
+        seed_chain=seed_chain,
+        chains_present=target_chains,
+        items=items,
+        generated_at=datetime.now(timezone.utc),
     )
 
 

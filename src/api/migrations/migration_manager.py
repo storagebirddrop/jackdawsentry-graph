@@ -26,6 +26,7 @@ CORE_BOOTSTRAP_MIGRATIONS = {
     "007_graph_sessions.sql",
     "009_event_store_backfill.sql",
     "010_bridge_correlations_alignment.sql",
+    "016_token_metadata_cache.sql",
 }
 
 GRAPH_BOOTSTRAP_MIGRATIONS = {
@@ -38,6 +39,7 @@ GRAPH_BOOTSTRAP_MIGRATIONS = {
     "011_address_ingest_queue.sql",
     "012_raw_evm_logs.sql",
     "013_raw_evm_logs_tron.sql",
+    "016_token_metadata_cache.sql",
 }
 
 OPTIONAL_LEGACY_MIGRATIONS = {

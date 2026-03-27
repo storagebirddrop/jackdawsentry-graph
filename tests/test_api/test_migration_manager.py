@@ -17,6 +17,7 @@ async def test_core_profile_excludes_optional_legacy_migrations(tmp_path: Path):
         "003_sanctioned_addresses.sql",
         "008_cluster_attribution.sql",
         "009_event_store_backfill.sql",
+        "016_token_metadata_cache.sql",
     ]:
         (tmp_path / name).write_text("-- sql", encoding="utf-8")
 
@@ -28,6 +29,7 @@ async def test_core_profile_excludes_optional_legacy_migrations(tmp_path: Path):
     assert "001_initial_schema.sql" in pending
     assert "003_sanctioned_addresses.sql" in pending
     assert "009_event_store_backfill.sql" in pending
+    assert "016_token_metadata_cache.sql" in pending
     assert "003_competitive_schema.sql" not in pending
     assert "008_cluster_attribution.sql" not in pending
 

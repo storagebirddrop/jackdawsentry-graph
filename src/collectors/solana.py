@@ -4,6 +4,7 @@ Solana blockchain data collection
 """
 
 import asyncio
+import base64
 import json
 import logging
 import re
@@ -34,6 +35,7 @@ except ImportError:
         base58 = None
 
 from src.api.config import settings
+from src.services.token_metadata import TokenMetadataRecord
 
 from .base import Address
 from .base import BaseCollector
@@ -42,6 +44,10 @@ from .base import Transaction
 
 logger = logging.getLogger(__name__)
 _FIRST_AVAILABLE_BLOCK_RE = re.compile(r"First available block:\s*(\d+)")
+_SPL_TOKEN_2022_PROGRAM_ID = "TokenzQdBmeq38XV7H9AmB4Fq5fJjnyZvq4M6Q6N8AAr"
+_METAPLEX_TOKEN_METADATA_PROGRAM_ID = (
+    "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s"
+)
 
 
 class SolanaCollector(BaseCollector):
@@ -506,6 +512,127 @@ class SolanaCollector(BaseCollector):
             logger.error(f"Error parsing token balances: {e}")
 
         return transfers
+
+    async def _fetch_token_metadata(
+        self, asset_address: str
+    ) -> Optional[TokenMetadataRecord]:
+        """Resolve SPL token metadata from mint + Metaplex metadata account."""
+        if not self.client:
+            return None
+
+        mint_info = await self.client.get_account_info(asset_address, encoding="base64")
+        mint_payload = self._normalize_rpc_payload(mint_info)
+        mint_value = mint_payload.get("value") if isinstance(mint_payload, dict) else None
+        mint_data = self._extract_account_data_bytes(mint_value)
+        if mint_data is None:
+            return None
+
+        decimals = mint_data[44] if len(mint_data) > 44 else None
+        token_owner = mint_value.get("owner") if isinstance(mint_value, dict) else None
+        token_standard = (
+            "spl_token_2022" if token_owner == _SPL_TOKEN_2022_PROGRAM_ID else "spl"
+        )
+
+        symbol = None
+        name = None
+        metadata_uri = None
+        metadata_account = self._metadata_account_for_mint(asset_address)
+        if metadata_account is not None:
+            metadata_info = await self.client.get_account_info(
+                metadata_account,
+                encoding="base64",
+            )
+            metadata_payload = self._normalize_rpc_payload(metadata_info)
+            metadata_value = (
+                metadata_payload.get("value")
+                if isinstance(metadata_payload, dict)
+                else None
+            )
+            metadata_data = self._extract_account_data_bytes(metadata_value)
+            if metadata_data is not None:
+                symbol, name, metadata_uri = self._parse_metaplex_metadata(
+                    metadata_data
+                )
+
+        if symbol is None and name is None and metadata_uri is None:
+            return None
+
+        canonical_asset_id = None
+        if symbol:
+            canonical_asset_id = self._infer_canonical_asset_id(
+                symbol,
+                asset_contract=asset_address,
+                asset_name=name,
+                token_standard=token_standard,
+            )
+
+        return TokenMetadataRecord(
+            blockchain=self.blockchain,
+            asset_address=asset_address,
+            symbol=symbol,
+            name=name,
+            decimals=decimals,
+            metadata_uri=metadata_uri,
+            token_standard=token_standard,
+            canonical_asset_id=canonical_asset_id,
+            source="solana_mint_account",
+        )
+
+    def _extract_account_data_bytes(
+        self, account_value: Optional[Dict[str, Any]]
+    ) -> Optional[bytes]:
+        """Decode ``getAccountInfo`` base64 account payloads."""
+        if not account_value:
+            return None
+        data = account_value.get("data")
+        if not data or not isinstance(data, list) or not data[0]:
+            return None
+        try:
+            return base64.b64decode(data[0])
+        except Exception:
+            return None
+
+    def _metadata_account_for_mint(self, mint_address: str) -> Optional[str]:
+        """Return the Metaplex metadata PDA for a mint when solders is available."""
+        if Pubkey is None:
+            return None
+        try:
+            program = Pubkey.from_string(_METAPLEX_TOKEN_METADATA_PROGRAM_ID)
+            mint = Pubkey.from_string(mint_address)
+            metadata_pubkey, _ = Pubkey.find_program_address(
+                [b"metadata", bytes(program), bytes(mint)],
+                program,
+            )
+            return str(metadata_pubkey)
+        except Exception:
+            return None
+
+    def _parse_metaplex_metadata(
+        self, metadata_data: bytes
+    ) -> tuple[Optional[str], Optional[str], Optional[str]]:
+        """Parse the initial Metaplex metadata fields from account bytes."""
+        try:
+            offset = 1 + 32 + 32
+            name, offset = self._read_borsh_string(metadata_data, offset)
+            symbol, offset = self._read_borsh_string(metadata_data, offset)
+            uri, _ = self._read_borsh_string(metadata_data, offset)
+            return symbol, name, uri
+        except Exception:
+            return None, None, None
+
+    def _read_borsh_string(
+        self, payload: bytes, offset: int
+    ) -> tuple[Optional[str], int]:
+        """Read one Borsh-encoded UTF-8 string from *payload* at *offset*."""
+        if offset + 4 > len(payload):
+            raise ValueError("Borsh string length prefix is truncated")
+        length = int.from_bytes(payload[offset : offset + 4], "little")
+        start = offset + 4
+        end = start + length
+        if end > len(payload):
+            raise ValueError("Borsh string data is truncated")
+        value = payload[start:end].decode("utf-8", errors="ignore").rstrip("\x00").strip()
+        return value or None, end
 
     async def get_token_accounts(self, address: str) -> List[Dict]:
         """Get token accounts for an address"""

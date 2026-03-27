@@ -33,6 +33,7 @@ except ImportError:
     BASE58_AVAILABLE = False
 
 from src.api.config import settings
+from src.services.token_metadata import TokenMetadataRecord
 
 from .base import Address
 from .base import BaseCollector
@@ -66,6 +67,9 @@ class TronCollector(BaseCollector):
         self.stablecoin_contracts = {"USDT": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"}
 
         self.session = None
+        self._token_symbol_cache: Dict[str, str] = {}
+        self._token_name_cache: Dict[str, str] = {}
+        self._token_decimals_cache: Dict[str, int] = {}
 
     def _label_trc20_contract(self, contract_address: str) -> str:
         """Return a readable token label for a TRC-20 contract."""
@@ -413,6 +417,149 @@ class TronCollector(BaseCollector):
         except Exception:
             return hex_address
 
+    def _normalize_tron_contract_for_rpc(self, contract_address: str) -> str:
+        """Return a hex ``41...`` Tron address suitable for constant calls."""
+        address = (contract_address or "").strip()
+        if not address:
+            return address
+        if address.startswith("41") and len(address) >= 42:
+            return address
+        if address.startswith("0x") and len(address) >= 42:
+            return "41" + address[-40:]
+        converted = self.base58_to_hex(address)
+        return converted if converted else address
+
+    async def _trigger_constant_contract(
+        self,
+        contract_address: str,
+        function_selector: str,
+    ) -> Optional[str]:
+        """Call a TRC-20 constant method via TronGrid and return raw hex."""
+        contract_hex = self._normalize_tron_contract_for_rpc(contract_address)
+        if not contract_hex:
+            return None
+
+        response = await self.rpc_call(
+            "wallet/triggerconstantcontract",
+            {
+                "owner_address": contract_hex,
+                "contract_address": contract_hex,
+                "function_selector": function_selector,
+                "visible": False,
+            },
+        )
+        if not response:
+            return None
+
+        constant_result = response.get("constant_result") or []
+        if not constant_result:
+            return None
+        return constant_result[0]
+
+    def _decode_tron_text_result(self, hex_payload: Optional[str]) -> Optional[str]:
+        """Decode ABI-encoded string or bytes32 results from Tron constant calls."""
+        if not hex_payload:
+            return None
+        try:
+            payload = bytes.fromhex(hex_payload)
+        except ValueError:
+            return None
+
+        if len(payload) >= 96:
+            try:
+                offset = int.from_bytes(payload[:32], "big")
+                if offset + 32 <= len(payload):
+                    length = int.from_bytes(payload[offset : offset + 32], "big")
+                    start = offset + 32
+                    end = start + length
+                    if end <= len(payload):
+                        text = payload[start:end].decode("utf-8", errors="ignore").strip("\x00").strip()
+                        if text:
+                            return text
+            except Exception:
+                pass
+
+        text = payload.rstrip(b"\x00").decode("utf-8", errors="ignore").strip()
+        return text or None
+
+    async def get_token_symbol(self, contract_address: str) -> Optional[str]:
+        """Return a TRC-20 symbol when available."""
+        contract_key = self._normalize_tron_contract_for_rpc(contract_address).lower()
+        cached = self._token_symbol_cache.get(contract_key)
+        if cached:
+            return cached
+
+        symbol = self._label_trc20_contract(contract_address)
+        if symbol and "..." not in symbol:
+            self._token_symbol_cache[contract_key] = symbol.upper()
+            return self._token_symbol_cache[contract_key]
+
+        raw = await self._trigger_constant_contract(contract_address, "symbol()")
+        decoded = self._decode_tron_text_result(raw)
+        if decoded:
+            self._token_symbol_cache[contract_key] = decoded.upper()
+            return self._token_symbol_cache[contract_key]
+        return None
+
+    async def get_token_name(self, contract_address: str) -> Optional[str]:
+        """Return a TRC-20 name when available."""
+        contract_key = self._normalize_tron_contract_for_rpc(contract_address).lower()
+        cached = self._token_name_cache.get(contract_key)
+        if cached:
+            return cached
+
+        raw = await self._trigger_constant_contract(contract_address, "name()")
+        decoded = self._decode_tron_text_result(raw)
+        if decoded:
+            self._token_name_cache[contract_key] = decoded
+            return decoded
+        return None
+
+    async def get_token_decimals(self, contract_address: str) -> Optional[int]:
+        """Return TRC-20 decimals when available."""
+        contract_key = self._normalize_tron_contract_for_rpc(contract_address).lower()
+        cached = self._token_decimals_cache.get(contract_key)
+        if cached is not None:
+            return cached
+
+        raw = await self._trigger_constant_contract(contract_address, "decimals()")
+        if not raw:
+            return None
+        try:
+            decimals = int(raw, 16)
+        except ValueError:
+            return None
+        self._token_decimals_cache[contract_key] = decimals
+        return decimals
+
+    async def _fetch_token_metadata(
+        self, asset_address: str
+    ) -> Optional[TokenMetadataRecord]:
+        """Resolve TRC-20 token metadata through constant contract calls."""
+        symbol = await self.get_token_symbol(asset_address)
+        name = await self.get_token_name(asset_address)
+        decimals = await self.get_token_decimals(asset_address)
+        if symbol is None and name is None and decimals is None:
+            return None
+        canonical_asset_id = None
+        if symbol:
+            canonical_asset_id = self._infer_canonical_asset_id(
+                symbol,
+                asset_contract=asset_address,
+                asset_name=name,
+                token_standard="trc20",
+            )
+        return TokenMetadataRecord(
+            blockchain=self.blockchain,
+            asset_address=asset_address,
+            symbol=symbol,
+            name=name,
+            decimals=decimals,
+            token_standard="trc20",
+            canonical_asset_id=canonical_asset_id,
+            source="tron_constant_call",
+        )
+
     async def _extract_dex_logs_tron(self, tx_hash: str) -> List[Dict]:
         """Extract DEX Swap event logs from TVM execution via TronGrid.
 
@@ -517,10 +664,15 @@ class TronCollector(BaseCollector):
                         to_hex_raw = parameter[8 + 24 : 8 + 64]
                         to_addr_b58 = self.hex_to_base58("41" + to_hex_raw)
                         amount_raw = int(parameter[72:136], 16)
-                        # Determine decimals: known Tron stablecoins use 6; generic TRC-20
-                        # contracts fall back to 18 until richer token metadata is available.
                         known_stablecoin_addrs = set(self.stablecoin_contracts.values())
-                        decimals = 6 if contract_address in known_stablecoin_addrs else 18
+                        known_stablecoin_hex = {
+                            self.base58_to_hex(addr) for addr in known_stablecoin_addrs
+                        }
+                        is_known_stablecoin = (
+                            contract_address in known_stablecoin_addrs
+                            or contract_address in known_stablecoin_hex
+                        )
+                        decimals = 6 if is_known_stablecoin else None
                         transfers.append(
                             {
                                 "symbol": self._label_trc20_contract(contract_address),
@@ -528,7 +680,11 @@ class TronCollector(BaseCollector):
                                 "from_address": from_address,
                                 "to_address": to_addr_b58,
                                 "amount_raw": amount_raw,
-                                "amount_normalized": amount_raw / (10 ** decimals),
+                                "amount_normalized": (
+                                    amount_raw / (10 ** decimals)
+                                    if decimals is not None
+                                    else None
+                                ),
                                 "decimals": decimals,
                                 "asset_type": "trc20",
                             }

@@ -13,7 +13,9 @@ import { useGraphStore } from './store/graphStore';
 import { isAuthenticated, redirectToLogin } from './api/client';
 import {
   clearSavedWorkspace,
+  extractSnapshotWorkspacePreferences,
   loadSavedWorkspace,
+  saveSessionWorkspacePreferences,
 } from './workspacePersistence';
 
 export default function App() {
@@ -36,6 +38,11 @@ export default function App() {
     if (!restored) {
       clearSavedWorkspace();
       return;
+    }
+
+    const snapshotPreferences = extractSnapshotWorkspacePreferences(savedWorkspace.snapshot);
+    if (snapshotPreferences) {
+      saveSessionWorkspacePreferences(savedWorkspace.sessionId, snapshotPreferences);
     }
 
     setSessionId(savedWorkspace.sessionId);

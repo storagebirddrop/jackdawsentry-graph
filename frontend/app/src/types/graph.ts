@@ -297,6 +297,44 @@ const EVM_CHAINS = new Set([
   'injective',
 ]);
 
+const NATIVE_SYMBOLS: Record<string, string> = {
+  ethereum: 'ETH',
+  bsc: 'BNB',
+  polygon: 'MATIC',
+  arbitrum: 'ETH',
+  base: 'ETH',
+  avalanche: 'AVAX',
+  optimism: 'ETH',
+  starknet: 'ETH',
+  injective: 'INJ',
+  tron: 'TRX',
+  solana: 'SOL',
+  xrp: 'XRP',
+  cosmos: 'ATOM',
+  sui: 'SUI',
+  bitcoin: 'BTC',
+  lightning: 'BTC',
+};
+
+const NATIVE_CANONICAL_IDS: Record<string, string> = {
+  ethereum: 'ethereum',
+  bsc: 'binancecoin',
+  polygon: 'matic-network',
+  arbitrum: 'ethereum',
+  base: 'ethereum',
+  avalanche: 'avalanche-2',
+  optimism: 'ethereum',
+  starknet: 'ethereum',
+  injective: 'injective-protocol',
+  tron: 'tron',
+  solana: 'solana',
+  xrp: 'ripple',
+  cosmos: 'cosmos',
+  sui: 'sui',
+  bitcoin: 'bitcoin',
+  lightning: 'bitcoin',
+};
+
 function canonicalizeNodeId(nodeId: string): string {
   const parts = nodeId.split(':');
   if (parts.length < 3) {
@@ -388,6 +426,8 @@ export interface InvestigationEdge {
   direction: 'forward' | 'backward';
   asset_symbol?: string;
   canonical_asset_id?: string;
+  asset_address?: string;
+  asset_chain?: string;
   value_native?: number;
   fiat_value_usd?: number;
   tx_hash?: string;
@@ -397,6 +437,72 @@ export interface InvestigationEdge {
   branch_id: string;
   /** Same branch_color_index as the source node */
   branch_color_index?: number;
+}
+
+export function assetSelectionKeysForEdge(
+  edge: Pick<InvestigationEdge, 'asset_symbol' | 'canonical_asset_id' | 'asset_address' | 'asset_chain'>,
+): string[] {
+  const keys = new Set<string>();
+  const chain = edge.asset_chain?.toLowerCase();
+  if (chain && edge.asset_address) {
+    const assetAddress = (
+      EVM_CHAINS.has(chain) || edge.asset_address.startsWith('0x')
+        ? edge.asset_address.toLowerCase()
+        : edge.asset_address.toLowerCase()
+    );
+    keys.add(`asset:${chain}:${assetAddress}`);
+  }
+  if (edge.canonical_asset_id) {
+    keys.add(`canonical:${edge.canonical_asset_id.toLowerCase()}`);
+    keys.add(edge.canonical_asset_id.toLowerCase());
+  }
+  if (edge.asset_symbol) {
+    keys.add(`symbol:${edge.asset_symbol.toLowerCase()}`);
+    keys.add(edge.asset_symbol.toLowerCase());
+  }
+  if (
+    chain
+    && !edge.asset_address
+    && (
+      (edge.asset_symbol && edge.asset_symbol.toUpperCase() === NATIVE_SYMBOLS[chain])
+      || (
+        edge.canonical_asset_id
+        && edge.canonical_asset_id.toLowerCase() === NATIVE_CANONICAL_IDS[chain]
+      )
+    )
+  ) {
+    keys.add(`native:${chain}`);
+  }
+  return [...keys];
+}
+
+export function preferredAssetSelectionKeyForEdge(
+  edge: Pick<InvestigationEdge, 'asset_symbol' | 'canonical_asset_id' | 'asset_address' | 'asset_chain'>,
+): string | null {
+  const chain = edge.asset_chain?.toLowerCase();
+  if (
+    chain
+    && !edge.asset_address
+    && (
+      (edge.asset_symbol && edge.asset_symbol.toUpperCase() === NATIVE_SYMBOLS[chain])
+      || (
+        edge.canonical_asset_id
+        && edge.canonical_asset_id.toLowerCase() === NATIVE_CANONICAL_IDS[chain]
+      )
+    )
+  ) {
+    return `native:${chain}`;
+  }
+  if (chain && edge.asset_address) {
+    return `asset:${chain}:${edge.asset_address.toLowerCase()}`;
+  }
+  if (edge.canonical_asset_id) {
+    return `canonical:${edge.canonical_asset_id.toLowerCase()}`;
+  }
+  if (edge.asset_symbol) {
+    return `symbol:${edge.asset_symbol.toLowerCase()}`;
+  }
+  return null;
 }
 
 export function normalizeInvestigationEdge(edge: InvestigationEdge): InvestigationEdge {
@@ -438,6 +544,30 @@ export interface PaginationMeta {
 export interface AssetContext {
   assets_present: string[];
   canonical_asset_ids: string[];
+}
+
+export interface AssetCatalogItem {
+  asset_key: string;
+  symbol: string;
+  display_name?: string;
+  canonical_asset_id?: string;
+  canonical_symbol?: string;
+  identity_status: 'verified' | 'heuristic' | 'unknown';
+  variant_kind: 'native' | 'canonical' | 'wrapped' | 'bridged' | 'unknown';
+  blockchains: string[];
+  token_standards: string[];
+  observed_transfer_count: number;
+  last_seen_at?: string;
+  sample_asset_address?: string;
+  is_native: boolean;
+}
+
+export interface AssetCatalogResponse {
+  session_id: string;
+  seed_chain: string;
+  chains_present: string[];
+  items: AssetCatalogItem[];
+  generated_at: string;
 }
 
 export interface ExpansionEmptyState {

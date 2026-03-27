@@ -49,6 +49,7 @@ def _make_collector(transactions=None, raise_on_get=False):
         collector.get_address_transactions = AsyncMock(
             return_value=transactions or []
         )
+    collector.normalize_token_transfers = AsyncMock()
     collector._insert_raw_transaction = AsyncMock()
     collector._insert_raw_token_transfers = AsyncMock()
     return collector
@@ -158,6 +159,7 @@ async def test_successful_ingest_persists_transactions():
 
     collector._insert_raw_transaction.assert_awaited_once_with(tx)
     collector._insert_raw_token_transfers.assert_awaited_once_with(tx)
+    collector.normalize_token_transfers.assert_awaited_once_with(tx)
     # Completed mark uses UPDATE ... SET status = 'completed'
     completed_sql = mock_conn.execute.call_args[0][0]
     assert "completed" in completed_sql

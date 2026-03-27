@@ -89,10 +89,10 @@ services:
       EXPOSE_API_DOCS: ${EXPOSE_API_DOCS:-false}
       ENABLE_LEGACY_GRAPH_ENDPOINTS: ${ENABLE_LEGACY_GRAPH_ENDPOINTS:-false}
       EXPOSE_METRICS: ${EXPOSE_METRICS:-false}
-      DEBUG: ${DEBUG:-false}
-      GRAPH_AUTH_DISABLED: ${GRAPH_AUTH_DISABLED:-false}  # WARNING: Disabling authentication is dangerous and should only be used in development with explicit confirmation
-      NODE_ENV: ${NODE_ENV:-production}
-      AUTH_DISABLE_CONFIRM: ${AUTH_DISABLE_CONFIRM:-false}
+      DEBUG: ${DEBUG:-true}
+      GRAPH_AUTH_DISABLED: ${GRAPH_AUTH_DISABLED:-true}  # Standalone graph deployment intentionally runs without login.
+      NODE_ENV: ${NODE_ENV:-development}
+      AUTH_DISABLE_CONFIRM: ${AUTH_DISABLE_CONFIRM:-true}
       RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED:-true}
       DUAL_WRITE_RAW_EVENT_STORE: ${DUAL_WRITE_RAW_EVENT_STORE:-false}
       AUTO_BACKFILL_RAW_EVENT_STORE: ${AUTO_BACKFILL_RAW_EVENT_STORE:-false}

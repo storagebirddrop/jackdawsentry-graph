@@ -310,6 +310,7 @@ class EventStoreBackfillWorker:
             if not tx:
                 continue
 
+            await collector.normalize_token_transfers(tx)
             await collector._insert_raw_transaction(tx)
             if tx.token_transfers:
                 await collector._insert_raw_token_transfers(tx)

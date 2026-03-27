@@ -77,6 +77,7 @@ def test_graph_app_openapi_can_be_enabled():
     paths = set(schema["paths"])
     assert "/api/v1/auth/login" in paths
     assert "/api/v1/graph/sessions" in paths
+    assert "/api/v1/graph/sessions/{session_id}/assets" in paths
     assert "/api/v1/graph/sessions/{session_id}/expand" in paths
     assert "/api/v1/graph/expand" not in paths
     assert "/api/v1/graph/trace" not in paths
@@ -127,6 +128,7 @@ async def test_graph_profile_only_includes_graph_bootstrap_migrations(tmp_path: 
         "006_raw_event_store.sql",
         "007_graph_sessions.sql",
         "009_event_store_backfill.sql",
+        "016_token_metadata_cache.sql",
     ]:
         (tmp_path / name).write_text("-- sql", encoding="utf-8")
 
@@ -141,6 +143,7 @@ async def test_graph_profile_only_includes_graph_bootstrap_migrations(tmp_path: 
         "006_raw_event_store.sql",
         "007_graph_sessions.sql",
         "009_event_store_backfill.sql",
+        "016_token_metadata_cache.sql",
     ]
 
 

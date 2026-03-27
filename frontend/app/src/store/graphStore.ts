@@ -16,6 +16,7 @@ import type {
   InvestigationEdge,
   ExpansionResponseV2,
 } from '../types/graph';
+import type { SnapshotWorkspacePreferences } from '../workspacePersistence';
 import {
   normalizeInvestigationEdge as normalizeEdge,
   normalizeInvestigationNode as normalizeNode,
@@ -169,7 +170,7 @@ export interface GraphState {
   reset: () => void;
 
   /** Serialise current graph state to a JSON string (for session snapshot). */
-  exportSnapshot: () => string;
+  exportSnapshot: (options?: { workspacePreferences?: SnapshotWorkspacePreferences | null }) => string;
   /** Restore graph state from a JSON string previously produced by exportSnapshot. Returns true on success. */
   importSnapshot: (json: string) => boolean;
 }
@@ -402,7 +403,7 @@ export const useGraphStore = create<GraphState>((set, get) => ({
     });
   },
 
-  exportSnapshot() {
+  exportSnapshot(options) {
     const { sessionId, nodeMap, edgeMap, rfNodes, branchMap } = get();
     // Capture current positions from rfNodes so they survive round-trip.
     const positions: Record<string, { x: number; y: number }> = {};
@@ -413,6 +414,7 @@ export const useGraphStore = create<GraphState>((set, get) => ({
       edges: Array.from(edgeMap.values()),
       positions,
       branches: Array.from(branchMap.values()),
+      workspacePreferences: options?.workspacePreferences ?? null,
     });
   },
 
@@ -424,6 +426,7 @@ export const useGraphStore = create<GraphState>((set, get) => ({
         edges: InvestigationEdge[];
         positions: Record<string, { x: number; y: number }>;
         branches?: BranchMeta[];
+        workspacePreferences?: SnapshotWorkspacePreferences | null;
       };
       const normalizedNodes = data.nodes.map(normalizeNode);
       const normalizedEdges = data.edges.map(normalizeEdge);

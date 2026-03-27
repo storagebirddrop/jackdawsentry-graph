@@ -171,29 +171,90 @@ class SolanaChainCompiler(BaseChainCompiler):
             return []
         limit = min(options.max_results, _SQL_FETCH_LIMIT)
         rows: List[Dict[str, Any]] = []
-        asset_filter = [asset.upper() for asset in (options.asset_filter or [])]
-        include_native = not asset_filter or "SOL" in asset_filter
+        asset_filter = [str(asset).strip() for asset in (options.asset_filter or []) if str(asset).strip()]
+        symbol_filters: set[str] = set()
+        canonical_filters: set[str] = set()
+        asset_address_filters: set[str] = set()
+        include_native = not asset_filter
+        for asset in asset_filter:
+            lowered = asset.lower()
+            if lowered.startswith("symbol:"):
+                symbol_filters.add(asset.split(":", 1)[1].strip().upper())
+                continue
+            if lowered.startswith("canonical:"):
+                canonical_filters.add(asset.split(":", 1)[1].strip().lower())
+                continue
+            if lowered.startswith("native:"):
+                if asset.split(":", 1)[1].strip().lower() == "solana":
+                    include_native = True
+                continue
+            if lowered.startswith("asset:"):
+                parts = asset.split(":", 2)
+                if len(parts) == 3 and parts[1].strip().lower() == "solana":
+                    asset_address_filters.add(parts[2].strip().lower())
+                continue
+            symbol_filters.add(asset.upper())
+            canonical_filters.add(lowered)
+        if "SOL" in symbol_filters or "solana" in canonical_filters:
+            include_native = True
 
         # SPL token transfers (from_address is the sender wallet / ATA authority)
         try:
-            params: List[Any] = [address, limit]
-            asset_clause = ""
-            if asset_filter:
-                asset_clause = "AND UPPER(asset_symbol) = ANY($3)"
-                params.append(asset_filter)
+            params: List[Any] = [
+                address,
+                limit,
+                sorted(symbol_filters) or None,
+                sorted(canonical_filters) or None,
+                sorted(asset_address_filters) or None,
+            ]
 
-            sql = f"""
+            sql = """
                 SELECT
-                    tx_hash,
-                    to_address        AS counterparty,
-                    amount_normalized AS value_native,
-                    asset_symbol,
-                    canonical_asset_id,
-                    timestamp
-                FROM raw_token_transfers
-                WHERE blockchain = 'solana'
-                  AND from_address = $1
-                  {asset_clause}
+                    rtt.tx_hash,
+                    rtt.to_address        AS counterparty,
+                    rtt.amount_normalized AS value_native,
+                    COALESCE(
+                        NULLIF(tmc.symbol, ''),
+                        NULLIF(rtt.asset_symbol, ''),
+                        rtt.asset_contract
+                    ) AS asset_symbol,
+                    COALESCE(
+                        NULLIF(tmc.canonical_asset_id, ''),
+                        NULLIF(rtt.canonical_asset_id, '')
+                    ) AS canonical_asset_id,
+                    rtt.asset_contract AS asset_address,
+                    rtt.timestamp
+                FROM raw_token_transfers rtt
+                LEFT JOIN token_metadata_cache tmc
+                  ON tmc.blockchain = rtt.blockchain
+                 AND tmc.asset_address = rtt.asset_contract
+                WHERE rtt.blockchain = 'solana'
+                  AND rtt.from_address = $1
+                  AND (
+                    ($3::text[] IS NULL AND $4::text[] IS NULL AND $5::text[] IS NULL)
+                    OR (
+                        $3::text[] IS NOT NULL
+                        AND UPPER(
+                            COALESCE(
+                                NULLIF(tmc.symbol, ''),
+                                NULLIF(rtt.asset_symbol, '')
+                            )
+                        ) = ANY($3)
+                    )
+                    OR (
+                        $4::text[] IS NOT NULL
+                        AND LOWER(
+                            COALESCE(
+                                NULLIF(tmc.canonical_asset_id, ''),
+                                NULLIF(rtt.canonical_asset_id, '')
+                            )
+                        ) = ANY($4)
+                    )
+                    OR (
+                        $5::text[] IS NOT NULL
+                        AND LOWER(COALESCE(rtt.asset_contract, '')) = ANY($5)
+                    )
+                  )
                 ORDER BY timestamp DESC, tx_hash ASC
                 LIMIT $2
             """
@@ -214,6 +275,7 @@ class SolanaChainCompiler(BaseChainCompiler):
                     value_native,
                     'SOL'             AS asset_symbol,
                     NULL              AS canonical_asset_id,
+                    NULL              AS asset_address,
                     timestamp
                 FROM raw_transactions
                 WHERE blockchain = 'solana'
@@ -239,28 +301,89 @@ class SolanaChainCompiler(BaseChainCompiler):
             return []
         limit = min(options.max_results, _SQL_FETCH_LIMIT)
         rows: List[Dict[str, Any]] = []
-        asset_filter = [asset.upper() for asset in (options.asset_filter or [])]
-        include_native = not asset_filter or "SOL" in asset_filter
+        asset_filter = [str(asset).strip() for asset in (options.asset_filter or []) if str(asset).strip()]
+        symbol_filters: set[str] = set()
+        canonical_filters: set[str] = set()
+        asset_address_filters: set[str] = set()
+        include_native = not asset_filter
+        for asset in asset_filter:
+            lowered = asset.lower()
+            if lowered.startswith("symbol:"):
+                symbol_filters.add(asset.split(":", 1)[1].strip().upper())
+                continue
+            if lowered.startswith("canonical:"):
+                canonical_filters.add(asset.split(":", 1)[1].strip().lower())
+                continue
+            if lowered.startswith("native:"):
+                if asset.split(":", 1)[1].strip().lower() == "solana":
+                    include_native = True
+                continue
+            if lowered.startswith("asset:"):
+                parts = asset.split(":", 2)
+                if len(parts) == 3 and parts[1].strip().lower() == "solana":
+                    asset_address_filters.add(parts[2].strip().lower())
+                continue
+            symbol_filters.add(asset.upper())
+            canonical_filters.add(lowered)
+        if "SOL" in symbol_filters or "solana" in canonical_filters:
+            include_native = True
 
         try:
-            params: List[Any] = [address, limit]
-            asset_clause = ""
-            if asset_filter:
-                asset_clause = "AND UPPER(asset_symbol) = ANY($3)"
-                params.append(asset_filter)
+            params: List[Any] = [
+                address,
+                limit,
+                sorted(symbol_filters) or None,
+                sorted(canonical_filters) or None,
+                sorted(asset_address_filters) or None,
+            ]
 
-            sql = f"""
+            sql = """
                 SELECT
-                    tx_hash,
-                    from_address      AS counterparty,
-                    amount_normalized AS value_native,
-                    asset_symbol,
-                    canonical_asset_id,
-                    timestamp
-                FROM raw_token_transfers
-                WHERE blockchain = 'solana'
-                  AND to_address = $1
-                  {asset_clause}
+                    rtt.tx_hash,
+                    rtt.from_address      AS counterparty,
+                    rtt.amount_normalized AS value_native,
+                    COALESCE(
+                        NULLIF(tmc.symbol, ''),
+                        NULLIF(rtt.asset_symbol, ''),
+                        rtt.asset_contract
+                    ) AS asset_symbol,
+                    COALESCE(
+                        NULLIF(tmc.canonical_asset_id, ''),
+                        NULLIF(rtt.canonical_asset_id, '')
+                    ) AS canonical_asset_id,
+                    rtt.asset_contract AS asset_address,
+                    rtt.timestamp
+                FROM raw_token_transfers rtt
+                LEFT JOIN token_metadata_cache tmc
+                  ON tmc.blockchain = rtt.blockchain
+                 AND tmc.asset_address = rtt.asset_contract
+                WHERE rtt.blockchain = 'solana'
+                  AND rtt.to_address = $1
+                  AND (
+                    ($3::text[] IS NULL AND $4::text[] IS NULL AND $5::text[] IS NULL)
+                    OR (
+                        $3::text[] IS NOT NULL
+                        AND UPPER(
+                            COALESCE(
+                                NULLIF(tmc.symbol, ''),
+                                NULLIF(rtt.asset_symbol, '')
+                            )
+                        ) = ANY($3)
+                    )
+                    OR (
+                        $4::text[] IS NOT NULL
+                        AND LOWER(
+                            COALESCE(
+                                NULLIF(tmc.canonical_asset_id, ''),
+                                NULLIF(rtt.canonical_asset_id, '')
+                            )
+                        ) = ANY($4)
+                    )
+                    OR (
+                        $5::text[] IS NOT NULL
+                        AND LOWER(COALESCE(rtt.asset_contract, '')) = ANY($5)
+                    )
+                  )
                 ORDER BY timestamp DESC, tx_hash ASC
                 LIMIT $2
             """
@@ -280,6 +403,7 @@ class SolanaChainCompiler(BaseChainCompiler):
                     value_native,
                     'SOL'             AS asset_symbol,
                     NULL              AS canonical_asset_id,
+                    NULL              AS asset_address,
                     timestamp
                 FROM raw_transactions
                 WHERE blockchain = 'solana'
@@ -741,6 +865,7 @@ class SolanaChainCompiler(BaseChainCompiler):
             value_fiat=None,
             asset_symbol=outgoing_asset,
             canonical_asset_id=outgoing_canonical_id,
+            asset_chain="solana",
             tx_hash=tx_hash,
             tx_chain="solana",
             timestamp=timestamp,
@@ -757,6 +882,7 @@ class SolanaChainCompiler(BaseChainCompiler):
             value_fiat=None,
             asset_symbol=incoming_asset,
             canonical_asset_id=incoming_canonical_id,
+            asset_chain="solana",
             tx_hash=tx_hash,
             tx_chain="solana",
             timestamp=timestamp,
@@ -1005,6 +1131,8 @@ class SolanaChainCompiler(BaseChainCompiler):
                 value_fiat=value_fiat,
                 asset_symbol=asset_symbol or "SOL",
                 canonical_asset_id=canonical_asset_id,
+                asset_address=row.get("asset_address"),
+                asset_chain="solana",
                 tx_hash=tx_hash or None,
                 tx_chain="solana",
                 timestamp=_ts_str,

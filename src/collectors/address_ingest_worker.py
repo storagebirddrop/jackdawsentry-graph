@@ -137,6 +137,7 @@ class AddressIngestWorker:
         tx_count = 0
         for tx in transactions:
             try:
+                await collector.normalize_token_transfers(tx)
                 # Reuse the base collector's dual-write methods — they already
                 # apply ON CONFLICT DO NOTHING so re-ingest is safe.
                 await collector._insert_raw_transaction(tx)
