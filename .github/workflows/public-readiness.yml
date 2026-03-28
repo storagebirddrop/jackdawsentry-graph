@@ -15,5 +15,7 @@ jobs:
           python-version: "3.11"
       - name: Boundary audit
         run: python scripts/quality/boundary_audit.py
+      - name: Repo hygiene audit
+        run: python scripts/quality/repo_hygiene_audit.py
       - name: Public readiness audit
         run: python scripts/quality/public_readiness_audit.py

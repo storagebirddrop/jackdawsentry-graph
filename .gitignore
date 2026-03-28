@@ -27,3 +27,6 @@ frontend/app/playwright-report/
 !/docs/drills/runs/.gitkeep
 /docs/drills/DRILL_FRAMEWORK.md
 /docs/drills/GRAPH_TRUTHFULNESS_AND_INVESTIGATOR_MISINTERPRETATION_DRILL.md
+
+# Internal working notes
+/tasks/
