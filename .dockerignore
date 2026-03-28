@@ -1,22 +1,20 @@
+.git
+.github
+.windsurf
+.venv
+.pytest_cache
+.mypy_cache
+.ruff_cache
 __pycache__/
 *.py[cod]
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.venv/
-.coverage
-coverage.xml
-htmlcov/
+*.log
+=*
 .env
 .env.pre_phase5_backup_*
-
-# Frontend local outputs
 frontend/app/node_modules/
 frontend/app/dist/
 frontend/app/test-results/
 frontend/app/playwright-report/
-
-# Local scratch / capture noise
 artifacts/
-=*
-*.log
+docs/drills/archive/
+docs/drills/runs/
