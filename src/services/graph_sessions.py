@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 import json
 from typing import Any
 from typing import Mapping
@@ -35,8 +36,6 @@ _EVM_SESSION_CHAINS = {
     "base",
     "avalanche",
     "optimism",
-    "starknet",
-    "injective",
 }
 
 
@@ -67,9 +66,18 @@ def _canonical_seed_identifier(chain: str, address: str) -> str:
 
 
 def _bootstrap_root_node(row: Mapping[str, Any]) -> InvestigationNode:
-    session_id = str(row["session_id"])
-    seed_address = str(row["seed_address"])
-    seed_chain = str(row["seed_chain"])
+    def _required_text(field_name: str) -> str:
+        raw_value = row.get(field_name)
+        if raw_value is None:
+            raise ValueError(f"Invalid graph session row: {field_name} is required")
+        value = raw_value.strip() if isinstance(raw_value, str) else raw_value
+        if not value:
+            raise ValueError(f"Invalid graph session row: {field_name} must be non-empty")
+        return str(value)
+
+    session_id = _required_text("session_id")
+    seed_address = _required_text("seed_address")
+    seed_chain = _required_text("seed_chain")
     canonical_seed = _canonical_seed_identifier(seed_chain, seed_address)
     node_id = mk_node_id(seed_chain, "address", canonical_seed)
     branch_id = mk_branch_id(session_id, node_id, 0)
@@ -146,7 +154,7 @@ def _apply_legacy_node_states(
                 }
             )
         )
-        if state.position_hint:
+        if state.position_hint is not None:
             updated_positions[node.node_id] = state.position_hint
 
     return workspace.model_copy(
@@ -273,11 +281,13 @@ class GraphSessionStore:
         session_id: str,
         owner_user_id: str,
         workspace: WorkspaceSnapshotV1,
-        saved_at,
+        saved_at: datetime,
         expected_previous_revision: int,
     ) -> None:
         if self._pg is None:
             raise RuntimeError("Session store unavailable")
+        if workspace.revision != expected_previous_revision + 1:
+            raise SnapshotRevisionConflictError("Stale workspace snapshot revision")
 
         async with self._pg.acquire() as conn:
             result = await conn.execute(
