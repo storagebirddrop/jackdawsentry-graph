@@ -200,6 +200,31 @@ Read this file before touching graph schema, graph API, trace compiler semantics
   - `solana_live_fetch.py`: added `if not senders: continue` guard in receiver pairing loop
     to prevent `IndexError` on mint-only (airdrop) transfers.
 
+### ADR-026 (COMPLETE — Session Authority Contract)
+- Backend-owned `WorkspaceSnapshotV1` rows are the authoritative restore and
+  autosave contract for investigation sessions.
+- Restore discovery comes from `GET /api/v1/graph/sessions/recent`, not from
+  browser-local graph payloads.
+- Browser storage may keep a recent-session hint and safe workspace preferences,
+  but it must not become the source of truth for restorable graph state.
+- Snapshot writes are monotonic. Stale autosave writes must fail with a
+  revision conflict instead of silently overwriting newer workspace state.
+
+### ADR-027 (COMPLETE — Mounted Bridge Polling Ownership)
+- The mounted investigator path owns bridge-hop freshness:
+  `InvestigationGraph` + `useBridgeHopPoller` + `GraphInspectorPanel`.
+- Detached or unmounted components must not own live polling truth for bridge
+  status. Dead polling paths should be removed or explicitly de-scoped.
+
+### ADR-028 (COMPLETE — Empty-State Honesty)
+- Empty frontiers must distinguish:
+  - no indexed activity in the current dataset
+  - indexed activity in the requested direction that produced no new graph
+    results for this expansion
+  - indexed activity that exists only in the opposite direction
+- Event-store directionality takes precedence over live-lookup hints when
+  choosing empty-state wording.
+
 ## Guardrails
 
 - Do not widen this repo into the private compliance dashboard.

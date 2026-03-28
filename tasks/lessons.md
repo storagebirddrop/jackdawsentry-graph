@@ -78,3 +78,57 @@ receivers but no negative-delta entries (e.g. a pure airdrop), `senders[0]` rais
 
 **Rule:** Add `if not senders: continue` as the first statement inside the receiver loop. Only pair
 when at least one sender exists; skip the receiver entirely rather than raising.
+
+## 2026-03-28 — Restore discovery must be backend-owned, not local-storage-gated
+
+**What went wrong:** The frontend moved restore payloads to the backend session
+contract, but the restore entry point still depended on a browser-local hint to
+surface any candidate session at all. Clearing local storage made valid backend
+sessions undiscoverable.
+
+**Rule:** If the backend owns session continuity, restore discovery must also be
+backend-owned. Browser storage may rank or hint recent sessions, but it must
+never be the gate that decides whether restore is possible.
+
+## 2026-03-28 — A contract field is dead code until a user can see or depend on it
+
+**What went wrong:** `restore_state` existed in the backend restore contract,
+but the frontend ignored it, so `legacy_bootstrap` rows silently looked like
+full restores.
+
+**Rule:** When adding a user-facing contract field, either wire it into visible
+behavior immediately or remove it. Do not leave “important later” fields in the
+payload without a consumer.
+
+## 2026-03-28 — Autosave needs monotonic conflict protection, not best-effort ordering
+
+**What went wrong:** Client-side debounce reduced write volume, but older
+in-flight snapshot requests could still land after newer ones and silently
+overwrite fresher workspace state.
+
+**Rule:** Any authoritative autosave path needs a server-enforced monotonic
+revision or equivalent compare-and-set check. UI timing alone is not a write
+ordering guarantee.
+
+## 2026-03-28 — Unmounted components must not own live truth
+
+**What went wrong:** Bridge-hop polling lived in `BridgeHopDrawer`, which was
+not mounted anywhere in the active investigator flow. The mounted inspector
+showed stale status even though a poller existed elsewhere in the tree.
+
+**Rule:** Live truth ownership must sit on the mounted path the investigator is
+actually using. If a detached component owns the only refresh logic, either
+move that logic into the mounted path or delete the detached component.
+
+## 2026-03-28 — Generic shell env names can silently break docker-compose boot
+
+**What went wrong:** The graph API compose service interpolated generic shell
+variables like `DEBUG` directly into the container environment. A caller shell
+with `DEBUG=release` overrode the repo `.env`, which made
+`GRAPH_AUTH_DISABLED=true` fail validation and left nginx serving `502` against
+an API that never booted.
+
+**Rule:** For local compose-based runtimes, do not rely on ambient shell values
+for safety-critical mode flags when the repo already owns a canonical `.env`.
+Load those flags from `env_file` or a repo-specific variable name so the stack
+boots predictably from repository state.

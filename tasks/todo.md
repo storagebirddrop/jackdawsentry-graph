@@ -2,6 +2,40 @@
 
 Use this file for active graph-product plans, acceptance criteria, and verification steps.
 
+## Session Contract Hardening [COMPLETE — 2026-03-28]
+
+Goal:
+- make backend session state the actual authority for restore, autosave, and
+  related investigator-facing truth
+
+Acceptance criteria:
+- [x] create-session fails honestly when persistence fails
+- [x] snapshot save fails honestly when persistence fails
+- [x] restore discovery uses backend recent sessions
+- [x] restore surfaces `restore_state` instead of silently treating legacy rows
+      as full restores
+- [x] autosave uses revision conflict protection so stale writes cannot silently
+      overwrite newer state
+- [x] mounted bridge polling owns live bridge-hop freshness
+- [x] empty-state wording distinguishes indexed directional activity from truly
+      empty frontiers
+
+## Release Hardening Follow-Ups [ACTIVE]
+
+Goal:
+- finish the remaining low-risk release work without reopening correctness
+  waves
+
+Acceptance criteria:
+- [ ] add a dedicated frontend runtime harness for restore/autosave and bridge
+      polling interactions
+- [ ] extract session-row creation persistence fully out of
+      `TraceCompiler.create_session`
+- [ ] gather an explicit live browser artifact for the Wave 04 empty-state UI
+      notice
+- [ ] refresh the hostile release gate against the live rebuilt stack after the
+      current docs/probe packet
+
 ## Script Layout Cleanup [COMPLETE]
 
 Goal:

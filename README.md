@@ -57,6 +57,7 @@ This repository is intentionally narrower than the private Jackdaw Sentry platfo
 ## Scope
 
 - graph session creation and restore
+- backend-owned session restore discovery and workspace autosave
 - graph expansion via `ExpansionResponse v2`
 - bridge hop status polling and calldata-based destination decoding
 - on-demand address ingest when expansion hits an empty frontier
@@ -98,6 +99,31 @@ http://localhost:8081/
 
 API docs stay disabled by default. Set `EXPOSE_API_DOCS=true` only when you
 explicitly need them in a trusted environment.
+
+The graph API service loads its mode flags from the repo `.env` during compose
+boot so ambient shell values like `DEBUG=release` do not accidentally override
+the standalone graph runtime.
+
+## Release And Drill Records
+
+Keep durable product-facing material in stable doc locations:
+
+- release summaries live in `docs/releases/`
+- drill templates, active runs, and archived evidence live in `docs/drills/`
+
+The current public-release summary lives in
+`docs/releases/2026-03-public-release.md`.
+
+Do not create new root-level `PHASE*`, `WAVE_*`, `FINAL_*`, or ad-hoc handoff
+files for future drills. Start a new drill folder instead:
+
+```bash
+python scripts/dev/init_drill_run.py my-drill-slug
+```
+
+That scaffold creates a dated run directory under `docs/drills/runs/` with
+separate `records/` and `artifacts/` folders so the repo root stays clean and
+the evidence trail stays attributable.
 
 The standalone local graph stack is graph-only by default:
 
@@ -151,6 +177,27 @@ For local graph exploration, load representative data first:
 python scripts/dev/load_perf_fixture_dataset.py
 ```
 
+### Session Restore And Autosave
+
+Recent investigation restore is now backend-owned:
+
+- the frontend discovers restore candidates from
+  `GET /api/v1/graph/sessions/recent`
+- the authoritative workspace comes from
+  `GET /api/v1/graph/sessions/{session_id}`
+- autosave writes back to
+  `POST /api/v1/graph/sessions/{session_id}/snapshot`
+
+Browser storage is intentionally weaker than the backend contract:
+
+- it may keep a recent-session hint and safe workspace preferences
+- it must not become the source of truth for the graph canvas
+- bearer tokens remain in `sessionStorage`, not `localStorage`
+
+Some older session rows only preserve a reduced seed-level snapshot. When that
+happens, the frontend surfaces a `legacy_bootstrap` restore notice instead of
+pretending the full prior canvas was recovered.
+
 ## Recent Improvements
 
 - **Security**: Resolved authentication bypass; added audit logging on sensitive endpoints
@@ -187,8 +234,11 @@ workflows:
   artifact you can copy or export alongside the raw session snapshot
 - the inspector is the narrative surface for node detail, lineage, branch
   actions, pinned paths, and active investigation context
-- empty `Prev` / `Next` expansions now explain that no indexed activity was
-  found in the current dataset instead of silently doing nothing
+- bridge-hop freshness is owned by the mounted inspector path, not a detached
+  side drawer
+- empty `Prev` / `Next` expansions explain whether no indexed activity exists,
+  or whether indexed activity exists but produced no new graph results for the
+  current request
 
 When you add new graph UX, prefer actions that help an analyst answer
 "what happened here?" or "how does this branch differ?" over generic dashboard
@@ -242,6 +292,9 @@ Repo verification helpers:
 > **Authentication setup:** The default dev stack runs with `GRAPH_AUTH_DISABLED=true` (no
 > login required). If you have enabled auth, create your first user with
 > `python scripts/dev/create_user.py` before running the probes below.
+> `boundary_audit.py` and `public_readiness_audit.py` are auth-agnostic.
+> `live_abuse_probe.py` and `live_perf_probe.py` assume an auth-enabled stack
+> with valid credentials.
 
 ```bash
 python scripts/quality/boundary_audit.py
