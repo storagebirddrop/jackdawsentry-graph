@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from datetime import timezone
 import json
+import os
 from pathlib import Path
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
@@ -14,6 +15,9 @@ from fastapi.testclient import TestClient
 
 from fastapi import FastAPI
 
+from src.api.auth import PERMISSIONS
+from src.api.auth import User
+from src.api.auth import get_current_user
 from src.api.middleware import AuditMiddleware
 from src.api.middleware import GraphLatencyMiddleware
 from src.api.middleware import RateLimitMiddleware
@@ -61,29 +65,32 @@ def _load_openapi_paths(*, graph_auth_disabled: bool) -> set[str]:
     graph_app_module.settings.EXPOSE_API_DOCS = True
     graph_app_module.settings.GRAPH_AUTH_DISABLED = graph_auth_disabled
     try:
-        temp_app = graph_app_module.create_graph_app()
-        with (
-            patch("src.api.graph_app.init_databases", new_callable=AsyncMock),
-            patch("src.api.graph_app.close_databases", new_callable=AsyncMock),
-            patch(
-                "src.api.migrations.migration_manager.run_database_migrations",
-                new_callable=AsyncMock,
-                return_value=True,
-            ),
-        ):
-            with TestClient(
-                temp_app,
-                raise_server_exceptions=False,
-                base_url="http://localhost",
-            ) as client:
-                schema = client.get("/openapi.json").json()
+        env_patch = {
+            "NODE_ENV": "development" if graph_auth_disabled else "production",
+            "AUTH_DISABLE_CONFIRM": "true" if graph_auth_disabled else "false",
+        }
+        with patch.dict(os.environ, env_patch, clear=False):
+            temp_app = graph_app_module.create_graph_app()
+            with (
+                patch("src.api.graph_app.init_databases", new_callable=AsyncMock),
+                patch("src.api.graph_app.close_databases", new_callable=AsyncMock),
+                patch(
+                    "src.api.migrations.migration_manager.run_database_migrations",
+                    new_callable=AsyncMock,
+                    return_value=True,
+                ),
+            ):
+                with TestClient(
+                    temp_app,
+                    raise_server_exceptions=False,
+                    base_url="http://localhost",
+                ) as client:
+                    schema = client.get("/openapi.json").json()
     finally:
         graph_app_module.settings.EXPOSE_API_DOCS = previous_docs
         graph_app_module.settings.GRAPH_AUTH_DISABLED = previous_auth_disabled
 
     return set(schema["paths"])
-
-
 def test_graph_app_openapi_can_be_enabled_in_auth_disabled_mode():
     paths = _load_openapi_paths(graph_auth_disabled=True)
 
@@ -120,6 +127,43 @@ def test_graph_app_openapi_can_be_enabled_in_auth_enabled_mode():
     assert "/api/v1/compliance/statistics" not in paths
 
 
+def test_graph_app_requires_auth_when_bypass_confirmation_is_missing():
+    from src.api import graph_app as graph_app_module
+
+    previous_auth_disabled = graph_app_module.settings.GRAPH_AUTH_DISABLED
+    graph_app_module.settings.GRAPH_AUTH_DISABLED = True
+    try:
+        with patch.dict(
+            os.environ,
+            {"NODE_ENV": "production", "AUTH_DISABLE_CONFIRM": "false"},
+            clear=False,
+        ):
+            temp_app = graph_app_module.create_graph_app()
+            with (
+                patch("src.api.graph_app.init_databases", new_callable=AsyncMock),
+                patch("src.api.graph_app.close_databases", new_callable=AsyncMock),
+                patch(
+                    "src.api.migrations.migration_manager.run_database_migrations",
+                    new_callable=AsyncMock,
+                    return_value=True,
+                ),
+            ):
+                with TestClient(
+                    temp_app,
+                    raise_server_exceptions=False,
+                    base_url="http://localhost",
+                ) as client:
+                    response = client.get("/api/v1/status")
+    finally:
+        graph_app_module.settings.GRAPH_AUTH_DISABLED = previous_auth_disabled
+
+    route_paths = {route.path for route in temp_app.routes}
+
+    assert response.status_code == 401
+    assert get_current_user not in temp_app.dependency_overrides
+    assert "/api/v1/auth/login" in route_paths
+
+
 def _fetchrow_pool(row):
     conn = MagicMock()
     conn.fetchrow = AsyncMock(return_value=row)
@@ -146,7 +190,73 @@ def test_graph_app_legacy_graph_routes_are_not_registered(graph_client):
     assert graph_client.post("/api/v1/graph/expand-solana-tx", json={}).status_code == 404
 
 
+def test_graph_latency_endpoint_is_hidden_when_metrics_disabled(graph_client):
+    from src.api import graph_app as graph_app_module
+
+    previous_metrics = graph_app_module.settings.EXPOSE_METRICS
+    graph_app_module.app.dependency_overrides[get_current_user] = lambda: User(
+        id="00000000-0000-0000-0000-000000000123",
+        username="metrics-reader",
+        email="metrics-reader@example.com",
+        role="analyst",
+        permissions=[PERMISSIONS["read_analysis"]],
+        is_active=True,
+        created_at=datetime.now(timezone.utc),
+        last_login=datetime.now(timezone.utc),
+    )
+    graph_app_module.settings.EXPOSE_METRICS = False
+    try:
+        response = graph_client.get("/api/v1/graph/latency")
+    finally:
+        graph_app_module.settings.EXPOSE_METRICS = previous_metrics
+        graph_app_module.app.dependency_overrides.clear()
+
+    assert response.status_code == 404
+
+
+def test_graph_latency_endpoint_returns_stats_when_metrics_enabled(graph_client):
+    from src.api import graph_app as graph_app_module
+
+    previous_metrics = graph_app_module.settings.EXPOSE_METRICS
+    graph_app_module.app.dependency_overrides[get_current_user] = lambda: User(
+        id="00000000-0000-0000-0000-000000000123",
+        username="metrics-reader",
+        email="metrics-reader@example.com",
+        role="analyst",
+        permissions=[PERMISSIONS["read_analysis"]],
+        is_active=True,
+        created_at=datetime.now(timezone.utc),
+        last_login=datetime.now(timezone.utc),
+    )
+    graph_app_module.settings.EXPOSE_METRICS = True
+    try:
+        with patch(
+            "src.api.routers.graph.get_graph_latency_stats",
+            new=AsyncMock(
+                return_value={
+                    "/sessions/demo/expand": {
+                        "p50_ms": 3.1,
+                        "p95_ms": 5.9,
+                        "p99_ms": 6.4,
+                        "mean_ms": 4.0,
+                        "sample_count": 10,
+                        "window_seconds": 3600,
+                    }
+                }
+            ),
+        ):
+            response = graph_client.get("/api/v1/graph/latency")
+    finally:
+        graph_app_module.settings.EXPOSE_METRICS = previous_metrics
+        graph_app_module.app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()["endpoints"]["/sessions/demo/expand"]["sample_count"] == 10
+
+
 def test_graph_app_resolve_tx_db_hit_serializes_datetime(graph_client):
+    from src.api import graph_app as graph_app_module
+
     row = {
         "tx_hash": "0x" + "a" * 64,
         "from_address": "0xfrom",
@@ -157,11 +267,24 @@ def test_graph_app_resolve_tx_db_hit_serializes_datetime(graph_client):
         "status": "confirmed",
     }
 
-    with patch("src.api.routers.graph.get_postgres_pool", return_value=_fetchrow_pool(row)):
-        resp = graph_client.get(
-            "/api/v1/graph/resolve-tx",
-            params={"chain": "ethereum", "tx": row["tx_hash"]},
-        )
+    graph_app_module.app.dependency_overrides[get_current_user] = lambda: User(
+        id="00000000-0000-0000-0000-000000000123",
+        username="resolver",
+        email="resolver@example.com",
+        role="analyst",
+        permissions=[PERMISSIONS["read_analysis"], PERMISSIONS["read_blockchain"]],
+        is_active=True,
+        created_at=datetime.now(timezone.utc),
+        last_login=datetime.now(timezone.utc),
+    )
+    try:
+        with patch("src.api.routers.graph.get_postgres_pool", return_value=_fetchrow_pool(row)):
+            resp = graph_client.get(
+                "/api/v1/graph/resolve-tx",
+                params={"chain": "ethereum", "tx": row["tx_hash"]},
+            )
+    finally:
+        graph_app_module.app.dependency_overrides.clear()
 
     assert resp.status_code == 200
     body = resp.json()

@@ -11,6 +11,7 @@ from unittest.mock import patch
 import pytest
 from fastapi.testclient import TestClient
 
+from src.api import graph_app as graph_app_module
 from src.api.graph_app import app
 from src.trace_compiler.compiler import SessionPersistenceError
 
@@ -18,8 +19,18 @@ VALID_SESSION_ID = "00000000-0000-0000-0000-000000000123"
 
 
 @pytest.fixture
-def client():
-    return TestClient(app)
+def client(monkeypatch):
+    previous_auth_disabled = graph_app_module.settings.GRAPH_AUTH_DISABLED
+    monkeypatch.setenv("NODE_ENV", "development")
+    monkeypatch.setenv("AUTH_DISABLE_CONFIRM", "true")
+    graph_app_module.settings.GRAPH_AUTH_DISABLED = True
+    graph_app_module.configure_auth_mode(app)
+    try:
+        with TestClient(app, raise_server_exceptions=False, base_url="http://localhost") as client:
+            yield client
+    finally:
+        graph_app_module.settings.GRAPH_AUTH_DISABLED = previous_auth_disabled
+        graph_app_module.configure_auth_mode(app)
 
 
 def _root_node_payload() -> dict:

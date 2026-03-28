@@ -25,6 +25,7 @@ from src.api.auth import PERMISSIONS
 from src.api.auth import ROLES
 from src.api.auth import User
 from src.api.auth import get_current_user
+from src.api.auth import is_graph_auth_bypass_active
 from src.api.config import settings
 from src.api.database import close_databases
 from src.api.database import init_databases
@@ -174,8 +175,13 @@ def configure_middleware(target_app: FastAPI) -> None:
 def configure_auth_mode(target_app: FastAPI) -> None:
     """Toggle auth requirements for the standalone graph runtime only."""
     target_app.dependency_overrides.pop(get_current_user, None)
-    if settings.GRAPH_AUTH_DISABLED:
+    if is_graph_auth_bypass_active():
         target_app.dependency_overrides[get_current_user] = get_graph_runtime_user
+    elif settings.GRAPH_AUTH_DISABLED:
+        logger.warning(
+            "GRAPH_AUTH_DISABLED was requested but bypass confirmation is inactive; "
+            "standard authentication remains enabled."
+        )
 
 
 def create_graph_app() -> FastAPI:
@@ -254,7 +260,7 @@ def create_graph_app() -> FastAPI:
             "status": "healthy",
             "service": "Jackdaw Sentry Graph API",
             "version": "1.0.0",
-            "auth_disabled": settings.GRAPH_AUTH_DISABLED,
+            "auth_disabled": is_graph_auth_bypass_active(),
         }
         return response
 
@@ -268,7 +274,7 @@ def create_graph_app() -> FastAPI:
             "status": "healthy" if all(db_health.values()) else "degraded",
             "service": "Jackdaw Sentry Graph API",
             "version": "1.0.0",
-            "auth_disabled": settings.GRAPH_AUTH_DISABLED,
+            "auth_disabled": is_graph_auth_bypass_active(),
             "databases": db_health,
         }
 
@@ -291,7 +297,7 @@ def create_graph_app() -> FastAPI:
             },
         }
 
-    if not settings.GRAPH_AUTH_DISABLED:
+    if not is_graph_auth_bypass_active():
         app.include_router(auth_router.router, prefix="/api/v1/auth", tags=["Authentication"])
     app.include_router(
         graph.router,

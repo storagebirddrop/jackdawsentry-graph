@@ -32,6 +32,16 @@ logger = logging.getLogger(__name__)
 security = HTTPBearer(auto_error=False)
 
 
+def is_graph_auth_bypass_active() -> bool:
+    """Return whether the standalone graph auth bypass is explicitly active."""
+    if not settings.GRAPH_AUTH_DISABLED:
+        return False
+
+    node_env = os.getenv("NODE_ENV", "development").lower()
+    auth_disable_confirm = os.getenv("AUTH_DISABLE_CONFIRM", "false").lower()
+    return node_env == "development" and auth_disable_confirm == "true"
+
+
 class User(BaseModel):
     """User model for authentication"""
 
@@ -169,24 +179,9 @@ async def get_current_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ) -> User:
     """Get current authenticated user from token, backed by database lookup"""
-    # Auth bypass with safeguards - only allowed in development with explicit confirmation
-    if settings.GRAPH_AUTH_DISABLED:
-        # Additional safety checks: only allow bypass in development environment with explicit confirmation
+    if is_graph_auth_bypass_active():
         node_env = os.getenv("NODE_ENV", "development").lower()
         auth_disable_confirm = os.getenv("AUTH_DISABLE_CONFIRM", "false").lower()
-        
-        if not (node_env == "development" and auth_disable_confirm == "true"):
-            logger.error(
-                "GRAPH_AUTH_DISABLED is true but bypass blocked - "
-                "requires NODE_ENV=development AND AUTH_DISABLE_CONFIRM=true. "
-                "This prevents accidental auth bypass in production."
-            )
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Authentication bypass configuration error",
-            )
-        
-        # Audit logging for auth bypass
         logger.warning(
             "AUTH BYPASS ACTIVE: GRAPH_AUTH_DISABLED=true - "
             "Returning elevated local user without authentication. "

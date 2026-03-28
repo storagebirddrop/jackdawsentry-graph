@@ -2760,6 +2760,9 @@ async def graph_latency_metrics(
     Returns an empty ``endpoints`` dict if no samples have been recorded yet
     (e.g., immediately after service startup or when Redis is unavailable).
     """
+    if not settings.EXPOSE_METRICS:
+        raise HTTPException(status_code=404, detail="Not found")
+
     stats = await get_graph_latency_stats()
     return {
         "success": True,

@@ -12,10 +12,11 @@ from fastapi import HTTPException
 from fastapi.security import HTTPAuthorizationCredentials
 from fastapi.testclient import TestClient
 
+from src.api import auth as auth_module
+from src.api import graph_app as graph_app_module
 from src.api.auth import LoginRequest
 from src.api.auth import User
 from src.api.auth import get_current_user
-from src.api.graph_app import app
 
 
 @pytest.mark.asyncio
@@ -32,6 +33,7 @@ async def test_get_current_user_fails_closed_when_database_lookup_fails(make_tok
     failing_cm.__aexit__ = AsyncMock(return_value=False)
 
     with (
+        patch.object(auth_module.settings, "GRAPH_AUTH_DISABLED", False),
         patch(
             "src.api.database.get_postgres_connection",
             return_value=failing_cm,
@@ -56,22 +58,28 @@ def test_login_response_is_not_cacheable():
         last_login=datetime.now(timezone.utc),
     )
 
-    with (
-        patch("src.api.routers.auth.authenticate_user", new_callable=AsyncMock, return_value=user),
-        patch("src.api.routers.auth.create_user_token", return_value="jwt-token"),
-        patch("src.api.graph_app.init_databases", new_callable=AsyncMock),
-        patch("src.api.graph_app.close_databases", new_callable=AsyncMock),
-        patch(
-            "src.api.migrations.migration_manager.run_database_migrations",
-            new_callable=AsyncMock,
-            return_value=True,
-        ),
-    ):
-        with TestClient(app, raise_server_exceptions=False, base_url="http://localhost") as client:
-            response = client.post(
-                "/api/v1/auth/login",
-                json=LoginRequest(username="analyst", password="secret").model_dump(),
-            )
+    previous_auth_disabled = graph_app_module.settings.GRAPH_AUTH_DISABLED
+    graph_app_module.settings.GRAPH_AUTH_DISABLED = False
+    try:
+        temp_app = graph_app_module.create_graph_app()
+        with (
+            patch("src.api.routers.auth.authenticate_user", new_callable=AsyncMock, return_value=user),
+            patch("src.api.routers.auth.create_user_token", return_value="jwt-token"),
+            patch("src.api.graph_app.init_databases", new_callable=AsyncMock),
+            patch("src.api.graph_app.close_databases", new_callable=AsyncMock),
+            patch(
+                "src.api.migrations.migration_manager.run_database_migrations",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+        ):
+            with TestClient(temp_app, raise_server_exceptions=False, base_url="http://localhost") as client:
+                response = client.post(
+                    "/api/v1/auth/login",
+                    json=LoginRequest(username="analyst", password="secret").model_dump(),
+                )
+    finally:
+        graph_app_module.settings.GRAPH_AUTH_DISABLED = previous_auth_disabled
 
     assert response.status_code == 200
     assert response.headers["Cache-Control"] == "no-store"
