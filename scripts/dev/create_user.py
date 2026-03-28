@@ -37,11 +37,21 @@ def _env_value(env_values: dict[str, str], key: str, default: str) -> str:
     return env_values.get(key) or default
 
 
+def _resolve_port(cli_port: int | None, env_values: dict[str, str]) -> int:
+    raw_port = cli_port if cli_port is not None else _env_value(env_values, "POSTGRES_PORT", "5433")
+    try:
+        return int(raw_port)
+    except (TypeError, ValueError) as exc:
+        raise SystemExit(
+            f"Invalid PostgreSQL port {raw_port!r}; set --postgres-port or POSTGRES_PORT to an integer value."
+        ) from exc
+
+
 async def _upsert_user(args: argparse.Namespace) -> dict[str, Any]:
     env_values = _load_dotenv(Path(args.env_file))
     conn = await asyncpg.connect(
         host=args.postgres_host or _env_value(env_values, "POSTGRES_HOST", "127.0.0.1"),
-        port=int(args.postgres_port or _env_value(env_values, "POSTGRES_PORT", "5433")),
+        port=_resolve_port(args.postgres_port, env_values),
         user=args.postgres_user or _env_value(env_values, "POSTGRES_USER", settings.POSTGRES_USER),
         password=args.postgres_password or _env_value(env_values, "POSTGRES_PASSWORD", settings.POSTGRES_PASSWORD),
         database=args.postgres_db or _env_value(env_values, "POSTGRES_DB", settings.POSTGRES_DB),
