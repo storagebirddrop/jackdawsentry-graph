@@ -7,6 +7,7 @@
  * Polling stops when:
  *  - status becomes 'completed'   → onComplete(nodeId) is called
  *  - status becomes 'failed'      → onTimeout(nodeId) is called
+ *  - status becomes 'not_found'   → onUnavailable(nodeId) is called
  *  - TIMEOUT_MS elapses           → onTimeout(nodeId) is called
  *
  * Network / HTTP errors do not stop polling — they are treated as transient.
@@ -24,6 +25,7 @@ export function useIngestPoller(
   address: string,
   chain: string,
   onComplete: (nodeId: string) => void,
+  onUnavailable: (nodeId: string) => void,
   onTimeout: (nodeId: string) => void,
 ): void {
   useEffect(() => {
@@ -54,7 +56,12 @@ export function useIngestPoller(
           return;
         }
 
-        // 'pending' | 'running' | 'not_found' → keep polling
+        if (status.status === 'not_found') {
+          onUnavailable(nodeId);
+          return;
+        }
+
+        // 'pending' | 'running' → keep polling
       } catch {
         // Network / HTTP error — keep polling (transient)
       }
@@ -70,5 +77,5 @@ export function useIngestPoller(
       cancelled = true;
       if (timerId !== null) clearTimeout(timerId);
     };
-  }, [sessionId, nodeId, address, chain, onComplete, onTimeout]);
+  }, [sessionId, nodeId, address, chain, onComplete, onUnavailable, onTimeout]);
 }

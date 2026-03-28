@@ -298,7 +298,11 @@ export default function InvestigationGraph({
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [inspectorCollapsed, setInspectorCollapsed] = useState(false);
   const [briefingVisible, setBriefingVisible] = useState(false);
-  const [notice, setNotice] = useState<{ tone: 'info' | 'error'; message: string } | null>(null);
+  const [notice, setNotice] = useState<{
+    tone: 'info' | 'error';
+    message: string;
+    autoDismiss: boolean;
+  } | null>(null);
   const [assetCatalog, setAssetCatalog] = useState<AssetCatalogItem[]>([]);
   const [assetCatalogScope, setAssetCatalogScope] = useState<AssetCatalogScopeMode>(DEFAULT_ASSET_CATALOG_SCOPE);
   const [pinnedAssetKeys, setPinnedAssetKeys] = useState<string[]>([]);
@@ -336,8 +340,12 @@ export default function InvestigationGraph({
     assetCatalogScope: string;
   } | null>(null);
 
-  const showNotice = useCallback((message: string, tone: 'info' | 'error' = 'info') => {
-    setNotice({ tone, message });
+  const showNotice = useCallback((
+    message: string,
+    tone: 'info' | 'error' = 'info',
+    options?: { autoDismiss?: boolean },
+  ) => {
+    setNotice({ tone, message, autoDismiss: options?.autoDismiss ?? true });
   }, []);
 
   useEffect(() => {
@@ -985,7 +993,21 @@ export default function InvestigationGraph({
     });
     ingestRetryRef.current.delete(nodeId);
     showNotice(
-      'Background data fetch did not complete in time. Try expanding the node again later.',
+      'Background data fetch did not complete before the current timeout. Current results may be incomplete, and additional ingest may not be available in this runtime.',
+      'error',
+      { autoDismiss: false },
+    );
+  }, [showNotice]);
+
+  const handleIngestUnavailable = useCallback((nodeId: string) => {
+    setIngestPendingMap((prev) => {
+      const next = new Map(prev);
+      next.delete(nodeId);
+      return next;
+    });
+    ingestRetryRef.current.delete(nodeId);
+    showNotice(
+      'Background data fetch is no longer queued for this address. Current results may be incomplete; try expanding the node again later.',
       'error',
     );
   }, [showNotice]);
@@ -1303,7 +1325,7 @@ export default function InvestigationGraph({
   }, [activeSemanticKey, semanticLegend.entries]);
 
   useEffect(() => {
-    if (!notice) return;
+    if (!notice?.autoDismiss) return;
     const timeoutId = window.setTimeout(() => {
       setNotice((current) => (current?.message === notice.message ? null : current));
     }, 4200);
@@ -1667,6 +1689,7 @@ export default function InvestigationGraph({
           address={address}
           chain={chain}
           onComplete={handleIngestComplete}
+          onUnavailable={handleIngestUnavailable}
           onTimeout={handleIngestTimeout}
         />
       ))}

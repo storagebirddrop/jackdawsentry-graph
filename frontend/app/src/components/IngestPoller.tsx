@@ -15,6 +15,7 @@ interface Props {
   address: string;
   chain: string;
   onComplete: (nodeId: string) => void;
+  onUnavailable: (nodeId: string) => void;
   onTimeout: (nodeId: string) => void;
 }
 
@@ -24,8 +25,9 @@ export default function IngestPoller({
   address,
   chain,
   onComplete,
+  onUnavailable,
   onTimeout,
 }: Props): null {
-  useIngestPoller(sessionId, nodeId, address, chain, onComplete, onTimeout);
+  useIngestPoller(sessionId, nodeId, address, chain, onComplete, onUnavailable, onTimeout);
   return null;
 }

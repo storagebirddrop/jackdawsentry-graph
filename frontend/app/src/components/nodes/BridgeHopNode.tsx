@@ -42,6 +42,10 @@ export default function BridgeHopNode({ data }: NodeProps) {
   const destinationChain = hop.destination_chain ?? hop.dest_chain;
   const destinationAsset = hop.destination_asset ?? hop.dest_asset;
   const confidence = hop.correlation_confidence ?? hop.correlation_conf;
+  const unresolvedCorrelation =
+    hop.status === 'pending'
+    || destinationChain == null
+    || activity?.destination_tx_hash == null;
 
   // Defensive guards for required properties
   if (!hop?.hop_id) {
@@ -122,7 +126,7 @@ export default function BridgeHopNode({ data }: NodeProps) {
             <span style={badgeStyle(bridgeAccent)}>{mechanismLabel}</span>
             {Number.isFinite(confidence) && (
               <span style={valueChipStyle(bridgeAccent)}>
-                {(confidence * 100).toFixed(0)}% confidence
+                {(confidence * 100).toFixed(0)}% {unresolvedCorrelation ? 'correlation confidence' : 'confidence'}
               </span>
             )}
           </div>

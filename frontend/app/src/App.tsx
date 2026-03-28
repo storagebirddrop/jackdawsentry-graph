@@ -14,7 +14,6 @@ import { getRecentSessions, getSession, isAuthenticated, redirectToLogin } from 
 import type { RecentSessionSummary } from './types/graph';
 import {
   clearSavedWorkspace,
-  loadSavedWorkspace,
   saveWorkspace,
   saveSessionWorkspacePreferences,
 } from './workspacePersistence';
@@ -42,14 +41,9 @@ export default function App() {
   }, [resetGraph]);
 
   const loadRestoreCandidate = useCallback(async () => {
-    const savedWorkspace = loadSavedWorkspace();
     try {
-      const response = await getRecentSessions(savedWorkspace ? 5 : 1);
-      const recentItems = response.items ?? [];
-      const hintedSession = savedWorkspace
-        ? recentItems.find((item) => item.session_id === savedWorkspace.sessionId) ?? null
-        : null;
-      setRestoreCandidate(hintedSession ?? recentItems[0] ?? null);
+      const response = await getRecentSessions(1);
+      setRestoreCandidate(response.items?.[0] ?? null);
     } catch (error) {
       console.error('Failed to load recent investigation sessions:', error);
       setRestoreCandidate(null);

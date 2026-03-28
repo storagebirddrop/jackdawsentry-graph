@@ -694,6 +694,11 @@ function BridgeSection({
   const destinationAddress = hop.destination_address ?? activity?.destination_address;
   const destinationAsset = hop.destination_asset ?? hop.dest_asset;
   const confidence = hop.correlation_confidence ?? hop.correlation_conf;
+  const unresolvedCorrelation =
+    hop.status === 'pending'
+    || destinationChain == null
+    || activity?.destination_tx_hash == null;
+  const confidenceLabel = unresolvedCorrelation ? 'Correlation confidence' : 'Confidence';
   const protocolLabel = bridgeProtocolLabel(hop.protocol_id);
   const statusTone = bridgeStatusTone(hop.status);
   const routeLabel = bridgeRouteLabel({
@@ -749,7 +754,7 @@ function BridgeSection({
           ? formatNative(hop.destination_amount, destinationAsset) ?? 'Unknown'
           : 'Pending resolution'}
       </KeyValue>
-      <KeyValue label="Confidence">{confidence !== undefined ? `${Math.round(confidence * 100)}%` : 'Unknown'}</KeyValue>
+      <KeyValue label={confidenceLabel}>{confidence !== undefined ? `${Math.round(confidence * 100)}%` : 'Unknown'}</KeyValue>
       <KeyValue label="Same asset">
         {hop.is_same_asset === undefined ? 'Unknown' : hop.is_same_asset ? 'Yes' : 'No'}
       </KeyValue>
