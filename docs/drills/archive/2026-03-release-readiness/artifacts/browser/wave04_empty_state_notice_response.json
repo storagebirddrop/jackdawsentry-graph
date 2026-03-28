@@ -1,0 +1,16 @@
+{
+  "captured_at": "2026-03-28T12:05:16.559Z",
+  "seed_address": "0xf99d022ff6f0ea872046fb024b118f4adf8ea2ef",
+  "response_url": "http://localhost:8081/api/v1/graph/sessions/4018fd78-891e-401a-b44c-f9d1c87a81ce/expand",
+  "response_status": 200,
+  "empty_state": {
+    "reason": "indexed_activity_in_other_direction",
+    "message": "No indexed ETHEREUM next activity produced new graph results for this address, but indexed previous activity exists in the current graph dataset.",
+    "chain": "ethereum",
+    "address": "0xf99d022ff6f0ea872046fb024b118f4adf8ea2ef",
+    "operation_type": "expand_next",
+    "live_lookup_supported": true,
+    "observed_on_chain": false,
+    "known_tx_count": 0
+  }
+}

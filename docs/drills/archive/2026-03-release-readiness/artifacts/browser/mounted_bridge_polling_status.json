@@ -1,0 +1,16 @@
+{
+  "captured_at": "2026-03-28T12:05:14.772Z",
+  "seed_address": "0xfeed00000000000000000000000000000000cafe",
+  "hop_id": "0xb5942987f5d6cc4514e693d8aa232f063c8e2c238ff2ee28522bb6bc997e7eb0",
+  "response_url": "http://localhost:8081/api/v1/graph/sessions/46c9afdb-1056-4ce8-83cd-9aa7878fedcf/hops/0xb5942987f5d6cc4514e693d8aa232f063c8e2c238ff2ee28522bb6bc997e7eb0/status",
+  "response_status": 200,
+  "response_body": {
+    "hop_id": "0xb5942987f5d6cc4514e693d8aa232f063c8e2c238ff2ee28522bb6bc997e7eb0",
+    "status": "pending",
+    "destination_chain": null,
+    "destination_tx_hash": null,
+    "destination_address": null,
+    "correlation_confidence": 0.66,
+    "updated_at": "2026-01-01T12:03:00Z"
+  }
+}

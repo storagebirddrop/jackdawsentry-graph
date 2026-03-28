@@ -17,6 +17,6 @@ frontend/app/test-results/
 frontend/app/playwright-report/
 
 # Local scratch / capture noise
-artifacts/
+/artifacts/
 =*
 *.log

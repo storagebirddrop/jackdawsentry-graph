@@ -15,6 +15,6 @@ frontend/app/node_modules/
 frontend/app/dist/
 frontend/app/test-results/
 frontend/app/playwright-report/
-artifacts/
+/artifacts/
 docs/drills/archive/
 docs/drills/runs/
