@@ -20,3 +20,10 @@ frontend/app/playwright-report/
 /artifacts/
 =*
 *.log
+
+# Internal drill history / evidence
+/docs/drills/archive/
+/docs/drills/runs/*
+!/docs/drills/runs/.gitkeep
+/docs/drills/DRILL_FRAMEWORK.md
+/docs/drills/GRAPH_TRUTHFULNESS_AND_INVESTIGATOR_MISINTERPRETATION_DRILL.md
