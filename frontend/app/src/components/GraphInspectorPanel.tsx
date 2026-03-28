@@ -16,6 +16,7 @@ import type {
   AtomicSwapData,
 } from '../types/graph';
 import type { BranchMeta } from '../store/graphStore';
+import type { BridgeStatusRefreshState } from '../hooks/useBridgeHopPoller';
 import {
   bridgeAssetRouteLabel,
   bridgeMechanismLabel,
@@ -82,6 +83,7 @@ interface Props {
   onTraceEdgeBackward?: () => void;
   onExpandNode?: (operation: 'expand_prev' | 'expand_next' | 'expand_neighbors') => void;
   onHideNode?: (nodeId: string) => void;
+  bridgeStatusRefresh?: BridgeStatusRefreshState | null;
 }
 
 export default function GraphInspectorPanel({
@@ -116,6 +118,7 @@ export default function GraphInspectorPanel({
   onTraceEdgeBackward,
   onExpandNode,
   onHideNode,
+  bridgeStatusRefresh = null,
 }: Props) {
   const selectedNode = useMemo(
     () => (node?.data as InvestigationNode | undefined) ?? null,
@@ -196,6 +199,7 @@ export default function GraphInspectorPanel({
           onClearSemanticFocus={onClearSemanticFocus}
           onExpandNode={onExpandNode}
           onHideNode={onHideNode}
+          bridgeStatusRefresh={bridgeStatusRefresh}
         />
       ) : selectedEdge ? (
         <EdgeInspectorContent
@@ -255,6 +259,7 @@ function NodeInspectorContent({
   onClearSemanticFocus,
   onExpandNode,
   onHideNode,
+  bridgeStatusRefresh,
 }: {
   node: InvestigationNode;
   onFocusBridgeRoute?: (route: string) => void;
@@ -279,6 +284,7 @@ function NodeInspectorContent({
   onClearSemanticFocus?: () => void;
   onExpandNode?: (operation: 'expand_prev' | 'expand_next' | 'expand_neighbors') => void;
   onHideNode?: (nodeId: string) => void;
+  bridgeStatusRefresh?: BridgeStatusRefreshState | null;
 }) {
   const accent = getChainColor(node.chain ?? (node.address_data as AddressNodeData | undefined)?.chain);
   const badges = semanticBadges(node);
@@ -332,6 +338,7 @@ function NodeInspectorContent({
           onClearBridgeFocus={onClearBridgeFocus}
           activeBridgeRoute={activeBridgeRoute}
           activeBridgeProtocols={activeBridgeProtocols}
+          bridgeStatusRefresh={bridgeStatusRefresh}
         />
       )}
       {node.node_type === 'lightning_channel_open' && <LightningChannelOpenSection node={node} />}
@@ -667,6 +674,7 @@ function BridgeSection({
   onClearBridgeFocus,
   activeBridgeRoute,
   activeBridgeProtocols,
+  bridgeStatusRefresh,
 }: {
   node: InvestigationNode;
   onFocusBridgeRoute?: (route: string) => void;
@@ -674,6 +682,7 @@ function BridgeSection({
   onClearBridgeFocus?: () => void;
   activeBridgeRoute?: string | null;
   activeBridgeProtocols: string[];
+  bridgeStatusRefresh?: BridgeStatusRefreshState | null;
 }) {
   const hop = node.node_data as BridgeHopData & {
     dest_chain?: string;
@@ -705,6 +714,16 @@ function BridgeSection({
           {hop.status}
         </span>
       </KeyValue>
+      {hop.status === 'pending' && (
+        <KeyValue label="Refresh">
+          {bridgeStatusRefresh?.isPolling ? 'Polling every 30s' : 'Refresh inactive'}
+        </KeyValue>
+      )}
+      {bridgeStatusRefresh?.lastCheckedAt && (
+        <KeyValue label="Last checked">
+          {formatTimestamp(bridgeStatusRefresh.lastCheckedAt)}
+        </KeyValue>
+      )}
       <KeyValue label="Mechanism">{bridgeMechanismLabel(hop.mechanism)}</KeyValue>
       <KeyValue label="Route">
         {routeLabel}
@@ -792,6 +811,22 @@ function BridgeSection({
               Clear bridge focus
             </button>
           )}
+        </div>
+      )}
+      {bridgeStatusRefresh?.errorMessage && (
+        <div
+          style={{
+            marginTop: 10,
+            padding: '10px 12px',
+            borderRadius: 12,
+            border: '1px solid rgba(239, 68, 68, 0.22)',
+            background: 'rgba(254, 242, 242, 0.88)',
+            color: '#991b1b',
+            fontSize: 12,
+            lineHeight: 1.45,
+          }}
+        >
+          {bridgeStatusRefresh.errorMessage}
         </div>
       )}
     </Section>

@@ -1,15 +1,11 @@
-"""Unit tests for investigation session persistence (issue #7).
+"""Unit tests for investigation session persistence."""
 
-Verifies:
-- create_session() inserts a row into graph_sessions when PG pool is available.
-- create_session() silently succeeds even when PG INSERT fails.
-- create_session() still returns a valid response when no PG pool is configured.
-"""
-
+import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from src.trace_compiler.compiler import SessionPersistenceError
 from src.trace_compiler.compiler import TraceCompiler
 from src.trace_compiler.models import SessionCreateRequest
 
@@ -66,15 +62,16 @@ async def test_create_session_inserts_graph_sessions_row():
 
 
 @pytest.mark.asyncio
-async def test_create_session_returns_valid_response_on_pg_failure():
-    """PG INSERT failure is swallowed; response is still returned."""
+async def test_create_session_raises_on_pg_failure_for_owned_sessions():
+    """Owned sessions must fail when PostgreSQL INSERT fails."""
     pg = _pg_pool(execute_raises=True)
     compiler = TraceCompiler(postgres_pool=pg)
 
-    resp = await compiler.create_session(_create_request())
-
-    assert resp.session_id is not None
-    assert resp.root_node is not None
+    with pytest.raises(SessionPersistenceError, match="Session store unavailable"):
+        await compiler.create_session(
+            _create_request(),
+            owner_user_id="00000000-0000-0000-0000-000000000111",
+        )
 
 
 @pytest.mark.asyncio
@@ -86,6 +83,18 @@ async def test_create_session_no_pg_returns_valid_response():
 
     assert resp.session_id is not None
     assert resp.root_node.chain == "ethereum"
+
+
+@pytest.mark.asyncio
+async def test_create_session_raises_when_owned_session_has_no_pg_pool():
+    """API-owned sessions must fail when no PostgreSQL pool is configured."""
+    compiler = TraceCompiler(postgres_pool=None)
+
+    with pytest.raises(SessionPersistenceError, match="Session store unavailable"):
+        await compiler.create_session(
+            _create_request(),
+            owner_user_id="00000000-0000-0000-0000-000000000111",
+        )
 
 
 @pytest.mark.asyncio
@@ -127,3 +136,23 @@ async def test_create_session_persists_owner_user_id():
 
     param_values = list(pg._conn.execute.call_args[0][1:])
     assert "00000000-0000-0000-0000-000000000111" in param_values
+
+
+@pytest.mark.asyncio
+async def test_create_session_persists_initial_workspace_snapshot():
+    pg = _pg_pool()
+    compiler = TraceCompiler(postgres_pool=pg)
+
+    resp = await compiler.create_session(_create_request())
+
+    sql, *_ = pg._conn.execute.call_args[0]
+    persisted_snapshot = json.loads(pg._conn.execute.call_args[0][6])
+    persisted_saved_at = pg._conn.execute.call_args[0][7]
+
+    assert "snapshot" in sql
+    assert "snapshot_saved_at" in sql
+    assert persisted_snapshot["revision"] == 0
+    assert persisted_snapshot["sessionId"] == resp.session_id
+    assert persisted_snapshot["nodes"][0]["node_id"] == resp.root_node.node_id
+    assert persisted_snapshot["edges"] == []
+    assert persisted_saved_at is not None

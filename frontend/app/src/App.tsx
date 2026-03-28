@@ -10,43 +10,101 @@ import { useCallback, useEffect, useState } from 'react';
 import SessionStarter from './components/SessionStarter';
 import InvestigationGraph from './components/InvestigationGraph';
 import { useGraphStore } from './store/graphStore';
-import { isAuthenticated, redirectToLogin } from './api/client';
+import { getRecentSessions, getSession, isAuthenticated, redirectToLogin } from './api/client';
+import type { RecentSessionSummary } from './types/graph';
 import {
   clearSavedWorkspace,
-  extractSnapshotWorkspacePreferences,
   loadSavedWorkspace,
+  saveWorkspace,
   saveSessionWorkspacePreferences,
 } from './workspacePersistence';
 
+type RestoreNotice = { tone: 'info' | 'error'; message: string } | null;
+
+type ActiveSession = {
+  sessionId: string;
+  initialWorkspaceRevision: number;
+  initialSavedAt: string | null;
+  initialRestoreNotice: RestoreNotice;
+};
+
 export default function App() {
-  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [activeSession, setActiveSession] = useState<ActiveSession | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
+  const [restoreCandidate, setRestoreCandidate] = useState<RecentSessionSummary | null>(null);
   const resetGraph = useGraphStore((state) => state.reset);
   const importSnapshot = useGraphStore((state) => state.importSnapshot);
 
   const handleStartNewInvestigation = useCallback(() => {
     clearSavedWorkspace();
     resetGraph();
-    setSessionId(null);
+    setActiveSession(null);
   }, [resetGraph]);
 
-  const handleRestoreWorkspace = useCallback(() => {
+  const loadRestoreCandidate = useCallback(async () => {
     const savedWorkspace = loadSavedWorkspace();
-    if (!savedWorkspace) return;
-
-    const restored = importSnapshot(savedWorkspace.snapshot);
-    if (!restored) {
-      clearSavedWorkspace();
-      return;
+    try {
+      const response = await getRecentSessions(savedWorkspace ? 5 : 1);
+      const recentItems = response.items ?? [];
+      const hintedSession = savedWorkspace
+        ? recentItems.find((item) => item.session_id === savedWorkspace.sessionId) ?? null
+        : null;
+      setRestoreCandidate(hintedSession ?? recentItems[0] ?? null);
+    } catch (error) {
+      console.error('Failed to load recent investigation sessions:', error);
+      setRestoreCandidate(null);
     }
+  }, []);
 
-    const snapshotPreferences = extractSnapshotWorkspacePreferences(savedWorkspace.snapshot);
-    if (snapshotPreferences) {
-      saveSessionWorkspacePreferences(savedWorkspace.sessionId, snapshotPreferences);
-    }
+  const handleRestoreWorkspace = useCallback(() => {
+    const targetSessionId = restoreCandidate?.session_id;
+    if (!targetSessionId) return;
 
-    setSessionId(savedWorkspace.sessionId);
-  }, [importSnapshot]);
+    void (async () => {
+      try {
+        const response = await getSession(targetSessionId);
+        const restored = importSnapshot(JSON.stringify(response.workspace));
+        if (!restored) {
+          clearSavedWorkspace();
+          window.alert('Failed to restore the saved investigation workspace.');
+          void loadRestoreCandidate();
+          return;
+        }
+
+        if (response.workspace.workspacePreferences) {
+          saveSessionWorkspacePreferences(
+            targetSessionId,
+            response.workspace.workspacePreferences,
+          );
+        }
+
+        setActiveSession({
+          sessionId: targetSessionId,
+          initialWorkspaceRevision: response.workspace.revision,
+          initialSavedAt: response.snapshot_saved_at ?? null,
+          initialRestoreNotice:
+            response.restore_state === 'legacy_bootstrap'
+              ? {
+                  tone: 'info',
+                  message:
+                    'Restored a reduced session snapshot. This backend row only preserved the seed node and legacy node-state hints, not the full prior workspace canvas.',
+                }
+              : null,
+        });
+      } catch (error) {
+        console.error('Failed to restore workspace from backend session snapshot:', error);
+        clearSavedWorkspace();
+        setRestoreCandidate(null);
+        window.alert('Failed to restore the saved investigation workspace.');
+        void loadRestoreCandidate();
+      }
+    })();
+  }, [importSnapshot, loadRestoreCandidate, restoreCandidate]);
+
+  useEffect(() => {
+    if (!activeSession) return;
+    saveWorkspace(activeSession.sessionId);
+  }, [activeSession]);
 
   useEffect(() => {
     async function bootstrap() {
@@ -80,24 +138,33 @@ export default function App() {
     };
   }, []);
 
+  useEffect(() => {
+    if (!authChecked || activeSession) return;
+    void loadRestoreCandidate();
+  }, [activeSession, authChecked, loadRestoreCandidate]);
+
   // Gate rendering until auth state is resolved.
   if (!authChecked) {
     return null;
   }
 
-  if (!sessionId) {
+  if (!activeSession) {
     return (
       <SessionStarter
-        onSessionCreated={setSessionId}
+        onSessionCreated={setActiveSession}
         onRestoreWorkspace={handleRestoreWorkspace}
+        restoreCandidate={restoreCandidate}
       />
     );
   }
 
   return (
     <InvestigationGraph
-      key={sessionId}
-      sessionId={sessionId}
+      key={activeSession.sessionId}
+      sessionId={activeSession.sessionId}
+      initialWorkspaceRevision={activeSession.initialWorkspaceRevision}
+      initialSavedAt={activeSession.initialSavedAt}
+      initialRestoreNotice={activeSession.initialRestoreNotice}
       onStartNewInvestigation={handleStartNewInvestigation}
     />
   );

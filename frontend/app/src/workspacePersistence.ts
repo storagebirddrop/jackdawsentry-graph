@@ -1,7 +1,7 @@
 export interface SavedWorkspace {
   sessionId: string;
-  snapshot: string;
   savedAt: string;
+  snapshot?: string;
 }
 
 export interface SessionWorkspacePreferences {
@@ -33,22 +33,24 @@ export function loadSavedWorkspace(): SavedWorkspace | null {
     const parsed = JSON.parse(raw) as Partial<SavedWorkspace>;
     if (
       typeof parsed.sessionId !== 'string'
-      || typeof parsed.snapshot !== 'string'
       || typeof parsed.savedAt !== 'string'
     ) {
       return null;
     }
-    return parsed as SavedWorkspace;
+    return {
+      sessionId: parsed.sessionId,
+      savedAt: parsed.savedAt,
+      snapshot: typeof parsed.snapshot === 'string' ? parsed.snapshot : undefined,
+    };
   } catch {
     return null;
   }
 }
 
-export function saveWorkspace(sessionId: string, snapshot: string): void {
+export function saveWorkspace(sessionId: string, _snapshot?: string): void {
   if (!canUseStorage()) return;
   const payload: SavedWorkspace = {
     sessionId,
-    snapshot,
     savedAt: new Date().toISOString(),
   };
   window.localStorage.setItem(WORKSPACE_STORAGE_KEY, JSON.stringify(payload));

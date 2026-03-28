@@ -1,9 +1,12 @@
 from __future__ import annotations
 
-from pathlib import Path
 from contextlib import asynccontextmanager
+from datetime import datetime
+from datetime import timezone
 import json
+from pathlib import Path
 from unittest.mock import AsyncMock
+from unittest.mock import MagicMock
 from unittest.mock import patch
 
 import pytest
@@ -50,10 +53,13 @@ def test_graph_app_docs_disabled_by_default(graph_client):
     assert graph_client.get("/docs").status_code == 404
 
 
-def test_graph_app_openapi_can_be_enabled():
+def _load_openapi_paths(*, graph_auth_disabled: bool) -> set[str]:
     from src.api import graph_app as graph_app_module
 
+    previous_docs = graph_app_module.settings.EXPOSE_API_DOCS
+    previous_auth_disabled = graph_app_module.settings.GRAPH_AUTH_DISABLED
     graph_app_module.settings.EXPOSE_API_DOCS = True
+    graph_app_module.settings.GRAPH_AUTH_DISABLED = graph_auth_disabled
     try:
         temp_app = graph_app_module.create_graph_app()
         with (
@@ -72,9 +78,33 @@ def test_graph_app_openapi_can_be_enabled():
             ) as client:
                 schema = client.get("/openapi.json").json()
     finally:
-        graph_app_module.settings.EXPOSE_API_DOCS = False
+        graph_app_module.settings.EXPOSE_API_DOCS = previous_docs
+        graph_app_module.settings.GRAPH_AUTH_DISABLED = previous_auth_disabled
 
-    paths = set(schema["paths"])
+    return set(schema["paths"])
+
+
+def test_graph_app_openapi_can_be_enabled_in_auth_disabled_mode():
+    paths = _load_openapi_paths(graph_auth_disabled=True)
+
+    assert "/api/v1/auth/login" not in paths
+    assert "/api/v1/graph/sessions" in paths
+    assert "/api/v1/graph/sessions/{session_id}/assets" in paths
+    assert "/api/v1/graph/sessions/{session_id}/expand" in paths
+    assert "/api/v1/graph/expand" not in paths
+    assert "/api/v1/graph/trace" not in paths
+    assert "/api/v1/graph/search" not in paths
+    assert "/api/v1/graph/cluster" not in paths
+    assert "/api/v1/graph/expand-bridge" not in paths
+    assert "/api/v1/graph/expand-utxo" not in paths
+    assert "/api/v1/graph/expand-solana-tx" not in paths
+    assert "/api/v1/setup/status" not in paths
+    assert "/api/v1/compliance/statistics" not in paths
+
+
+def test_graph_app_openapi_can_be_enabled_in_auth_enabled_mode():
+    paths = _load_openapi_paths(graph_auth_disabled=False)
+
     assert "/api/v1/auth/login" in paths
     assert "/api/v1/graph/sessions" in paths
     assert "/api/v1/graph/sessions/{session_id}/assets" in paths
@@ -90,6 +120,22 @@ def test_graph_app_openapi_can_be_enabled():
     assert "/api/v1/compliance/statistics" not in paths
 
 
+def _fetchrow_pool(row):
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(return_value=row)
+
+    class _Ctx:
+        async def __aenter__(self):
+            return conn
+
+        async def __aexit__(self, *_):
+            return False
+
+    pool = MagicMock()
+    pool.acquire = MagicMock(return_value=_Ctx())
+    return pool
+
+
 def test_graph_app_legacy_graph_routes_are_not_registered(graph_client):
     assert graph_client.post("/api/v1/graph/expand", json={}).status_code == 404
     assert graph_client.post("/api/v1/graph/trace", json={}).status_code == 404
@@ -98,6 +144,30 @@ def test_graph_app_legacy_graph_routes_are_not_registered(graph_client):
     assert graph_client.post("/api/v1/graph/expand-bridge", json={}).status_code == 404
     assert graph_client.post("/api/v1/graph/expand-utxo", json={}).status_code == 404
     assert graph_client.post("/api/v1/graph/expand-solana-tx", json={}).status_code == 404
+
+
+def test_graph_app_resolve_tx_db_hit_serializes_datetime(graph_client):
+    row = {
+        "tx_hash": "0x" + "a" * 64,
+        "from_address": "0xfrom",
+        "to_address": "0xto",
+        "value_native": 1.25,
+        "timestamp": datetime(2026, 3, 27, 12, 0, tzinfo=timezone.utc),
+        "block_number": 123,
+        "status": "confirmed",
+    }
+
+    with patch("src.api.routers.graph.get_postgres_pool", return_value=_fetchrow_pool(row)):
+        resp = graph_client.get(
+            "/api/v1/graph/resolve-tx",
+            params={"chain": "ethereum", "tx": row["tx_hash"]},
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["found"] is True
+    assert body["tx_hash"] == row["tx_hash"]
+    assert body["timestamp"] == "2026-03-27T12:00:00Z"
 
 
 def test_graph_app_middleware_excludes_audit():

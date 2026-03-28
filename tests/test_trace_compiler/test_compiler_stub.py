@@ -48,6 +48,20 @@ class _AcquireCtx:
         return None
 
 
+def _pg_presence_pool(*, outbound_present: bool, inbound_present: bool):
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(
+        return_value={
+            "outbound_present": outbound_present,
+            "inbound_present": inbound_present,
+        }
+    )
+    pool = MagicMock()
+    pool.acquire = MagicMock(return_value=_AcquireCtx(conn))
+    pool._conn = conn
+    return pool
+
+
 # ---------------------------------------------------------------------------
 # create_session
 # ---------------------------------------------------------------------------
@@ -204,6 +218,68 @@ async def test_expand_empty_response_includes_chain_specific_empty_state(monkeyp
     assert resp.empty_state.reason == "live_lookup_returned_empty"
     assert resp.empty_state.observed_on_chain is True
     assert "live address-history fallback" in resp.empty_state.message
+
+
+@pytest.mark.asyncio
+async def test_build_empty_state_reports_indexed_requested_direction_without_new_results(monkeypatch):
+    compiler = TraceCompiler(postgres_pool=_pg_presence_pool(outbound_present=True, inbound_present=False))
+
+    monkeypatch.setattr(
+        "src.trace_compiler.compiler.get_rpc_client",
+        lambda chain: None,
+    )
+
+    empty_state = await compiler._build_empty_state(
+        chain="ethereum",
+        address="0xabc",
+        operation_type="expand_next",
+    )
+
+    assert empty_state.reason == "indexed_activity_already_accounted_for"
+    assert "Indexed ETHEREUM next activity exists" in empty_state.message
+    assert "produced no new graph results" in empty_state.message
+
+
+@pytest.mark.asyncio
+async def test_build_empty_state_reports_indexed_other_direction_activity(monkeypatch):
+    compiler = TraceCompiler(postgres_pool=_pg_presence_pool(outbound_present=False, inbound_present=True))
+
+    monkeypatch.setattr(
+        "src.trace_compiler.compiler.get_rpc_client",
+        lambda chain: None,
+    )
+
+    empty_state = await compiler._build_empty_state(
+        chain="ethereum",
+        address="0xabc",
+        operation_type="expand_next",
+    )
+
+    assert empty_state.reason == "indexed_activity_in_other_direction"
+    assert "No indexed ETHEREUM next activity produced new graph results" in empty_state.message
+    assert "indexed previous activity exists" in empty_state.message
+
+
+@pytest.mark.asyncio
+async def test_build_empty_state_uses_bitcoin_event_store_directional_presence(monkeypatch):
+    compiler = TraceCompiler(postgres_pool=_pg_presence_pool(outbound_present=False, inbound_present=True))
+
+    monkeypatch.setattr(
+        "src.trace_compiler.compiler.get_rpc_client",
+        lambda chain: None,
+    )
+
+    empty_state = await compiler._build_empty_state(
+        chain="bitcoin",
+        address="bc1seedaddress0000000000000000000000000",
+        operation_type="expand_next",
+    )
+
+    assert empty_state.reason == "indexed_activity_in_other_direction"
+    query = compiler._pg._conn.fetchrow.await_args.args[0]
+    assert "raw_utxo_inputs" in query
+    assert "raw_utxo_outputs" in query
+    assert "indexed previous activity exists" in empty_state.message
 
 
 @pytest.mark.asyncio

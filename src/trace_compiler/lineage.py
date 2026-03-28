@@ -4,8 +4,8 @@ Deterministic lineage ID computation functions.
 All IDs produced here are stable: the same inputs always produce the same
 output, across sessions, rebuilds, and server restarts.
 
-Reference: PHASE3_IMPLEMENTATION_SPEC.md Section 3 (Branch / Path / Lineage
-Metadata).
+These helpers define the stable ID rules used across sessions, rebuilds, and
+tests.
 """
 
 import hashlib

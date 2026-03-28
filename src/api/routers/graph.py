@@ -53,6 +53,8 @@ from src.collectors.rpc.factory import get_rpc_client
 from src.services.canonical_assets import build_asset_selector_key
 from src.services.canonical_assets import native_asset_identity
 from src.services.canonical_assets import resolve_canonical_asset_identity
+from src.services.graph_sessions import GraphSessionStore
+from src.services.graph_sessions import SnapshotRevisionConflictError
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +62,10 @@ router = APIRouter()
 
 MAX_GRAPH_NODES = 500
 MAX_DEPTH = 5
+
+
+def _get_graph_session_store() -> GraphSessionStore:
+    return GraphSessionStore(get_postgres_pool())
 
 
 async def _get_owned_session_row(session_id: str, current_user: User) -> Dict[str, Any]:
@@ -2012,11 +2018,14 @@ from src.trace_compiler.models import (  # noqa: E402
     ExpandRequest,
     ExpansionResponseV2,
     IngestStatusResponse,
+    InvestigationSessionResponse,
+    RecentSessionsResponse,
     SessionCreateRequest,
     SessionCreateResponse,
     SessionSnapshotRequest,
     SessionSnapshotResponse,
     TxResolveResponse,
+    WorkspaceSnapshotV1,
 )
 
 # Native asset symbol per blockchain — used by the tx resolve endpoint.
@@ -2244,42 +2253,69 @@ async def create_investigation_session(
 
     Returns a session_id and the root ``InvestigationNode`` for the seed
     address.  All subsequent expansion calls must reference this session_id.
-
-    Phase 3 status: stub — returns a minimal valid response.  Full canonical
-    graph lookup and Neo4j session persistence is implemented in Phase 4.
     """
+    from src.trace_compiler.compiler import SessionPersistenceError
+
     compiler = await _get_trace_compiler()
-    return await compiler.create_session(request, owner_user_id=str(current_user.id))
+    try:
+        return await compiler.create_session(request, owner_user_id=str(current_user.id))
+    except SessionPersistenceError as exc:
+        raise HTTPException(status_code=503, detail="Session store unavailable") from exc
 
 
-@router.get("/sessions/{session_id}", response_model=dict)
+@router.get("/sessions/recent", response_model=RecentSessionsResponse)
+async def list_recent_investigation_sessions(
+    limit: int = Query(default=5, ge=1, le=10),
+    current_user: User = Depends(check_permissions([PERMISSIONS["read_blockchain"]])),
+):
+    """List recent backend-owned sessions for restore discovery."""
+    session_store = _get_graph_session_store()
+    try:
+        items = await session_store.list_recent_sessions(
+            owner_user_id=str(current_user.id),
+            limit=limit,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Failed to list recent sessions for %s: %s",
+            current_user.username,
+            exc,
+        )
+        raise HTTPException(status_code=503, detail="Session store unavailable") from exc
+
+    return RecentSessionsResponse(items=items)
+
+
+@router.get("/sessions/{session_id}", response_model=InvestigationSessionResponse)
 async def get_investigation_session(
     session_id: str,
     current_user: User = Depends(check_permissions([PERMISSIONS["read_blockchain"]])),
 ):
     """Restore a saved investigation session snapshot.
 
-    Returns the full node/edge set for the session at its last saved state.
-
-    Phase 3 status: stub — returns an empty snapshot.
+    Returns the authoritative server-backed workspace snapshot when one exists.
+    Legacy rows without a full workspace snapshot are normalized into a
+    root-only bootstrap payload with ``restore_state=legacy_bootstrap``.
     """
     row = await _get_owned_session_row(session_id, current_user)
-    snapshot = row.get("snapshot")
-    if isinstance(snapshot, str):
-        try:
-            snapshot = json.loads(snapshot)
-        except json.JSONDecodeError:
-            snapshot = []
+    session_store = _get_graph_session_store()
+    workspace, restore_state, raw_snapshot = session_store.normalize_workspace(row)
+    branch_map = {
+        branch.branchId: branch
+        for branch in (workspace.branches or [])
+    }
 
     return {
         "session_id": str(row["session_id"]),
         "seed_address": row.get("seed_address"),
         "seed_chain": row.get("seed_chain"),
         "case_id": row.get("case_id"),
-        "snapshot": snapshot or [],
-        "nodes": [],
-        "edges": [],
-        "branch_map": {},
+        "snapshot": raw_snapshot,
+        "workspace": workspace,
+        "restore_state": restore_state,
+        "nodes": workspace.nodes,
+        "edges": workspace.edges,
+        "branch_map": branch_map,
         "created_at": row.get("created_at"),
         "updated_at": row.get("updated_at"),
         "snapshot_saved_at": row.get("snapshot_saved_at"),
@@ -2296,36 +2332,56 @@ async def save_session_snapshot(
 
     Writes the serialised ``node_states`` list to the ``snapshot`` JSONB column
     in ``graph_sessions``.  The session row must already exist (created by
-    ``POST /sessions``); if it does not, the snapshot is silently ignored.
+    ``POST /sessions``); storage failures are surfaced as ``503`` so the
+    frontend never receives a false success signal.
     """
-    await _get_owned_session_row(session_id, current_user)
+    row = await _get_owned_session_row(session_id, current_user)
+    session_store = _get_graph_session_store()
+    current_workspace, _, _ = session_store.normalize_workspace(row)
 
     saved_at = datetime.now(timezone.utc)
     snapshot_id = str(uuid4())
 
     try:
-        pg = get_postgres_pool()
-        async with pg.acquire() as conn:
-            await conn.execute(
-                """
-                UPDATE graph_sessions
-                SET snapshot = $1::jsonb,
-                    snapshot_saved_at = $2
-                WHERE session_id = $3::uuid
-                  AND created_by = $4
-                """,
-                json.dumps([ns.model_dump(mode="json") for ns in session_snapshot.node_states]),
-                saved_at,
-                session_id,
-                str(current_user.id),
-            )
-        logger.debug("Snapshot saved for session %s (%d nodes)", session_id, len(session_snapshot.node_states))
+        if session_snapshot.has_workspace_payload():
+            try:
+                workspace = session_snapshot.to_workspace_snapshot()
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            if workspace.sessionId != session_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Snapshot sessionId does not match session_id path parameter",
+                )
+            if workspace.revision <= current_workspace.revision:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Stale workspace snapshot revision",
+                )
+        else:
+            workspace = session_store.merge_node_states(current_workspace, session_snapshot.node_states)
+            workspace = workspace.model_copy(update={"revision": current_workspace.revision + 1})
+
+        await session_store.save_workspace_snapshot(
+            session_id=session_id,
+            owner_user_id=str(current_user.id),
+            workspace=workspace,
+            saved_at=saved_at,
+            expected_previous_revision=current_workspace.revision,
+        )
+        logger.debug("Snapshot saved for session %s (%d nodes)", session_id, len(workspace.nodes))
     except Exception as exc:
+        if isinstance(exc, SnapshotRevisionConflictError):
+            raise HTTPException(status_code=409, detail="Stale workspace snapshot revision") from exc
+        if isinstance(exc, HTTPException):
+            raise
         logger.warning("Failed to save snapshot for session %s: %s", session_id, exc)
+        raise HTTPException(status_code=503, detail="Session store unavailable") from exc
 
     return SessionSnapshotResponse(
         snapshot_id=snapshot_id,
         saved_at=saved_at,
+        revision=workspace.revision,
     )
 
 
@@ -2341,9 +2397,6 @@ async def expand_session_node(
     expand_bridge, expand_utxo, expand_solana_tx) are routed through this
     single endpoint.  The trace compiler dispatches to the appropriate
     chain-specific compiler based on the seed node_id prefix.
-
-    Phase 3 status: stub — returns an empty expansion with correct metadata.
-    Full chain-specific compilation is implemented in Phase 4.
     """
     await _get_owned_session_row(session_id, current_user)
     _validate_expand_request(request)
@@ -2366,8 +2419,6 @@ async def get_bridge_hop_status(
     with status="pending".  When status changes to "completed", the frontend
     can call expand on the BridgeHop node to follow funds to the destination
     chain.
-
-    Phase 3 status: stub — always returns status="pending".
     """
     await _get_owned_session_row(session_id, current_user)
     compiler = await _get_trace_compiler()

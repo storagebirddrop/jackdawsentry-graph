@@ -10,8 +10,8 @@ Current state (Phase 4): EVM, UTXO, Solana, and Tron chain compilers are impleme
 Session creation and expansion are fully wired; bridge hop status polling
 is supported via the PostgreSQL ``bridge_correlations`` table.
 
-Reference: PHASE3_IMPLEMENTATION_SPEC.md Section 5 (Service 2 — Trace
-Compiler).
+This module owns the backend expansion contract and graph-facing empty-state,
+session, and bridge-hop semantics.
 """
 
 import hashlib
@@ -70,6 +70,10 @@ _NATIVE_ASSET_SYMBOLS = {
 }
 
 
+class SessionPersistenceError(RuntimeError):
+    """Raised when a session cannot be durably persisted."""
+
+
 def _operation_phrase(operation_type: str) -> str:
     if operation_type == "expand_next":
         return "next"
@@ -78,6 +82,14 @@ def _operation_phrase(operation_type: str) -> str:
     if operation_type == "expand_neighbors":
         return "neighbor"
     return "related"
+
+
+def _opposite_operation_phrase(operation_type: str) -> Optional[str]:
+    if operation_type == "expand_next":
+        return "previous"
+    if operation_type in {"expand_prev", "expand_previous"}:
+        return "next"
+    return None
 
 
 def _truncate_identifier(value: str, *, head: int = 10, tail: int = 8) -> str:
@@ -287,8 +299,9 @@ class TraceCompiler:
 
         Generates a stable session_id, builds the seed root node, and writes
         a row to ``graph_sessions`` so the session survives a browser refresh.
-        Persistence failures are swallowed — the session is still returned to
-        the caller.
+        API-owned sessions must fail loudly when persistence is unavailable so
+        callers never receive a durable-looking session_id that cannot later be
+        restored.
 
         Args:
             request: Session creation parameters (seed address, chain, optional case_id).
@@ -302,6 +315,7 @@ class TraceCompiler:
         from src.trace_compiler.lineage import node_id as mk_node
         from src.trace_compiler.lineage import path_id as mk_path
         from src.trace_compiler.models import AddressNodeData
+        from src.trace_compiler.models import WorkspaceSnapshotV1
 
         session_id = str(uuid.uuid4())
         canonical_seed_address = _canonical_node_identifier(
@@ -336,8 +350,19 @@ class TraceCompiler:
         root_node = await self._address_exposure.enrich_address_node(root_node)
 
         created_at = datetime.now(timezone.utc)
+        initial_workspace = WorkspaceSnapshotV1(
+            sessionId=session_id,
+            nodes=[root_node],
+            edges=[],
+            positions={},
+            branches=None,
+            workspacePreferences=None,
+        )
 
         # Persist session to PostgreSQL so it survives browser refresh.
+        if owner_user_id is not None and self._pg is None:
+            raise SessionPersistenceError("Session store unavailable")
+
         if self._pg is not None:
             try:
                 async with self._pg.acquire() as conn:
@@ -350,10 +375,12 @@ class TraceCompiler:
                                 seed_chain,
                                 case_id,
                                 created_by,
+                                snapshot,
+                                snapshot_saved_at,
                                 created_at,
                                 updated_at
                             )
-                        VALUES ($1, $2, $3, $4, $5, $6, $6)
+                        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $7, $7)
                         ON CONFLICT (session_id) DO NOTHING
                         """,
                         uuid.UUID(session_id),
@@ -361,6 +388,7 @@ class TraceCompiler:
                         request.seed_chain,
                         getattr(request, "case_id", None),
                         owner_user_id,
+                        json.dumps(initial_workspace.model_dump(mode="json")),
                         created_at,
                     )
                 logger.debug("graph_sessions: persisted session %s", session_id)
@@ -368,6 +396,7 @@ class TraceCompiler:
                 logger.warning(
                     "graph_sessions: failed to persist session %s: %s", session_id, exc
                 )
+                raise SessionPersistenceError("Session store unavailable") from exc
 
         return SessionCreateResponse(
             session_id=session_id,
@@ -831,9 +860,26 @@ class TraceCompiler:
     ) -> ExpansionEmptyState:
         """Return a frontend-friendly explanation for an empty expansion."""
         phrase = _operation_phrase(operation_type)
+        opposite_phrase = _opposite_operation_phrase(operation_type)
         live_lookup_supported = _supports_live_address_history(chain)
         observed_on_chain: Optional[bool] = None
         known_tx_count: Optional[int] = None
+        indexed_activity = await self._get_indexed_activity_presence(
+            chain=chain,
+            address=address,
+        )
+        indexed_outbound = indexed_activity["outbound_present"]
+        indexed_inbound = indexed_activity["inbound_present"]
+        indexed_any = indexed_outbound or indexed_inbound
+        if operation_type == "expand_next":
+            indexed_requested_direction = indexed_outbound
+            indexed_other_direction = indexed_inbound
+        elif operation_type in {"expand_prev", "expand_previous"}:
+            indexed_requested_direction = indexed_inbound
+            indexed_other_direction = indexed_outbound
+        else:
+            indexed_requested_direction = indexed_any
+            indexed_other_direction = False
 
         client = get_rpc_client(chain)
         address_info = None
@@ -863,7 +909,29 @@ class TraceCompiler:
             else:
                 observed_on_chain = bool((known_tx_count or 0) > 0 or balance_native > 0)
 
-        if live_lookup_supported:
+        if indexed_requested_direction:
+            reason = "indexed_activity_already_accounted_for"
+            message = (
+                f"Indexed {chain.upper()} {phrase} activity exists for this address, "
+                "but this request produced no new graph results. The activity may "
+                "already be visible, filtered out, or not promotable into additional "
+                "nodes and edges."
+            )
+        elif indexed_other_direction and opposite_phrase:
+            reason = "indexed_activity_in_other_direction"
+            message = (
+                f"No indexed {chain.upper()} {phrase} activity produced new graph "
+                f"results for this address, but indexed {opposite_phrase} activity "
+                "exists in the current graph dataset."
+            )
+        elif indexed_any:
+            reason = "indexed_activity_present"
+            message = (
+                f"No indexed {chain.upper()} {phrase} activity produced new graph "
+                "results for this address, but the current graph dataset does contain "
+                "indexed activity for it."
+            )
+        elif live_lookup_supported:
             reason = "live_lookup_returned_empty"
             message = (
                 f"No indexed {chain.upper()} {phrase} activity was found, and a live "
@@ -900,6 +968,93 @@ class TraceCompiler:
             observed_on_chain=observed_on_chain,
             known_tx_count=known_tx_count,
         )
+
+    async def _get_indexed_activity_presence(
+        self,
+        *,
+        chain: str,
+        address: str,
+    ) -> Dict[str, bool]:
+        """Return whether indexed inbound/outbound activity exists for this address."""
+        if self._pg is None:
+            return {"outbound_present": False, "inbound_present": False}
+
+        canonical_address = _canonical_node_identifier(chain, "address", address)
+
+        if chain == "bitcoin":
+            query = """
+                SELECT
+                    EXISTS (
+                        SELECT 1
+                        FROM raw_utxo_inputs
+                        WHERE blockchain = $1
+                          AND address = $2
+                        LIMIT 1
+                    ) AS outbound_present,
+                    EXISTS (
+                        SELECT 1
+                        FROM raw_utxo_outputs
+                        WHERE blockchain = $1
+                          AND address = $2
+                        LIMIT 1
+                    ) AS inbound_present
+            """
+        else:
+            query = """
+                SELECT
+                    (
+                        EXISTS (
+                            SELECT 1
+                            FROM raw_transactions
+                            WHERE blockchain = $1
+                              AND from_address = $2
+                            LIMIT 1
+                        )
+                        OR EXISTS (
+                            SELECT 1
+                            FROM raw_token_transfers
+                            WHERE blockchain = $1
+                              AND from_address = $2
+                            LIMIT 1
+                        )
+                    ) AS outbound_present,
+                    (
+                        EXISTS (
+                            SELECT 1
+                            FROM raw_transactions
+                            WHERE blockchain = $1
+                              AND to_address = $2
+                            LIMIT 1
+                        )
+                        OR EXISTS (
+                            SELECT 1
+                            FROM raw_token_transfers
+                            WHERE blockchain = $1
+                              AND to_address = $2
+                            LIMIT 1
+                        )
+                    ) AS inbound_present
+            """
+
+        try:
+            async with self._pg.acquire() as conn:
+                row = await conn.fetchrow(query, chain, canonical_address)
+        except Exception as exc:
+            logger.debug(
+                "Indexed activity lookup failed for empty expansion %s/%s: %s",
+                chain,
+                canonical_address,
+                exc,
+            )
+            return {"outbound_present": False, "inbound_present": False}
+
+        if not row:
+            return {"outbound_present": False, "inbound_present": False}
+
+        return {
+            "outbound_present": bool(row["outbound_present"]),
+            "inbound_present": bool(row["inbound_present"]),
+        }
 
     @staticmethod
     def _bridge_hop_allowlist_key(session_id: str) -> str:

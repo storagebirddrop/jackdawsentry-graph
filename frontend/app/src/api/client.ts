@@ -9,6 +9,10 @@ import type {
   AssetCatalogResponse,
   SessionCreateRequest,
   SessionCreateResponse,
+  InvestigationSessionResponse,
+  RecentSessionsResponse,
+  WorkspaceSnapshotV1,
+  SessionSnapshotResponse,
   ExpandRequest,
   ExpansionResponseV2,
   BridgeHopStatusResponse,
@@ -98,6 +102,43 @@ export async function createSession(
     body: JSON.stringify(req),
   });
   return handleResponse<SessionCreateResponse>(res);
+}
+
+/** Restore an existing investigation session from the backend workspace snapshot. */
+export async function getSession(
+  sessionId: string,
+): Promise<InvestigationSessionResponse> {
+  const res = await fetch(`${API_BASE}/graph/sessions/${sessionId}`, {
+    headers: authHeaders(),
+    credentials: 'same-origin',
+  });
+  return handleResponse<InvestigationSessionResponse>(res);
+}
+
+/** Discover recent backend-owned sessions for restore. */
+export async function getRecentSessions(
+  limit = 5,
+): Promise<RecentSessionsResponse> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  const res = await fetch(`${API_BASE}/graph/sessions/recent?${params.toString()}`, {
+    headers: authHeaders(),
+    credentials: 'same-origin',
+  });
+  return handleResponse<RecentSessionsResponse>(res);
+}
+
+/** Persist the current investigation workspace to the backend session snapshot. */
+export async function saveSessionSnapshot(
+  sessionId: string,
+  snapshot: WorkspaceSnapshotV1,
+): Promise<SessionSnapshotResponse> {
+  const res = await fetch(`${API_BASE}/graph/sessions/${sessionId}/snapshot`, {
+    method: 'POST',
+    headers: authHeaders(),
+    credentials: 'same-origin',
+    body: JSON.stringify(snapshot),
+  });
+  return handleResponse<SessionSnapshotResponse>(res);
 }
 
 /** Expand a node in an existing session. */

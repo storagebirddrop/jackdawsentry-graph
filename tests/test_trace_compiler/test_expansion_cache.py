@@ -5,7 +5,7 @@ Verifies that:
 - Cached results are returned on the second call without hitting the chain compiler.
 - A Redis miss falls through to the chain compiler.
 - Redis failures are swallowed (not propagated to the caller).
-- Cache key excludes session_id (PHASE3 spec / P1.2): same expansion is shared
+- Cache key excludes session_id: same expansion is shared
   across all investigation sessions; session_id is overridden at serve time.
 """
 

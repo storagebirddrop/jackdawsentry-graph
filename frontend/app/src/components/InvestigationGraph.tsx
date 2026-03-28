@@ -7,7 +7,7 @@
  * - Handles node expand clicks (dispatches to API, then applies delta).
  * - Shows overload warning at NODE_OVERLOAD_THRESHOLD.
  * - Hosts the filter panel (client-side node/edge hiding).
- * - Opens the bridge hop side drawer on BridgeHopNode click.
+ * - Keeps the active inspector's bridge-hop status fresh while pending.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -30,7 +30,7 @@ import {
 import '@xyflow/react/dist/style.css';
 
 import { useGraphStore, type BranchMeta } from '../store/graphStore';
-import { expandNode, getSessionAssets } from '../api/client';
+import { expandNode, getSessionAssets, saveSessionSnapshot } from '../api/client';
 import { computeElkLayout } from '../layout/elkLayout';
 import type {
   AssetCatalogItem,
@@ -38,6 +38,7 @@ import type {
   ExpandRequest,
   InvestigationEdge,
   InvestigationNode,
+  WorkspaceSnapshotV1,
 } from '../types/graph';
 import { assetSelectionKeysForEdge, preferredAssetSelectionKeyForEdge } from '../types/graph';
 
@@ -69,8 +70,8 @@ import {
   extractSnapshotWorkspacePreferences,
   loadSessionWorkspacePreferences,
   saveSessionWorkspacePreferences,
-  saveWorkspace,
 } from '../workspacePersistence';
+import { useBridgeHopPoller } from '../hooks/useBridgeHopPoller';
 import {
   bridgeProtocolLabel,
   bridgeRouteLabel,
@@ -113,6 +114,9 @@ type FitViewHandle = {
 
 interface Props {
   sessionId: string;
+  initialWorkspaceRevision: number;
+  initialSavedAt: string | null;
+  initialRestoreNotice: { tone: 'info' | 'error'; message: string } | null;
   onStartNewInvestigation: () => void;
 }
 
@@ -260,7 +264,13 @@ function applyFilters(
   return { nodes: visibleNodes, edges: visibleEdges };
 }
 
-export default function InvestigationGraph({ sessionId, onStartNewInvestigation }: Props) {
+export default function InvestigationGraph({
+  sessionId,
+  initialWorkspaceRevision,
+  initialSavedAt,
+  initialRestoreNotice,
+  onStartNewInvestigation,
+}: Props) {
   const {
     rfNodes,
     rfEdges,
@@ -274,6 +284,7 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
     exportSnapshot,
     importSnapshot,
     branchMap,
+    updateBridgeHopStatus,
   } = useGraphStore();
 
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>(rfNodes);
@@ -291,6 +302,10 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
   const [assetCatalog, setAssetCatalog] = useState<AssetCatalogItem[]>([]);
   const [assetCatalogScope, setAssetCatalogScope] = useState<AssetCatalogScopeMode>(DEFAULT_ASSET_CATALOG_SCOPE);
   const [pinnedAssetKeys, setPinnedAssetKeys] = useState<string[]>([]);
+  const [sessionSaveStatus, setSessionSaveStatus] = useState<'idle' | 'dirty' | 'saving' | 'saved' | 'save_failed'>(
+    initialSavedAt ? 'saved' : 'idle',
+  );
+  const [lastSavedAt, setLastSavedAt] = useState<string | null>(initialSavedAt);
   const [bridgeRouteHistory, setBridgeRouteHistory] = useState<string[]>([]);
   const [activeBranchIds, setActiveBranchIds] = useState<string[]>([]);
   const [branchHistory, setBranchHistory] = useState<string[]>([]);
@@ -309,6 +324,10 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
   const reactFlowRef = useRef<FitViewHandle | null>(null);
   const fitViewTimerRef = useRef<number | null>(null);
   const autosaveTimerRef = useRef<number | null>(null);
+  const autosaveRequestIdRef = useRef(0);
+  const autosaveRevisionRef = useRef(initialWorkspaceRevision);
+  const lastPersistedSnapshotRef = useRef<string | null>(null);
+  const didSeedAutosaveBaselineRef = useRef(false);
   const didHydrateManualLayoutRef = useRef(false);
   const didHydrateSessionPrefsRef = useRef(false);
   const lastSavedPrefsRef = useRef<{
@@ -320,6 +339,19 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
   const showNotice = useCallback((message: string, tone: 'info' | 'error' = 'info') => {
     setNotice({ tone, message });
   }, []);
+
+  useEffect(() => {
+    autosaveRevisionRef.current = initialWorkspaceRevision;
+    didSeedAutosaveBaselineRef.current = false;
+    lastPersistedSnapshotRef.current = null;
+    setSessionSaveStatus(initialSavedAt ? 'saved' : 'idle');
+    setLastSavedAt(initialSavedAt);
+  }, [initialSavedAt, initialWorkspaceRevision, sessionId]);
+
+  useEffect(() => {
+    if (!initialRestoreNotice) return;
+    showNotice(initialRestoreNotice.message, initialRestoreNotice.tone);
+  }, [initialRestoreNotice, showNotice]);
 
   const scheduleFitView = useCallback((duration = 260) => {
     if (typeof window === 'undefined') return;
@@ -676,10 +708,44 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
     assetCatalogScope,
   }), [filters.selectedAssets, pinnedAssetKeys, assetCatalogScope]);
 
+  const sessionSaveLabel = useMemo(() => {
+    if (sessionSaveStatus === 'saving') return 'Saving…';
+    if (sessionSaveStatus === 'save_failed') return 'Save failed';
+    if (sessionSaveStatus === 'dirty') return 'Unsaved changes';
+    if (lastSavedAt) {
+      return `Saved ${new Date(lastSavedAt).toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit',
+      })}`;
+    }
+    return 'Not saved yet';
+  }, [sessionSaveStatus, lastSavedAt]);
+
   useEffect(() => {
-    if (typeof window === 'undefined' || !sessionId || rfNodes.length === 0) {
+    if (
+      typeof window === 'undefined'
+      || !sessionId
+      || rfNodes.length === 0
+      || !didHydrateSessionPrefsRef.current
+    ) {
       return;
     }
+
+    const snapshotJson = exportSnapshot({
+      workspacePreferences: currentSnapshotWorkspacePreferences,
+    });
+
+    if (!didSeedAutosaveBaselineRef.current) {
+      didSeedAutosaveBaselineRef.current = true;
+      lastPersistedSnapshotRef.current = snapshotJson;
+      return;
+    }
+
+    if (snapshotJson === lastPersistedSnapshotRef.current) {
+      return;
+    }
+
+    setSessionSaveStatus((current) => (current === 'saving' ? current : 'dirty'));
 
     if (autosaveTimerRef.current !== null) {
       window.clearTimeout(autosaveTimerRef.current);
@@ -687,11 +753,57 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
 
     autosaveTimerRef.current = window.setTimeout(() => {
       autosaveTimerRef.current = null;
-      saveWorkspace(sessionId, exportSnapshot({
-        workspacePreferences: currentSnapshotWorkspacePreferences,
-      }));
-    }, 320);
-  }, [sessionId, rfNodes, rfEdges, branchMap, exportSnapshot, currentSnapshotWorkspacePreferences]);
+      const requestId = ++autosaveRequestIdRef.current;
+
+      let snapshotPayload: WorkspaceSnapshotV1;
+      try {
+        snapshotPayload = JSON.parse(snapshotJson) as WorkspaceSnapshotV1;
+      } catch (error) {
+        console.error('Failed to serialise workspace snapshot for autosave:', error);
+        setSessionSaveStatus('save_failed');
+        return;
+      }
+
+      const nextRevision = autosaveRevisionRef.current + 1;
+      autosaveRevisionRef.current = nextRevision;
+      snapshotPayload.revision = nextRevision;
+      setSessionSaveStatus('saving');
+      void saveSessionSnapshot(sessionId, snapshotPayload)
+        .then((response) => {
+          if (autosaveRequestIdRef.current !== requestId) return;
+          autosaveRevisionRef.current = response.revision;
+          lastPersistedSnapshotRef.current = snapshotJson;
+          setSessionSaveStatus('saved');
+          setLastSavedAt(response.saved_at);
+        })
+        .catch((error) => {
+          if (autosaveRequestIdRef.current !== requestId) return;
+          console.error('Failed to autosave session workspace:', error);
+          if (error instanceof Error && error.message.includes('API 409')) {
+            showNotice(
+              'A newer workspace snapshot reached the server first. Your latest graph state remains unsaved until the next successful autosave.',
+              'error',
+            );
+          }
+          setSessionSaveStatus('save_failed');
+        });
+    }, 2000);
+
+    return () => {
+      if (autosaveTimerRef.current !== null) {
+        window.clearTimeout(autosaveTimerRef.current);
+        autosaveTimerRef.current = null;
+      }
+    };
+  }, [
+    sessionId,
+    rfNodes,
+    rfEdges,
+    branchMap,
+    exportSnapshot,
+    currentSnapshotWorkspacePreferences,
+    showNotice,
+  ]);
 
   // Incremental ELK layout: only newly added nodes are placed freely.
   // Nodes that have already been laid out are passed to ELK as fixed-position
@@ -1037,6 +1149,16 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
     () => (selectedEdge?.data as InvestigationEdge | undefined) ?? null,
     [selectedEdge],
   );
+  const selectedNodeData = useMemo(
+    () => (selectedNode?.data as InvestigationNode | undefined) ?? null,
+    [selectedNode],
+  );
+  const bridgeStatusRefresh = useBridgeHopPoller({
+    sessionId,
+    node: selectedNodeData,
+    onStatus: updateBridgeHopStatus,
+    onNotice: showNotice,
+  });
   const visibleInvestigationNodeById = useMemo(
     () =>
       new Map(
@@ -1717,6 +1839,38 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
         </span>
         <span style={toolbarPillStyle}>
           {appearance.interactionMode} mode
+        </span>
+        <span
+          style={{
+            ...toolbarPillStyle,
+            color:
+              sessionSaveStatus === 'save_failed'
+                ? '#b91c1c'
+                : sessionSaveStatus === 'dirty'
+                  ? '#92400e'
+                : sessionSaveStatus === 'saving'
+                  ? '#1d4ed8'
+                  : '#334155',
+            borderColor:
+              sessionSaveStatus === 'save_failed'
+                ? 'rgba(185,28,28,0.18)'
+                : sessionSaveStatus === 'dirty'
+                  ? 'rgba(146,64,14,0.2)'
+                : sessionSaveStatus === 'saving'
+                  ? 'rgba(37,99,235,0.18)'
+                  : toolbarPillStyle.borderColor,
+            background:
+              sessionSaveStatus === 'save_failed'
+                ? 'rgba(254,242,242,0.96)'
+                : sessionSaveStatus === 'dirty'
+                  ? 'rgba(255,247,237,0.96)'
+                : sessionSaveStatus === 'saving'
+                  ? 'rgba(239,246,255,0.96)'
+                  : toolbarPillStyle.background,
+          }}
+          title="Server-backed session save status"
+        >
+          {sessionSaveLabel}
         </span>
         <span style={{ color: '#475569', fontSize: 12, alignSelf: 'center', fontWeight: 600 }}>
           {rfNodes.length} nodes · {rfEdges.length} edges
@@ -2447,6 +2601,7 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
         node={selectedNode}
         edge={selectedEdge}
         collapsed={inspectorCollapsed}
+        bridgeStatusRefresh={bridgeStatusRefresh}
         activeBridgeRoute={filters.bridgeRoute}
         activeBridgeProtocols={filters.bridgeProtocols}
         activeBranchIds={activeBranchIds}

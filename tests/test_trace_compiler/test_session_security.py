@@ -164,6 +164,9 @@ def test_get_session_returns_owned_snapshot():
     payload = response.json()
     assert payload["session_id"] == "00000000-0000-0000-0000-000000000999"
     assert payload["snapshot"] == [{"node_id": "ethereum:address:0xabc"}]
+    assert payload["restore_state"] == "legacy_bootstrap"
+    assert payload["workspace"]["sessionId"] == "00000000-0000-0000-0000-000000000999"
+    assert payload["nodes"][0]["node_id"] == "ethereum:address:0xabc"
 
 
 def test_expand_rejects_unsupported_chain_filter():

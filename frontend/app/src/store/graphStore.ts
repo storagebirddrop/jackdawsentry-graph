@@ -12,6 +12,7 @@
 import { create } from 'zustand';
 import { MarkerType, type Node, type Edge } from '@xyflow/react';
 import type {
+  BridgeHopStatusResponse,
   InvestigationNode,
   InvestigationEdge,
   ExpansionResponseV2,
@@ -167,6 +168,7 @@ export interface GraphState {
   setNodeHidden: (nodeId: string, hidden: boolean) => void;
   restoreAllHiddenNodes: () => void;
   setExpandingNode: (nodeId: string, expanding: boolean) => void;
+  updateBridgeHopStatus: (nodeId: string, status: BridgeHopStatusResponse) => void;
   reset: () => void;
 
   /** Serialise current graph state to a JSON string (for session snapshot). */
@@ -388,6 +390,89 @@ export const useGraphStore = create<GraphState>((set, get) => ({
       if (expanding) next.add(nodeId);
       else next.delete(nodeId);
       return { expandingNodeIds: next };
+    });
+  },
+
+  updateBridgeHopStatus(nodeId, status) {
+    set((state) => {
+      const existing = state.nodeMap.get(nodeId);
+      if (!existing || existing.node_type !== 'bridge_hop') {
+        return state;
+      }
+
+      const existingHop = (existing.bridge_hop_data ?? existing.node_data) as InvestigationNode['bridge_hop_data'];
+      if (!existingHop) {
+        return state;
+      }
+
+      const nextHop = {
+        ...existingHop,
+        status: status.status,
+        destination_chain: status.destination_chain ?? existingHop.destination_chain,
+        destination_address: status.destination_address ?? existingHop.destination_address,
+        destination_tx_hash: status.destination_tx_hash ?? existingHop.destination_tx_hash,
+        correlation_confidence: status.correlation_confidence ?? existingHop.correlation_confidence,
+      };
+
+      const nextActivity = existing.activity_summary
+        ? {
+            ...existing.activity_summary,
+            status: status.status,
+            destination_chain:
+              status.destination_chain ?? existing.activity_summary.destination_chain,
+            destination_address:
+              status.destination_address ?? existing.activity_summary.destination_address,
+            destination_tx_hash:
+              status.destination_tx_hash ?? existing.activity_summary.destination_tx_hash,
+          }
+        : existing.activity_summary;
+
+      const unchanged =
+        existingHop.status === nextHop.status
+        && existingHop.destination_chain === nextHop.destination_chain
+        && existingHop.destination_address === nextHop.destination_address
+        && existingHop.destination_tx_hash === nextHop.destination_tx_hash
+        && existingHop.correlation_confidence === nextHop.correlation_confidence
+        && (existing.activity_summary?.status ?? undefined) === (nextActivity?.status ?? undefined)
+        && (existing.activity_summary?.destination_chain ?? undefined)
+          === (nextActivity?.destination_chain ?? undefined)
+        && (existing.activity_summary?.destination_address ?? undefined)
+          === (nextActivity?.destination_address ?? undefined)
+        && (existing.activity_summary?.destination_tx_hash ?? undefined)
+          === (nextActivity?.destination_tx_hash ?? undefined);
+
+      if (unchanged) {
+        return state;
+      }
+
+      const nextNode: InvestigationNode = {
+        ...existing,
+        node_data: nextHop,
+        bridge_hop_data: nextHop,
+        activity_summary: nextActivity,
+      };
+
+      const nextNodeMap = new Map(state.nodeMap);
+      nextNodeMap.set(nodeId, nextNode);
+
+      return {
+        nodeMap: nextNodeMap,
+        rfNodes: state.rfNodes.map((node) => {
+          if (node.id !== nodeId) return node;
+          const existingData = node.data as unknown as InvestigationNode & {
+            branch_color_index?: number;
+            branch_color?: string;
+          };
+          return {
+            ...node,
+            data: {
+              ...nextNode,
+              branch_color_index: existingData.branch_color_index,
+              branch_color: existingData.branch_color,
+            },
+          };
+        }),
+      };
     });
   },
 

@@ -100,7 +100,7 @@ export interface BridgeHopData {
   destination_amount?: number | null;
   destination_tx_hash?: string;
   correlation_confidence: number;
-  status: 'pending' | 'completed' | 'failed';
+  status: 'pending' | 'completed' | 'failed' | 'expired';
   time_delta_seconds?: number;
   is_same_asset?: boolean;
 }
@@ -613,6 +613,73 @@ export interface SessionCreateRequest {
 export interface SessionCreateResponse {
   session_id: string;
   root_node: InvestigationNode;
+  created_at: string;
+}
+
+export interface WorkspacePosition {
+  x: number;
+  y: number;
+}
+
+export interface WorkspaceBranchSnapshot {
+  branchId: string;
+  color: string;
+  seedNodeId: string;
+  minDepth: number;
+  maxDepth: number;
+  nodeCount: number;
+}
+
+export interface WorkspacePreferencesSnapshot {
+  selectedAssets: string[];
+  pinnedAssetKeys: string[];
+  assetCatalogScope: 'session' | 'visible';
+}
+
+export interface WorkspaceSnapshotV1 {
+  schema_version?: number;
+  revision: number;
+  sessionId: string;
+  nodes: InvestigationNode[];
+  edges: InvestigationEdge[];
+  positions: Record<string, WorkspacePosition>;
+  branches?: WorkspaceBranchSnapshot[] | null;
+  workspacePreferences?: WorkspacePreferencesSnapshot | null;
+}
+
+export interface SessionSnapshotResponse {
+  snapshot_id: string;
+  saved_at: string;
+  revision: number;
+}
+
+export interface RecentSessionSummary {
+  session_id: string;
+  seed_address?: string | null;
+  seed_chain?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  snapshot_saved_at?: string | null;
+}
+
+export interface RecentSessionsResponse {
+  items: RecentSessionSummary[];
+}
+
+export interface InvestigationSessionResponse {
+  session_id: string;
+  seed_address?: string | null;
+  seed_chain?: string | null;
+  case_id?: string | null;
+  snapshot?: unknown;
+  workspace: WorkspaceSnapshotV1;
+  restore_state: 'full' | 'legacy_bootstrap';
+  nodes: InvestigationNode[];
+  edges: InvestigationEdge[];
+  branch_map: Record<string, WorkspaceBranchSnapshot>;
+  created_at?: string | null;
+  updated_at?: string | null;
+  snapshot_saved_at?: string | null;
 }
 
 export interface ExpandRequest {
@@ -640,6 +707,7 @@ export interface BridgeHopStatusResponse {
   destination_chain?: string;
   destination_address?: string;
   correlation_confidence?: number;
+  updated_at?: string;
 }
 
 export interface IngestStatusResponse {

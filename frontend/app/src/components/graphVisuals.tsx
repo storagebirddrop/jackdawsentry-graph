@@ -221,7 +221,7 @@ export function bridgeMechanismLabel(mechanism?: string): string {
 
 export function bridgeStatusTone(status?: string): string {
   if (status === 'completed') return '#10b981';
-  if (status === 'failed') return '#ef4444';
+  if (status === 'failed' || status === 'expired') return '#ef4444';
   return '#f59e0b';
 }
 

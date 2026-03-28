@@ -6,7 +6,7 @@
 import { useEffect, useState } from 'react';
 import { createSession } from '../api/client';
 import { useGraphStore } from '../store/graphStore';
-import { loadSavedWorkspace } from '../workspacePersistence';
+import type { RecentSessionSummary } from '../types/graph';
 
 const CHAINS = [
   'ethereum', 'bitcoin', 'solana', 'bsc', 'polygon', 'arbitrum',
@@ -14,8 +14,14 @@ const CHAINS = [
 ];
 
 interface Props {
-  onSessionCreated: (sessionId: string) => void;
+  onSessionCreated: (session: {
+    sessionId: string;
+    initialWorkspaceRevision: number;
+    initialSavedAt: string | null;
+    initialRestoreNotice: { tone: 'info' | 'error'; message: string } | null;
+  }) => void;
   onRestoreWorkspace?: () => void;
+  restoreCandidate?: RecentSessionSummary | null;
 }
 
 function detectPreferredChain(address: string): string | null {
@@ -33,14 +39,17 @@ function detectPreferredChain(address: string): string | null {
   return null;
 }
 
-export default function SessionStarter({ onSessionCreated, onRestoreWorkspace }: Props) {
+export default function SessionStarter({
+  onSessionCreated,
+  onRestoreWorkspace,
+  restoreCandidate,
+}: Props) {
   const [address, setAddress] = useState('');
   const [chain, setChain] = useState('ethereum');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [chainHint, setChainHint] = useState<string | null>(null);
   const { initSession } = useGraphStore();
-  const savedWorkspace = loadSavedWorkspace();
 
   useEffect(() => {
     const detected = detectPreferredChain(address);
@@ -66,7 +75,12 @@ export default function SessionStarter({ onSessionCreated, onRestoreWorkspace }:
     try {
       const resp = await createSession({ seed_address: address.trim(), seed_chain: chain });
       initSession(resp.session_id, resp.root_node);
-      onSessionCreated(resp.session_id);
+      onSessionCreated({
+        sessionId: resp.session_id,
+        initialWorkspaceRevision: 0,
+        initialSavedAt: resp.created_at,
+        initialRestoreNotice: null,
+      });
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to create session';
       setError(message);
@@ -94,7 +108,7 @@ export default function SessionStarter({ onSessionCreated, onRestoreWorkspace }:
       <h1 style={{ fontSize: 24, margin: 0, color: '#60a5fa' }}>Jackdaw Sentry</h1>
       <p style={{ color: '#94a3b8', margin: 0 }}>Investigation Graph v2</p>
 
-      {savedWorkspace && onRestoreWorkspace && (
+      {restoreCandidate && onRestoreWorkspace && (
         <div
           style={{
             width: 360,
@@ -111,7 +125,9 @@ export default function SessionStarter({ onSessionCreated, onRestoreWorkspace }:
             Restore last workspace
           </div>
           <div style={{ color: '#94a3b8', fontSize: 12, lineHeight: 1.5 }}>
-            Resume your last graph canvas with saved node positions and hidden nodes.
+            {restoreCandidate.seed_chain && restoreCandidate.seed_address
+              ? `Resume ${restoreCandidate.seed_chain} session ${restoreCandidate.seed_address}.`
+              : 'Resume the most recent server-backed investigation workspace.'}
           </div>
           <button
             type="button"

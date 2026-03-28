@@ -5,8 +5,8 @@ These are the canonical data shapes for all investigation-grade expansion
 operations.  The frontend depends on this contract.  Changing field names or
 types here requires a coordinated frontend update.
 
-Reference: PHASE3_IMPLEMENTATION_SPEC.md Section 3 (Investigation-View Graph
-Model) and Section 6 (Graph Expansion API Spec).
+These models are the durable investigation graph contract used by the backend,
+frontend, and regression suite.
 """
 
 from __future__ import annotations
@@ -602,6 +602,45 @@ class AssetCatalogResponse(BaseModel):
     generated_at: datetime
 
 
+class WorkspacePosition(BaseModel):
+    """Stored canvas position for a graph node."""
+
+    x: float
+    y: float
+
+
+class WorkspaceBranchSnapshot(BaseModel):
+    """Serialized branch metadata for session restore."""
+
+    branchId: str
+    color: str
+    seedNodeId: str
+    minDepth: int
+    maxDepth: int
+    nodeCount: int
+
+
+class WorkspacePreferencesSnapshot(BaseModel):
+    """Serialized workspace preferences stored alongside a graph snapshot."""
+
+    selectedAssets: List[str]
+    pinnedAssetKeys: List[str]
+    assetCatalogScope: Literal["session", "visible"]
+
+
+class WorkspaceSnapshotV1(BaseModel):
+    """Authoritative server-backed workspace snapshot."""
+
+    schema_version: int = 1
+    revision: int = 0
+    sessionId: str
+    nodes: List[InvestigationNode] = Field(default_factory=list)
+    edges: List[InvestigationEdge] = Field(default_factory=list)
+    positions: Dict[str, WorkspacePosition] = Field(default_factory=dict)
+    branches: Optional[List[WorkspaceBranchSnapshot]] = None
+    workspacePreferences: Optional[WorkspacePreferencesSnapshot] = None
+
+
 class NodeStateSnapshot(BaseModel):
     """Per-node state for a session snapshot."""
 
@@ -616,7 +655,42 @@ class NodeStateSnapshot(BaseModel):
 class SessionSnapshotRequest(BaseModel):
     """Request body for POST /api/v1/graph/sessions/{session_id}/snapshot."""
 
-    node_states: List[NodeStateSnapshot]
+    node_states: List[NodeStateSnapshot] = Field(default_factory=list)
+    schema_version: int = 1
+    revision: int = 0
+    sessionId: Optional[str] = None
+    nodes: Optional[List[InvestigationNode]] = None
+    edges: Optional[List[InvestigationEdge]] = None
+    positions: Dict[str, WorkspacePosition] = Field(default_factory=dict)
+    branches: Optional[List[WorkspaceBranchSnapshot]] = None
+    workspacePreferences: Optional[WorkspacePreferencesSnapshot] = None
+
+    def has_workspace_payload(self) -> bool:
+        return any(
+            (
+                self.sessionId is not None,
+                self.nodes is not None,
+                self.edges is not None,
+                bool(self.positions),
+                self.branches is not None,
+                self.workspacePreferences is not None,
+            )
+        )
+
+    def to_workspace_snapshot(self) -> WorkspaceSnapshotV1:
+        if self.sessionId is None:
+            raise ValueError("workspace snapshot payload requires sessionId")
+
+        return WorkspaceSnapshotV1(
+            schema_version=self.schema_version,
+            revision=getattr(self, "revision", 0),
+            sessionId=self.sessionId,
+            nodes=self.nodes or [],
+            edges=self.edges or [],
+            positions=self.positions,
+            branches=self.branches,
+            workspacePreferences=self.workspacePreferences,
+        )
 
 
 class SessionSnapshotResponse(BaseModel):
@@ -624,6 +698,42 @@ class SessionSnapshotResponse(BaseModel):
 
     snapshot_id: str
     saved_at: datetime
+    revision: int
+
+
+class RecentSessionSummary(BaseModel):
+    """Restore candidate summary for recent investigation sessions."""
+
+    session_id: str
+    seed_address: Optional[str] = None
+    seed_chain: Optional[str] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    snapshot_saved_at: Optional[datetime] = None
+
+
+class RecentSessionsResponse(BaseModel):
+    """Response for recent session discovery."""
+
+    items: List[RecentSessionSummary] = Field(default_factory=list)
+
+
+class InvestigationSessionResponse(BaseModel):
+    """Response for GET /api/v1/graph/sessions/{session_id}."""
+
+    session_id: str
+    seed_address: Optional[str] = None
+    seed_chain: Optional[str] = None
+    case_id: Optional[str] = None
+    snapshot: Optional[Any] = None
+    workspace: WorkspaceSnapshotV1
+    restore_state: Literal["full", "legacy_bootstrap"]
+    nodes: List[InvestigationNode] = Field(default_factory=list)
+    edges: List[InvestigationEdge] = Field(default_factory=list)
+    branch_map: Dict[str, WorkspaceBranchSnapshot] = Field(default_factory=dict)
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    snapshot_saved_at: Optional[datetime] = None
 
 
 class IngestStatusResponse(BaseModel):
@@ -649,7 +759,7 @@ class TxResolveResponse(BaseModel):
     to_address: Optional[str] = None
     value_native: Optional[float] = None
     asset_symbol: Optional[str] = None
-    timestamp: Optional[str] = None
+    timestamp: Optional[datetime] = None
     block_number: Optional[int] = None
     status: Optional[str] = None
 
