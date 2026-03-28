@@ -949,6 +949,10 @@ export default function InvestigationGraph({
           return;
         }
 
+        if (response.integrity_warning) {
+          showNotice(response.integrity_warning, 'info', { autoDismiss: false });
+        }
+
         applyExpansionDelta(response);
       } catch (err) {
         console.error('Expand failed:', err);

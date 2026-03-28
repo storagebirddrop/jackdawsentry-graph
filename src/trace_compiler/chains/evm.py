@@ -208,8 +208,14 @@ class EVMChainCompiler(_GenericTransferChainCompiler):
             raise ValueError(f"EVMChainCompiler does not support chain '{chain}'")
         addr = seed_address.lower()
         rows = await self._fetch_outbound_event_store(addr, chain, options)
-        if not rows:
+        if rows:
+            self._set_expansion_data_sources("event_store")
+        else:
             rows = await self._fetch_outbound_neo4j(addr, chain, options)
+            if rows:
+                self._set_expansion_data_sources("neo4j_fallback")
+            else:
+                self._set_expansion_data_sources()
 
         prices = await self._prefetch_prices(rows)
         return await self._build_graph(
@@ -248,8 +254,14 @@ class EVMChainCompiler(_GenericTransferChainCompiler):
             raise ValueError(f"EVMChainCompiler does not support chain '{chain}'")
         addr = seed_address.lower()
         rows = await self._fetch_inbound_event_store(addr, chain, options)
-        if not rows:
+        if rows:
+            self._set_expansion_data_sources("event_store")
+        else:
             rows = await self._fetch_inbound_neo4j(addr, chain, options)
+            if rows:
+                self._set_expansion_data_sources("neo4j_fallback")
+            else:
+                self._set_expansion_data_sources()
 
         prices = await self._prefetch_prices(rows)
         return await self._build_graph(

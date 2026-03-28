@@ -108,8 +108,14 @@ class UTXOChainCompiler(BaseChainCompiler):
             Tuple of (nodes, edges).
         """
         rows = await self._fetch_outbound_event_store(seed_address, chain, options)
-        if not rows:
+        if rows:
+            self._set_expansion_data_sources("event_store")
+        else:
             rows = await self._fetch_outbound_neo4j(seed_address, chain, options)
+            if rows:
+                self._set_expansion_data_sources("neo4j_fallback")
+            else:
+                self._set_expansion_data_sources()
         lightning_channel_opens = await self._fetch_lightning_channel_open_events(
             rows, chain=chain, direction="forward"
         )
@@ -155,8 +161,14 @@ class UTXOChainCompiler(BaseChainCompiler):
             Tuple of (nodes, edges).
         """
         rows = await self._fetch_inbound_event_store(seed_address, chain, options)
-        if not rows:
+        if rows:
+            self._set_expansion_data_sources("event_store")
+        else:
             rows = await self._fetch_inbound_neo4j(seed_address, chain, options)
+            if rows:
+                self._set_expansion_data_sources("neo4j_fallback")
+            else:
+                self._set_expansion_data_sources()
         lightning_channel_opens = await self._fetch_lightning_channel_open_events(
             rows, chain=chain, direction="backward"
         )

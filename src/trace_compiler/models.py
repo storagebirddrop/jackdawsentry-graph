@@ -82,6 +82,12 @@ OperationType = Literal[
     "search",
 ]
 
+ExpansionDataSource = Literal[
+    "event_store",
+    "neo4j_fallback",
+    "live_history",
+]
+
 
 # ---------------------------------------------------------------------------
 # Type-specific node data payloads
@@ -547,6 +553,8 @@ class ExpansionResponseV2(BaseModel):
         default_factory=lambda: ChainContext(primary_chain="unknown", chains_present=[])
     )
     asset_context: AssetContext = Field(default_factory=AssetContext)
+    data_sources: List[ExpansionDataSource] = []
+    integrity_warning: Optional[str] = None
     empty_state: Optional[ExpansionEmptyState] = None
     ingest_pending: bool = False
 

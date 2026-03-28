@@ -98,8 +98,14 @@ class SolanaChainCompiler(BaseChainCompiler):
             Tuple of (nodes, edges).
         """
         rows = await self._fetch_outbound(seed_address, options)
-        if not rows:
+        if rows:
+            self._set_expansion_data_sources("event_store")
+        else:
             rows = await self._fetch_outbound_neo4j(seed_address, options)
+            if rows:
+                self._set_expansion_data_sources("neo4j_fallback")
+            else:
+                self._set_expansion_data_sources()
 
         ata_map = await self._resolve_atas_bulk(
             {row.get("counterparty", "") for row in rows}
@@ -138,8 +144,14 @@ class SolanaChainCompiler(BaseChainCompiler):
             Tuple of (nodes, edges).
         """
         rows = await self._fetch_inbound(seed_address, options)
-        if not rows:
+        if rows:
+            self._set_expansion_data_sources("event_store")
+        else:
             rows = await self._fetch_inbound_neo4j(seed_address, options)
+            if rows:
+                self._set_expansion_data_sources("neo4j_fallback")
+            else:
+                self._set_expansion_data_sources()
 
         # For inbound transfers the seed is the destination; resolve the
         # *source* addresses in case they are ATAs.

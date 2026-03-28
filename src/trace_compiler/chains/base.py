@@ -17,6 +17,7 @@ Phase 3 status: interface defined, no implementations yet.
 
 from abc import ABC
 from abc import abstractmethod
+from contextvars import ContextVar
 from typing import Any
 from typing import Dict
 from typing import List
@@ -43,10 +44,31 @@ class BaseChainCompiler(ABC):
         self._pg = postgres_pool
         self._neo4j = neo4j_driver
         self._redis = redis_client
+        self._expansion_data_sources: ContextVar[tuple[str, ...]] = ContextVar(
+            f"{self.__class__.__name__}.expansion_data_sources",
+            default=(),
+        )
         from src.trace_compiler.bridges.hop_compiler import BridgeHopCompiler
         from src.trace_compiler.services.service_classifier import ServiceClassifier
         self._bridge = BridgeHopCompiler(postgres_pool=postgres_pool, redis_client=redis_client)
         self._service = ServiceClassifier(postgres_pool=postgres_pool, neo4j_driver=neo4j_driver)
+
+    def _set_expansion_data_sources(self, *sources: str) -> None:
+        """Record the backing stores used for the current expansion call."""
+        ordered: list[str] = []
+        seen: set[str] = set()
+        for source in sources:
+            if not source or source in seen:
+                continue
+            seen.add(source)
+            ordered.append(source)
+        self._expansion_data_sources.set(tuple(ordered))
+
+    def _consume_expansion_data_sources(self) -> List[str]:
+        """Return and clear the backing-store markers for the current call."""
+        sources = list(self._expansion_data_sources.get(()))
+        self._expansion_data_sources.set(())
+        return sources
 
     @property
     @abstractmethod

@@ -147,6 +147,67 @@ def _supports_live_address_history(chain: str) -> bool:
     return _supports_direct_live_address_history(chain) or _supports_on_demand_address_history(chain)
 
 
+def _merge_data_sources(*groups: List[str]) -> List[str]:
+    """Return a stable ordered union of response data-source markers."""
+    merged: List[str] = []
+    seen: set[str] = set()
+    for group in groups:
+        for source in group or []:
+            if source in seen:
+                continue
+            seen.add(source)
+            merged.append(source)
+    return merged
+
+
+def _consume_compiler_data_sources(compiler: Any) -> List[str]:
+    """Return backing-store markers from a chain compiler when available."""
+    consume = getattr(compiler, "_consume_expansion_data_sources", None)
+    if not callable(consume):
+        return []
+    try:
+        return list(consume())
+    except Exception as exc:
+        logger.debug("Failed to consume chain compiler data-source markers: %s", exc)
+        return []
+
+
+def _build_integrity_warning(chain: str, data_sources: List[str]) -> Optional[str]:
+    """Describe provisional graph results when they came from fallback stores."""
+    sources = _merge_data_sources(data_sources)
+    if not sources:
+        return None
+
+    uses_neo4j = "neo4j_fallback" in sources
+    uses_live_history = "live_history" in sources
+
+    if uses_neo4j and uses_live_history:
+        return (
+            f"This {chain.upper()} expansion includes fallback results from Neo4j and live "
+            "address history instead of fully indexed PostgreSQL facts. Treat these results "
+            "as provisional until ingest and graph materialization catch up."
+        )
+    if uses_neo4j:
+        if sources == ["neo4j_fallback"]:
+            return (
+                f"This {chain.upper()} expansion returned fallback results from Neo4j while "
+                "the PostgreSQL event store had no indexed facts for the reviewed path. "
+                "Treat these results as provisional until raw facts are ingested."
+            )
+        return (
+            f"This {chain.upper()} expansion includes fallback results from Neo4j because "
+            "the PostgreSQL event store did not fully satisfy the reviewed path. Treat "
+            "these results as provisional until raw facts are ingested."
+        )
+    if uses_live_history:
+        return (
+            f"This {chain.upper()} expansion used live address history instead of fully "
+            "indexed backend facts. Treat these results as provisional until ingest and "
+            "graph materialization catch up."
+        )
+    return None
+
+
 def _expansion_cache_key(
     session_id: str,
     request: ExpandRequest,
@@ -472,6 +533,8 @@ class TraceCompiler:
                         layout_hints=LayoutHints(**data["layout_hints"]),
                         chain_context=ChainContext(**data["chain_context"]),
                         asset_context=AssetContext(**data["asset_context"]),
+                        data_sources=data.get("data_sources", []),
+                        integrity_warning=data.get("integrity_warning"),
                         timestamp=datetime.now(timezone.utc),
                     )
             except Exception as cache_exc:
@@ -485,6 +548,7 @@ class TraceCompiler:
 
         added_nodes: List[InvestigationNode] = []
         added_edges: List[InvestigationEdge] = []
+        data_sources: List[str] = []
         empty_state: Optional[ExpansionEmptyState] = None
         ingest_pending = False
 
@@ -502,6 +566,10 @@ class TraceCompiler:
                         chain=chain,
                         options=request.options,
                     )
+                    data_sources = _merge_data_sources(
+                        data_sources,
+                        _consume_compiler_data_sources(compiler),
+                    )
                 elif op in ("expand_prev", "expand_previous"):
                     added_nodes, added_edges = await compiler.expand_prev(
                         session_id=session_id,
@@ -511,6 +579,10 @@ class TraceCompiler:
                         seed_address=identifier,
                         chain=chain,
                         options=request.options,
+                    )
+                    data_sources = _merge_data_sources(
+                        data_sources,
+                        _consume_compiler_data_sources(compiler),
                     )
                 elif op == "expand_neighbors":
                     # Split max_results between forward and backward expansion
@@ -550,6 +622,10 @@ class TraceCompiler:
                         chain=chain,
                         options=fwd_options,
                     )
+                    data_sources = _merge_data_sources(
+                        data_sources,
+                        _consume_compiler_data_sources(compiler),
+                    )
                     bwd_n, bwd_e = await compiler.expand_prev(
                         session_id=session_id,
                         branch_id=_branch,
@@ -558,6 +634,10 @@ class TraceCompiler:
                         seed_address=identifier,
                         chain=chain,
                         options=bwd_options,
+                    )
+                    data_sources = _merge_data_sources(
+                        data_sources,
+                        _consume_compiler_data_sources(compiler),
                     )
                     # Deduplicate nodes by node_id.
                     seen = {n.node_id for n in fwd_n}
@@ -603,6 +683,7 @@ class TraceCompiler:
             if live_nodes or live_edges:
                 added_nodes = live_nodes
                 added_edges = live_edges
+                data_sources = _merge_data_sources(data_sources, ["live_history"])
             else:
                 if _supports_on_demand_address_history(chain):
                     try:
@@ -629,6 +710,7 @@ class TraceCompiler:
                     )
 
         # Build the response
+        integrity_warning = _build_integrity_warning(chain, data_sources)
         response = ExpansionResponseV2(
             operation_id=new_operation_id(),
             operation_type=request.operation_type,
@@ -667,6 +749,8 @@ class TraceCompiler:
                     {e.asset_symbol for e in added_edges if e.asset_symbol}
                 ),
             ),
+            data_sources=data_sources,
+            integrity_warning=integrity_warning,
             empty_state=empty_state,
             ingest_pending=ingest_pending,
             timestamp=datetime.now(timezone.utc),
@@ -705,6 +789,8 @@ class TraceCompiler:
                     "layout_hints": response.layout_hints.model_dump(mode="json"),
                     "chain_context": response.chain_context.model_dump(mode="json"),
                     "asset_context": response.asset_context.model_dump(mode="json"),
+                    "data_sources": response.data_sources,
+                    "integrity_warning": response.integrity_warning,
                     "timestamp": response.timestamp.isoformat(),
                 })
                 await self._redis.setex(cache_key, 900, payload)  # 15 min TTL

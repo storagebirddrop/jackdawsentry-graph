@@ -596,6 +596,8 @@ export interface ExpansionResponseV2 {
   chain_context: ChainContext;
   pagination?: PaginationMeta;
   asset_context?: AssetContext;
+  data_sources?: Array<'event_store' | 'neo4j_fallback' | 'live_history'>;
+  integrity_warning?: string | null;
   empty_state?: ExpansionEmptyState;
   ingest_pending?: boolean;
 }
