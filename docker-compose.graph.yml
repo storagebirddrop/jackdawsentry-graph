@@ -2,7 +2,7 @@
 
 services:
   neo4j:
-    image: neo4j:5.14-community
+    image: neo4j:5.14-community@sha256:677d3ad677cbf3993db10b60cf990b0df394687210df3f1ce124459ae8542e64
     container_name: jackdawsentry_graph_neo4j
     restart: unless-stopped
     ports:
@@ -16,7 +16,7 @@ services:
       - jackdawsentry_graph_network
 
   postgres:
-    image: postgres:15-alpine
+    image: postgres:15-alpine@sha256:5fe8ca7fc662071188c30271cb870d1ce9a6ec4578c934b064697ae77a9241e1
     container_name: jackdawsentry_graph_postgres
     restart: unless-stopped
     ports:
@@ -32,7 +32,7 @@ services:
       - jackdawsentry_graph_network
 
   redis:
-    image: redis:7-alpine
+    image: redis:7-alpine@sha256:02f2cc4882f8bf87c79a220ac958f58c700bdec0dfb9b9ea61b62fb0e8f1bfcf
     container_name: jackdawsentry_graph_redis
     restart: unless-stopped
     ports:
@@ -102,14 +102,13 @@ services:
       - jackdawsentry_graph_network
 
   graph-nginx:
-    image: nginx:alpine
+    build:
+      context: .
+      dockerfile: docker/graph-nginx.Dockerfile
     container_name: jackdawsentry_graph_nginx
     restart: unless-stopped
     ports:
       - "8081:80"
-    volumes:
-      - ./docker/nginx.graph.conf:/etc/nginx/nginx.conf
-      - ./frontend:/usr/share/nginx/html
     depends_on:
       - graph-api
     networks:

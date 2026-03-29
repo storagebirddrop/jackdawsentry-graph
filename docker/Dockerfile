@@ -1,6 +1,6 @@
 # Jackdaw Sentry Graph - Production Docker Image
 
-FROM python:3.11-slim AS builder
+FROM python:3.11-slim@sha256:9358444059ed78e2975ada2c189f1c1a3144a5dab6f35bff8c981afb38946634 AS builder
 
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
@@ -14,11 +14,11 @@ RUN apt-get update && apt-get install -y \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.minimal.txt requirements.docker.txt ./
+COPY requirements.release.txt ./
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.docker.txt
+    pip install --no-cache-dir -r requirements.release.txt
 
-FROM python:3.11-slim
+FROM python:3.11-slim@sha256:9358444059ed78e2975ada2c189f1c1a3144a5dab6f35bff8c981afb38946634
 
 RUN groupadd -r jackdaw && useradd -r -g jackdaw jackdaw
 

@@ -104,6 +104,10 @@ The graph API service loads its mode flags from the repo `.env` during compose
 boot so ambient shell values like `DEBUG=release` do not accidentally override
 the standalone graph runtime.
 
+The trusted compose path now packages the reviewed frontend assets into the
+`graph-nginx` image during `docker compose ... up --build`, so it no longer
+depends on ignored local `frontend/app/dist` residue.
+
 ## Release And Drill Records
 
 Keep durable product-facing material in stable doc locations:
@@ -282,7 +286,7 @@ Frontend verification:
 
 ```bash
 cd frontend/app
-npm install
+npm ci
 npm run lint
 npm run build
 ```
@@ -298,6 +302,7 @@ Repo verification helpers:
 
 ```bash
 python scripts/quality/boundary_audit.py
+python scripts/quality/release_provenance_audit.py
 python scripts/quality/public_readiness_audit.py
 python scripts/quality/live_abuse_probe.py --username <your-username> --password <your-password>
 python scripts/dev/load_perf_fixture_dataset.py
