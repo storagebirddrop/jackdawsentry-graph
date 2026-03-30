@@ -16,7 +16,7 @@ Do not couple it back to private-platform workflows.
 ## Commands
 
 ```bash
-npm install
+npm ci
 npm run lint
 npm run build
 npm run dev
@@ -35,6 +35,10 @@ Use with the graph-only runtime:
 ```bash
 docker compose -f ../../docker-compose.graph.yml up --build
 ```
+
+That compose build now packages the reviewed frontend bundle into the
+`graph-nginx` image instead of serving ignored local `dist` output from the
+host filesystem.
 
 Then visit:
 
