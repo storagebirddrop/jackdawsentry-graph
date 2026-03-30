@@ -180,13 +180,16 @@ class EthereumCollector(BaseCollector):
             if not block_data:
                 return None
 
+            def _to_hex(val: object) -> str:
+                return val.hex() if isinstance(val, bytes) else str(val)
+
             return Block(
-                hash=block_data["hash"].hex(),
+                hash=_to_hex(block_data["hash"]),
                 blockchain=self.blockchain,
                 number=block_data["number"],
                 timestamp=datetime.fromtimestamp(block_data["timestamp"]),
                 transaction_count=len(block_data["transactions"]),
-                parent_hash=block_data["parentHash"].hex(),
+                parent_hash=_to_hex(block_data["parentHash"]),
                 miner=block_data["miner"],
                 difficulty=str(block_data["difficulty"]),
                 size=block_data["size"],
@@ -254,7 +257,11 @@ class EthereumCollector(BaseCollector):
                 value=value,
                 timestamp=block_timestamp or datetime.now(timezone.utc),
                 block_number=block_number,
-                block_hash=tx_data["blockHash"].hex() if tx_data["blockHash"] else None,
+                block_hash=(
+                    tx_data["blockHash"].hex()
+                    if tx_data["blockHash"] and isinstance(tx_data["blockHash"], bytes)
+                    else (tx_data["blockHash"] if tx_data["blockHash"] else None)
+                ),
                 gas_used=gas_used,
                 gas_price=gas_price,
                 fee=fee,
@@ -262,7 +269,7 @@ class EthereumCollector(BaseCollector):
                 # web3.py v7 no longer includes "confirmations" in receipts.
                 confirmations=receipt.get("confirmations", 0) if receipt else 0,
                 contract_address=(
-                    receipt["contractAddress"].hex()
+                    receipt["contractAddress"]
                     if receipt and receipt["contractAddress"]
                     else None
                 ),
@@ -683,7 +690,8 @@ class EthereumCollector(BaseCollector):
             # web3.py v7: transactions are HexBytes when full_transactions=False;
             # v6: they are dicts with a "hash" key.  Handle both.
             return [
-                tx.hex() if isinstance(tx, bytes) else tx["hash"].hex()
+                tx.hex() if isinstance(tx, bytes)
+                else (tx["hash"].hex() if isinstance(tx["hash"], bytes) else tx["hash"])
                 for tx in block["transactions"]
             ]
 
@@ -700,20 +708,25 @@ class EthereumCollector(BaseCollector):
         try:
             for log in receipt.get("logs", []):
                 # Check if it's a Transfer event (topic0 = keccak256("Transfer(address,address,uint256)"))
+                def _topic_hex(t: object) -> str:
+                    return t.hex() if isinstance(t, bytes) else str(t)
+
                 if (
                     len(log["topics"]) == 3
-                    and log["topics"][0].hex()
+                    and _topic_hex(log["topics"][0])
                     == "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
                 ):
 
                     # Parse Transfer event
-                    from_address = "0x" + log["topics"][1].hex()[-40:]
-                    to_address = "0x" + log["topics"][2].hex()[-40:]
+                    from_address = "0x" + _topic_hex(log["topics"][1])[-40:]
+                    to_address = "0x" + _topic_hex(log["topics"][2])[-40:]
 
                     # Decode amount (first 32 bytes of data)
-                    amount = int(log["data"].hex(), 16)
+                    raw_data = log["data"]
+                    amount = int(raw_data.hex() if isinstance(raw_data, bytes) else raw_data, 16)
 
-                    contract_address = log["address"].hex()
+                    # log["address"] is a ChecksumAddress (str) in web3.py v7 — use directly
+                    contract_address = log["address"]
                     symbol = await self.get_token_symbol(contract_address)
                     decimals = await self.get_token_decimals(contract_address)
                     amount_adjusted = amount / (10**decimals)
