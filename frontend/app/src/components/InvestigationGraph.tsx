@@ -32,6 +32,7 @@ import '@xyflow/react/dist/style.css';
 import { useGraphStore, type BranchMeta } from '../store/graphStore';
 import { expandNode, getSessionAssets, saveSessionSnapshot } from '../api/client';
 import { computeElkLayout } from '../layout/elkLayout';
+import { computeLocalPositions } from '../layout/incrementalPlacement';
 import type {
   AssetCatalogItem,
   BridgeHopData,
@@ -285,6 +286,7 @@ export default function InvestigationGraph({
     importSnapshot,
     branchMap,
     updateBridgeHopStatus,
+    markUserPlaced,
   } = useGraphStore();
 
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>(rfNodes);
@@ -843,6 +845,19 @@ export default function InvestigationGraph({
     const newNodes = rfNodes.filter((n) => !layoutedNodeIds.current.has(n.id));
     if (newNodes.length === 0) return; // Nothing new to place.
 
+    // If every incoming node already has a non-trivial position from local
+    // pre-placement, mark them as laid out and skip ELK entirely.  This makes
+    // normal expansion synchronous — no Web Worker round-trip required.
+    // ELK still runs for the initial session (seed at {0,0}) and as a fallback
+    // whenever a node somehow arrives without a pre-placed position.
+    const allPrePlaced = newNodes.every(
+      (n) => Math.abs(n.position.x) > 1 || Math.abs(n.position.y) > 1,
+    );
+    if (allPrePlaced) {
+      for (const n of newNodes) layoutedNodeIds.current.add(n.id);
+      return;
+    }
+
     const currentLayout = Date.now();
     layoutRef.current = currentLayout;
 
@@ -850,7 +865,8 @@ export default function InvestigationGraph({
     // as anchors when computing layer assignments for new nodes.
     const fixedPositions = new Map<string, { x: number; y: number }>();
     for (const n of rfNodes) {
-      if (layoutedNodeIds.current.has(n.id)) {
+      const d = n.data as { is_pinned?: boolean; userPlaced?: boolean };
+      if (layoutedNodeIds.current.has(n.id) || d.is_pinned || d.userPlaced) {
         fixedPositions.set(n.id, n.position);
       }
     }
@@ -954,6 +970,27 @@ export default function InvestigationGraph({
         }
 
         applyExpansionDelta(response);
+
+        // Pre-place new nodes via collision-aware local placement so they never
+        // render at {0,0} and do not overlap existing nodes.  React 18 batches
+        // this setRfPositions call with applyExpansionDelta into one render cycle.
+        // The layout useEffect will skip ELK for these nodes since they already
+        // have non-trivial positions, making expansion fully synchronous.
+        const trulyNewIds = deltaNodes
+          .filter((dn) => !existingNodeIds.has(dn.node_id))
+          .map((dn) => dn.node_id);
+        if (trulyNewIds.length > 0) {
+          const anchorRf = rfNodes.find((n) => n.id === node.node_id);
+          if (anchorRf) {
+            const localPositions = computeLocalPositions(
+              anchorRf.position,
+              trulyNewIds,
+              operation,
+              rfNodes,
+            );
+            setRfPositions(localPositions);
+          }
+        }
       } catch (err) {
         console.error('Expand failed:', err);
         const message = err instanceof Error ? err.message : 'Unable to expand this node right now.';
@@ -962,7 +999,7 @@ export default function InvestigationGraph({
         setExpandingNode(node.node_id, false);
       }
     },
-    [sessionId, rfNodes, rfEdges, expandingNodeIds, setExpandingNode, applyExpansionDelta, showNotice, filters.selectedAssets],
+    [sessionId, rfNodes, rfEdges, expandingNodeIds, setExpandingNode, applyExpansionDelta, setRfPositions, showNotice, filters.selectedAssets],
   );
 
   // Derived set consumed by IngestPendingContext and the enrichedNodes mapping.
@@ -1046,7 +1083,10 @@ export default function InvestigationGraph({
 
   const handleNodeDragStop = useCallback((_event: unknown, node: Node) => {
     syncRfPositions([{ id: node.id, position: node.position }]);
-  }, [syncRfPositions]);
+    // Mark as user-placed so future ELK passes (fallback or initial) always
+    // treat this node as a hard positional anchor regardless of layoutedNodeIds.
+    markUserPlaced(node.id);
+  }, [syncRfPositions, markUserPlaced]);
 
   const handleHideNode = useCallback((nodeId: string) => {
     setNodeHidden(nodeId, true);
@@ -2595,12 +2635,6 @@ export default function InvestigationGraph({
         onInit={(instance) => {
           reactFlowRef.current = instance;
           scheduleFitView(0);
-        }}
-        fitView
-        fitViewOptions={{
-          padding: 0.2,
-          includeHiddenNodes: false,
-          maxZoom: 1.15,
         }}
         minZoom={0.1}
         maxZoom={2.2}

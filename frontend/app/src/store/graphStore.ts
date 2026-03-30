@@ -169,6 +169,15 @@ export interface GraphState {
   restoreAllHiddenNodes: () => void;
   setExpandingNode: (nodeId: string, expanding: boolean) => void;
   updateBridgeHopStatus: (nodeId: string, status: BridgeHopStatusResponse) => void;
+  /**
+   * Mark a node as user-placed after a manual drag.
+   *
+   * Sets `rfNode.data.userPlaced = true` so the layout engine treats it as a
+   * hard positional anchor — equivalent to `is_pinned` but client-side only.
+   * The flag is intentionally not persisted to the server; it lives in rfNode
+   * data for the duration of the session.
+   */
+  markUserPlaced: (nodeId: string) => void;
   reset: () => void;
 
   /** Serialise current graph state to a JSON string (for session snapshot). */
@@ -295,9 +304,17 @@ export const useGraphStore = create<GraphState>((set, get) => ({
       });
     }
 
-    // Preserve positions of existing nodes so they don't jump on delta updates.
+    // Preserve positions and client-side flags of existing nodes so they don't
+    // jump or lose their user-placement lock on delta updates.  toRfNode()
+    // rebuilds rfNode.data from InvestigationNode and cannot carry client-only
+    // flags (userPlaced) — we must merge them back explicitly.
     const existingPositions = new Map<string, { x: number; y: number }>();
-    for (const n of get().rfNodes) existingPositions.set(n.id, n.position);
+    const existingUserPlaced = new Map<string, boolean>();
+    for (const n of get().rfNodes) {
+      existingPositions.set(n.id, n.position);
+      const d = n.data as { userPlaced?: boolean };
+      if (d.userPlaced) existingUserPlaced.set(n.id, true);
+    }
 
     set({
       nodeMap: newNodeMap,
@@ -306,7 +323,9 @@ export const useGraphStore = create<GraphState>((set, get) => ({
       rfNodes: Array.from(newNodeMap.values()).map((inv) => {
         const rf = toRfNode(inv);
         const pos = existingPositions.get(rf.id);
-        return pos ? { ...rf, position: pos } : rf;
+        const wasUserPlaced = existingUserPlaced.get(rf.id);
+        const base = pos ? { ...rf, position: pos } : rf;
+        return wasUserPlaced ? { ...base, data: { ...base.data, userPlaced: true } } : base;
       }),
       rfEdges: Array.from(newEdgeMap.values()).map(toRfEdge),
     });
@@ -327,6 +346,14 @@ export const useGraphStore = create<GraphState>((set, get) => ({
       nodes.map((node) => [node.id, node.position]),
     );
     get().setRfPositions(positions);
+  },
+
+  markUserPlaced(nodeId) {
+    set((state) => ({
+      rfNodes: state.rfNodes.map((n) =>
+        n.id === nodeId ? { ...n, data: { ...n.data, userPlaced: true } } : n,
+      ),
+    }));
   },
 
   setNodeHidden(nodeId, hidden) {
@@ -463,12 +490,14 @@ export const useGraphStore = create<GraphState>((set, get) => ({
             branch_color_index?: number;
             branch_color?: string;
           };
+          const wasUserPlaced = (existingData as unknown as { userPlaced?: boolean }).userPlaced;
           return {
             ...node,
             data: {
               ...nextNode,
               branch_color_index: existingData.branch_color_index,
               branch_color: existingData.branch_color,
+              ...(wasUserPlaced ? { userPlaced: true } : {}),
             },
           };
         }),
