@@ -40,6 +40,7 @@ GRAPH_BOOTSTRAP_MIGRATIONS = {
     "012_raw_evm_logs.sql",
     "013_raw_evm_logs_tron.sql",
     "016_token_metadata_cache.sql",
+    "017_raw_solana_instructions_rebuild.sql",
 }
 
 OPTIONAL_LEGACY_MIGRATIONS = {

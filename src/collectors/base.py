@@ -937,23 +937,28 @@ class BaseCollector(ABC):
             return
 
         for transfer in tx.token_transfers:
+            # Dedup key: transfer_index + blockchain.
+            # Nullable enrichment fields (fiat_value_at_transfer, asset_contract,
+            # canonical_asset_id) are excluded from the MERGE key — Neo4j rejects
+            # MERGE when any key property is null.
             transfer_query = """
             MATCH (t:Transaction {hash: $hash, blockchain: $blockchain})
             MERGE (to_addr:Address {address: $to_address, blockchain: $blockchain})
             ON CREATE SET to_addr.first_seen = $timestamp
-            MERGE (t)-[:TRANSFER {
+            MERGE (t)-[r:TRANSFER {
                 transfer_index: $transfer_index,
-                asset_type: $asset_type,
-                asset_symbol: $asset_symbol,
-                asset_contract: $asset_contract,
-                from_address: $from_address,
-                to_address: $to_address,
-                amount_raw: $amount_raw,
-                amount_normalized: $amount_normalized,
-                fiat_value_at_transfer: $fiat_value_at_transfer,
-                canonical_asset_id: $canonical_asset_id,
                 blockchain: $blockchain
             }]->(to_addr)
+            ON CREATE SET
+                r.asset_type = $asset_type,
+                r.asset_symbol = $asset_symbol,
+                r.asset_contract = $asset_contract,
+                r.from_address = $from_address,
+                r.to_address = $to_address,
+                r.amount_raw = $amount_raw,
+                r.amount_normalized = $amount_normalized,
+                r.fiat_value_at_transfer = $fiat_value_at_transfer,
+                r.canonical_asset_id = $canonical_asset_id
             """
             async with get_neo4j_session() as session:
                 await session.run(
