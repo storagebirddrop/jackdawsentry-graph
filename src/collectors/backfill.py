@@ -301,15 +301,26 @@ class EventStoreBackfillWorker:
             logger.error("Backfill failed for %s: %s", blockchain, exc)
 
     async def _backfill_single_block(self, collector: Any, block_number: int) -> int:
-        """Backfill a single block and return attempted transaction count."""
-        tx_hashes = await collector.get_block_transactions(block_number)
+        """Backfill a single block and return attempted transaction count.
+
+        Uses ``backfill_block`` when available (EVM collectors) which fetches
+        the full block and receipts concurrently — essential for dense Ethereum
+        blocks with 300-600+ transactions where serial fetching exceeds any
+        reasonable timeout.  Falls back to the serial hash-by-hash path for
+        collectors that don't implement ``backfill_block``.
+        """
+        if hasattr(collector, "backfill_block"):
+            transactions = await collector.backfill_block(block_number)
+        else:
+            tx_hashes = await collector.get_block_transactions(block_number)
+            transactions = []
+            for tx_hash in tx_hashes:
+                tx = await collector.get_transaction(tx_hash)
+                if tx:
+                    transactions.append(tx)
+
         block_attempted_transactions = 0
-
-        for tx_hash in tx_hashes:
-            tx = await collector.get_transaction(tx_hash)
-            if not tx:
-                continue
-
+        for tx in transactions:
             await collector.normalize_token_transfers(tx)
             await collector._insert_raw_transaction(tx)
             if tx.token_transfers:
