@@ -203,6 +203,9 @@ class EthereumCollector(BaseCollector):
             if not self.w3:
                 return None
 
+            if not tx_hash.startswith("0x"):
+                tx_hash = "0x" + tx_hash
+
             tx_data = self.w3.eth.get_transaction(tx_hash)
             if not tx_data:
                 return None

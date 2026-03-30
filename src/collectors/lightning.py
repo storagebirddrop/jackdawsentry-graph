@@ -1136,8 +1136,12 @@ class LightningMonitor:
 
                 # Cache metrics
                 async with get_redis_connection() as redis:
+                    serializable = {
+                        k: v.isoformat() if hasattr(v, "isoformat") else v
+                        for k, v in self.metrics.items()
+                    }
                     await redis.setex(
-                        "lightning_metrics", 300, json.dumps(self.metrics)  # 5 minutes
+                        "lightning_metrics", 300, json.dumps(serializable)  # 5 minutes
                     )
 
                 await asyncio.sleep(60)  # Update every minute

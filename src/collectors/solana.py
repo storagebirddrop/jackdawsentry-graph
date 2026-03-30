@@ -357,7 +357,7 @@ class SolanaCollector(BaseCollector):
             if not self.client:
                 return 0.0
 
-            balance = await self.client.get_balance(address)
+            balance = await self.client.get_balance(Pubkey.from_string(address))
             if balance.value:
                 return balance.value / 1e9  # Convert lamports to SOL
 
