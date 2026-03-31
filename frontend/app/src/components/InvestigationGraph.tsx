@@ -1092,13 +1092,16 @@ export default function InvestigationGraph({
     if (trulyNewIds.length > 0) {
       const anchorRf = rfNodes.find((n) => n.id === pendingPreview.seed_node_id);
       if (anchorRf) {
-        const localPositions = computeLocalPositions(
-          anchorRf.position,
-          trulyNewIds,
-          pendingPreview.operation_type,
-          rfNodes,
-        );
-        setRfPositions(localPositions);
+        // Only compute positions for expand operations, not create_session
+        if (pendingPreview.operation_type !== 'create_session') {
+          const localPositions = computeLocalPositions(
+            anchorRf.position,
+            trulyNewIds,
+            pendingPreview.operation_type as 'expand_next' | 'expand_prev' | 'expand_neighbors',
+            rfNodes,
+          );
+          setRfPositions(localPositions);
+        }
       }
     }
 

@@ -40,7 +40,8 @@ import {
 } from './graphVisuals';
 
 // Add CSS for accessible focus indicators
-const styleSheet = typeof document !== 'undefined' ? (() => {
+(() => {
+  if (typeof document === 'undefined') return;
   const style = document.createElement('style');
   style.textContent = `
     .filter-input:focus-visible {
@@ -49,8 +50,7 @@ const styleSheet = typeof document !== 'undefined' ? (() => {
     }
   `;
   document.head.appendChild(style);
-  return style;
-})() : null;
+})();
 
 export interface PathStory {
   pathId: string;
