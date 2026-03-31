@@ -16,6 +16,13 @@ from typing import List
 from typing import Optional
 from typing import Tuple
 
+
+def to_serializable(obj):
+    """Convert datetime-like objects to ISO format strings for JSON serialization"""
+    if hasattr(obj, "isoformat"):
+        return obj.isoformat()
+    return obj
+
 try:
     import aiohttp
 except ImportError:  # pragma: no cover
@@ -1114,7 +1121,7 @@ class LightningMonitor:
         try:
             async with get_redis_connection() as redis:
                 await redis.setex(
-                    "lightning_channels", 300, json.dumps(channels)  # 5 minutes
+                    "lightning_channels", 300, json.dumps(channels, default=to_serializable)  # 5 minutes
                 )
         except Exception as e:
             logger.error(f"Error caching channel data: {e}")
@@ -1136,12 +1143,8 @@ class LightningMonitor:
 
                 # Cache metrics
                 async with get_redis_connection() as redis:
-                    serializable = {
-                        k: v.isoformat() if hasattr(v, "isoformat") else v
-                        for k, v in self.metrics.items()
-                    }
                     await redis.setex(
-                        "lightning_metrics", 300, json.dumps(serializable)  # 5 minutes
+                        "lightning_metrics", 300, json.dumps(self.metrics, default=to_serializable)  # 5 minutes
                     )
 
                 await asyncio.sleep(60)  # Update every minute

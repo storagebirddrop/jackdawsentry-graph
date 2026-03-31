@@ -160,9 +160,18 @@ export interface GraphState {
   /** Max node count before auto-collapse prompt */
   maxNodes: number;
 
+  /**
+   * Pending expansion preview — holds a fetched ExpansionResponseV2 that has
+   * NOT yet been applied to the canvas.  Set by handlePreviewExpand, cleared
+   * by handleApplyPreview or an explicit dismiss.  Intentionally excluded from
+   * session snapshots; previews are transient.
+   */
+  pendingPreview: ExpansionResponseV2 | null;
+
   // Actions
   initSession: (sessionId: string, rootNode: InvestigationNode) => void;
   applyExpansionDelta: (response: ExpansionResponseV2) => void;
+  setPendingPreview: (response: ExpansionResponseV2 | null) => void;
   setRfPositions: (positions: Map<string, { x: number; y: number }>) => void;
   syncRfPositions: (nodes: Array<Pick<Node, 'id' | 'position'>>) => void;
   setNodeHidden: (nodeId: string, hidden: boolean) => void;
@@ -199,6 +208,7 @@ export const useGraphStore = create<GraphState>((set, get) => ({
   expandingNodeIds: new Set(),
   branchMap: new Map(),
   maxNodes: 500,
+  pendingPreview: null,
 
   initSession(sessionId, rootNode) {
     const normalizedRoot = normalizeNode(rootNode);
@@ -420,6 +430,10 @@ export const useGraphStore = create<GraphState>((set, get) => ({
     });
   },
 
+  setPendingPreview(response) {
+    set({ pendingPreview: response });
+  },
+
   updateBridgeHopStatus(nodeId, status) {
     set((state) => {
       const existing = state.nodeMap.get(nodeId);
@@ -514,6 +528,7 @@ export const useGraphStore = create<GraphState>((set, get) => ({
       rfEdges: [],
       expandingNodeIds: new Set(),
       branchMap: new Map(),
+      pendingPreview: null,
     });
   },
 

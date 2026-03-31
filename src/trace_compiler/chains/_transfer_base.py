@@ -318,11 +318,16 @@ class _GenericTransferChainCompiler(BaseChainCompiler):
                     WHERE blockchain = $1
                       AND from_address = $2
                       AND to_address IS NOT NULL
+                      AND ($4::timestamptz IS NULL OR timestamp >= $4)
+                      AND ($5::timestamptz IS NULL OR timestamp <= $5)
                     ORDER BY timestamp DESC, tx_hash ASC
                     LIMIT $3
                 """
                 async with self._pg.acquire() as conn:
-                    rows = await conn.fetch(sql, chain, address, limit)
+                    rows = await conn.fetch(
+                        sql, chain, address, limit,
+                        options.time_from, options.time_to,
+                    )
                 result = [dict(r) for r in rows]
 
             # Merge token transfers for the same addresses.
@@ -377,11 +382,16 @@ class _GenericTransferChainCompiler(BaseChainCompiler):
                     WHERE blockchain = $1
                       AND to_address = $2
                       AND from_address IS NOT NULL
+                      AND ($4::timestamptz IS NULL OR timestamp >= $4)
+                      AND ($5::timestamptz IS NULL OR timestamp <= $5)
                     ORDER BY timestamp DESC, tx_hash ASC
                     LIMIT $3
                 """
                 async with self._pg.acquire() as conn:
-                    rows = await conn.fetch(sql, chain, address, limit)
+                    rows = await conn.fetch(
+                        sql, chain, address, limit,
+                        options.time_from, options.time_to,
+                    )
                 result = [dict(r) for r in rows]
 
             # Merge token transfers for the same addresses.
@@ -429,6 +439,8 @@ class _GenericTransferChainCompiler(BaseChainCompiler):
                 symbol_filters or None,
                 canonical_filters or None,
                 asset_address_filters or None,
+                options.time_from,
+                options.time_to,
             ]
 
             sql = """
@@ -478,6 +490,8 @@ class _GenericTransferChainCompiler(BaseChainCompiler):
                         AND LOWER(COALESCE(rtt.asset_contract, '')) = ANY($6)
                     )
                   )
+                  AND ($7::timestamptz IS NULL OR rtt.timestamp >= $7)
+                  AND ($8::timestamptz IS NULL OR rtt.timestamp <= $8)
                 ORDER BY timestamp DESC, tx_hash ASC
                 LIMIT $3
             """
@@ -563,6 +577,8 @@ class _GenericTransferChainCompiler(BaseChainCompiler):
                         AND LOWER(COALESCE(rtt.asset_contract, '')) = ANY($5)
                     )
                   )
+                  AND ($7::timestamptz IS NULL OR rtt.timestamp >= $7)
+                  AND ($8::timestamptz IS NULL OR rtt.timestamp <= $8)
                 ORDER BY timestamp DESC, tx_hash ASC
                 LIMIT $6
             """
@@ -575,6 +591,8 @@ class _GenericTransferChainCompiler(BaseChainCompiler):
                     canonical_filters or None,
                     asset_address_filters or None,
                     limit,
+                    options.time_from,
+                    options.time_to,
                 )
             return [dict(r) for r in rows]
         except Exception as exc:

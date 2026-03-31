@@ -232,11 +232,16 @@ class UTXOChainCompiler(BaseChainCompiler):
                   AND i.address    = $2
                   AND o.address IS NOT NULL
                   AND o.address <> $2
+                  AND ($4::timestamptz IS NULL OR o.timestamp >= $4)
+                  AND ($5::timestamptz IS NULL OR o.timestamp <= $5)
                 ORDER BY o.timestamp DESC
                 LIMIT $3
             """
             async with self._pg.acquire() as conn:
-                rows = await conn.fetch(sql, chain, address, limit)
+                rows = await conn.fetch(
+                    sql, chain, address, limit,
+                    options.time_from, options.time_to,
+                )
             return [dict(r) for r in rows]
         except Exception as exc:
             logger.warning(
@@ -273,11 +278,16 @@ class UTXOChainCompiler(BaseChainCompiler):
                   AND o.address    = $2
                   AND i.address IS NOT NULL
                   AND i.address <> $2
+                  AND ($4::timestamptz IS NULL OR o.timestamp >= $4)
+                  AND ($5::timestamptz IS NULL OR o.timestamp <= $5)
                 ORDER BY o.timestamp DESC
                 LIMIT $3
             """
             async with self._pg.acquire() as conn:
-                rows = await conn.fetch(sql, chain, address, limit)
+                rows = await conn.fetch(
+                    sql, chain, address, limit,
+                    options.time_from, options.time_to,
+                )
             return [dict(r) for r in rows]
         except Exception as exc:
             logger.warning(
@@ -298,11 +308,16 @@ class UTXOChainCompiler(BaseChainCompiler):
             return []
         try:
             limit = min(options.max_results, _SQL_FETCH_LIMIT)
-            cypher = """
-                MATCH (a:Address {address: $addr, blockchain: $chain})
+            time_filter = ""
+            if options.time_from:
+                time_filter += " AND t.timestamp >= $time_from"
+            if options.time_to:
+                time_filter += " AND t.timestamp <= $time_to"
+            cypher = f"""
+                MATCH (a:Address {{address: $addr, blockchain: $chain}})
                       -[:SENT]->(t:Transaction)
                       -[r:RECEIVED]->(tgt:Address)
-                WHERE tgt.address <> $addr
+                WHERE tgt.address <> $addr{time_filter}
                 RETURN tgt.address        AS counterparty,
                        t.hash             AS tx_hash,
                        r.value_satoshis   AS value_satoshis,
@@ -316,7 +331,12 @@ class UTXOChainCompiler(BaseChainCompiler):
             """
             async with self._neo4j.session() as session:
                 result = await session.run(
-                    cypher, addr=address, chain=chain, limit=limit
+                    cypher,
+                    addr=address,
+                    chain=chain,
+                    limit=limit,
+                    time_from=options.time_from,
+                    time_to=options.time_to,
                 )
                 return [dict(r) async for r in result]
         except Exception as exc:
@@ -331,10 +351,15 @@ class UTXOChainCompiler(BaseChainCompiler):
             return []
         try:
             limit = min(options.max_results, _SQL_FETCH_LIMIT)
-            cypher = """
+            time_filter = ""
+            if options.time_from:
+                time_filter += " AND t.timestamp >= $time_from"
+            if options.time_to:
+                time_filter += " AND t.timestamp <= $time_to"
+            cypher = f"""
                 MATCH (src:Address)-[:SENT]->(t:Transaction)
-                      -[r:RECEIVED]->(a:Address {address: $addr, blockchain: $chain})
-                WHERE src.address <> $addr
+                      -[r:RECEIVED]->(a:Address {{address: $addr, blockchain: $chain}})
+                WHERE src.address <> $addr{time_filter}
                 RETURN src.address        AS counterparty,
                        t.hash             AS tx_hash,
                        r.value_satoshis   AS value_satoshis,
@@ -348,7 +373,12 @@ class UTXOChainCompiler(BaseChainCompiler):
             """
             async with self._neo4j.session() as session:
                 result = await session.run(
-                    cypher, addr=address, chain=chain, limit=limit
+                    cypher,
+                    addr=address,
+                    chain=chain,
+                    limit=limit,
+                    time_from=options.time_from,
+                    time_to=options.time_to,
                 )
                 return [dict(r) async for r in result]
         except Exception as exc:

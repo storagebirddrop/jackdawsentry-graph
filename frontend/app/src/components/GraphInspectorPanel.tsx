@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { Edge, Node } from '@xyflow/react';
 
 import type {
@@ -7,6 +7,7 @@ import type {
   BtcSidechainPegData,
   BridgeHopData,
   EntityNodeData,
+  ExpansionResponseV2,
   InvestigationEdge,
   InvestigationNode,
   LightningChannelCloseData,
@@ -37,6 +38,19 @@ import {
   semanticMetaForNode,
   shortHash,
 } from './graphVisuals';
+
+// Add CSS for accessible focus indicators
+const styleSheet = typeof document !== 'undefined' ? (() => {
+  const style = document.createElement('style');
+  style.textContent = `
+    .filter-input:focus-visible {
+      outline: 2px solid #0f766e;
+      outline-offset: 1px;
+    }
+  `;
+  document.head.appendChild(style);
+  return style;
+})() : null;
 
 export interface PathStory {
   pathId: string;
@@ -82,6 +96,14 @@ interface Props {
   onTraceEdgeForward?: () => void;
   onTraceEdgeBackward?: () => void;
   onExpandNode?: (operation: 'expand_prev' | 'expand_next' | 'expand_neighbors') => void;
+  onPreviewExpand?: (
+    operation: 'expand_prev' | 'expand_next' | 'expand_neighbors',
+    filters: { timeFrom?: string; timeTo?: string; maxResults?: number },
+  ) => void;
+  previewResult?: ExpansionResponseV2 | null;
+  onApplyPreview?: (selectedEdgeIds?: Set<string>) => void;
+  onDismissPreview?: () => void;
+  isPreviewLoading?: boolean;
   onHideNode?: (nodeId: string) => void;
   bridgeStatusRefresh?: BridgeStatusRefreshState | null;
 }
@@ -117,6 +139,11 @@ export default function GraphInspectorPanel({
   onTraceEdgeForward,
   onTraceEdgeBackward,
   onExpandNode,
+  onPreviewExpand,
+  previewResult = null,
+  onApplyPreview,
+  onDismissPreview,
+  isPreviewLoading = false,
   onHideNode,
   bridgeStatusRefresh = null,
 }: Props) {
@@ -198,6 +225,11 @@ export default function GraphInspectorPanel({
           onFocusSemanticKey={onFocusSemanticKey}
           onClearSemanticFocus={onClearSemanticFocus}
           onExpandNode={onExpandNode}
+          onPreviewExpand={onPreviewExpand}
+          previewResult={previewResult}
+          onApplyPreview={onApplyPreview}
+          onDismissPreview={onDismissPreview}
+          isPreviewLoading={isPreviewLoading}
           onHideNode={onHideNode}
           bridgeStatusRefresh={bridgeStatusRefresh}
         />
@@ -258,6 +290,11 @@ function NodeInspectorContent({
   onFocusSemanticKey,
   onClearSemanticFocus,
   onExpandNode,
+  onPreviewExpand,
+  previewResult,
+  onApplyPreview,
+  onDismissPreview,
+  isPreviewLoading = false,
   onHideNode,
   bridgeStatusRefresh,
 }: {
@@ -283,6 +320,14 @@ function NodeInspectorContent({
   onFocusSemanticKey?: (key: string) => void;
   onClearSemanticFocus?: () => void;
   onExpandNode?: (operation: 'expand_prev' | 'expand_next' | 'expand_neighbors') => void;
+  onPreviewExpand?: (
+    operation: 'expand_prev' | 'expand_next' | 'expand_neighbors',
+    filters: { timeFrom?: string; timeTo?: string; maxResults?: number },
+  ) => void;
+  previewResult?: ExpansionResponseV2 | null;
+  onApplyPreview?: (selectedEdgeIds?: Set<string>) => void;
+  onDismissPreview?: () => void;
+  isPreviewLoading?: boolean;
   onHideNode?: (nodeId: string) => void;
   bridgeStatusRefresh?: BridgeStatusRefreshState | null;
 }) {
@@ -292,6 +337,18 @@ function NodeInspectorContent({
   const subtitle = nodeSubtitle(node);
   const activity = node.activity_summary;
   const nodeSemantic = semanticMeta ?? semanticMetaForNode(node);
+
+  // Filter & Preview local state
+  const [showFilters, setShowFilters] = useState(false);
+  const [filterTimeFrom, setFilterTimeFrom] = useState('');
+  const [filterTimeTo, setFilterTimeTo] = useState('');
+  const [filterMaxResults, setFilterMaxResults] = useState(25);
+  const [previewDirection, setPreviewDirection] = useState<'expand_prev' | 'expand_next' | 'expand_neighbors'>('expand_next');
+  const [selectedEdgeIds, setSelectedEdgeIds] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    const edges = previewResult?.edges ?? previewResult?.added_edges ?? [];
+    setSelectedEdgeIds(new Set(edges.map((e) => e.edge_id)));
+  }, [previewResult]);
 
   return (
     <div style={{ display: 'grid', gap: 18, marginTop: 18 }}>
@@ -398,6 +455,19 @@ function NodeInspectorContent({
               Expand around
             </button>
           )}
+          {onPreviewExpand && (
+            <button
+              type="button"
+              onClick={() => setShowFilters((v) => !v)}
+              style={{
+                ...actionButtonStyle,
+                color: showFilters ? '#0f766e' : '#334155',
+                borderColor: showFilters ? 'rgba(15,118,110,0.35)' : 'rgba(148,163,184,0.3)',
+              }}
+            >
+              {showFilters ? 'Hide filters ▲' : 'Filter & Preview ▼'}
+            </button>
+          )}
           {onHideNode && (
             <button
               type="button"
@@ -412,6 +482,227 @@ function NodeInspectorContent({
             </button>
           )}
         </div>
+
+        {showFilters && onPreviewExpand && (
+          <div style={{ marginTop: 12, display: 'grid', gap: 8 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+              <label style={filterLabelStyle}>
+                From
+                <input
+                  type="date"
+                  value={filterTimeFrom}
+                  onChange={(e) => setFilterTimeFrom(e.target.value)}
+                  className="filter-input"
+                  style={filterInputStyle}
+                />
+              </label>
+              <label style={filterLabelStyle}>
+                To
+                <input
+                  type="date"
+                  value={filterTimeTo}
+                  onChange={(e) => setFilterTimeTo(e.target.value)}
+                  className="filter-input"
+                  style={filterInputStyle}
+                />
+              </label>
+            </div>
+            <label style={filterLabelStyle}>
+              Max results
+              <input
+                type="number"
+                min={1}
+                max={100}
+                value={filterMaxResults}
+                onChange={(e) => setFilterMaxResults(Math.max(1, Math.min(100, Number(e.target.value))))}
+                className="filter-input"
+                style={{ ...filterInputStyle, width: 72 }}
+              />
+            </label>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 2 }}>
+              {node.expandable_directions.includes('prev') && (
+                <button
+                  type="button"
+                  disabled={isPreviewLoading}
+                  onClick={() => {
+                    setPreviewDirection('expand_prev');
+                    onPreviewExpand('expand_prev', {
+                      timeFrom: filterTimeFrom || undefined,
+                      timeTo: filterTimeTo || undefined,
+                      maxResults: filterMaxResults,
+                    });
+                  }}
+                  style={{ ...actionButtonStyle, opacity: isPreviewLoading ? 0.6 : 1 }}
+                >
+                  {isPreviewLoading && previewDirection === 'expand_prev' ? 'Loading…' : 'Preview prev'}
+                </button>
+              )}
+              {node.expandable_directions.includes('next') && (
+                <button
+                  type="button"
+                  disabled={isPreviewLoading}
+                  onClick={() => {
+                    setPreviewDirection('expand_next');
+                    onPreviewExpand('expand_next', {
+                      timeFrom: filterTimeFrom || undefined,
+                      timeTo: filterTimeTo || undefined,
+                      maxResults: filterMaxResults,
+                    });
+                  }}
+                  style={{ ...actionButtonStyle, opacity: isPreviewLoading ? 0.6 : 1 }}
+                >
+                  {isPreviewLoading && previewDirection === 'expand_next' ? 'Loading…' : 'Preview next'}
+                </button>
+              )}
+              {node.expandable_directions.includes('neighbors') && (
+                <button
+                  type="button"
+                  disabled={isPreviewLoading}
+                  onClick={() => {
+                    setPreviewDirection('expand_neighbors');
+                    onPreviewExpand('expand_neighbors', {
+                      timeFrom: filterTimeFrom || undefined,
+                      timeTo: filterTimeTo || undefined,
+                      maxResults: filterMaxResults,
+                    });
+                  }}
+                  style={{ ...actionButtonStyle, opacity: isPreviewLoading ? 0.6 : 1 }}
+                >
+                  {isPreviewLoading && previewDirection === 'expand_neighbors' ? 'Loading…' : 'Preview around'}
+                </button>
+              )}
+            </div>
+
+            {previewResult && (() => {
+              const candidateEdges = previewResult.edges ?? previewResult.added_edges ?? [];
+              const isBitcoin = (previewResult.chain_context?.primary_chain ?? '') === 'bitcoin';
+              const hasMore = previewResult.pagination?.has_more ?? false;
+              const unit = isBitcoin ? 'UTXO output' : 'transfer';
+              const seedId = previewResult.seed_node_id;
+              return (
+                <div style={previewResultStyle}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                    <div style={{ fontWeight: 600, fontSize: 12, color: '#0f766e' }}>
+                      {hasMore ? `${candidateEdges.length}+` : candidateEdges.length}{' '}
+                      {unit}{(candidateEdges.length !== 1 || hasMore) ? 's' : ''} found
+                    </div>
+                    {candidateEdges.length > 0 && (
+                      <div style={{ display: 'flex', gap: 4 }}>
+                        <button
+                          type="button"
+                          onClick={() => setSelectedEdgeIds(new Set(candidateEdges.map((e) => e.edge_id)))}
+                          style={{ fontSize: 10, padding: '1px 6px', borderRadius: 4, border: '1px solid rgba(148,163,184,0.4)', background: 'transparent', cursor: 'pointer', color: '#64748b' }}
+                        >
+                          All
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setSelectedEdgeIds(new Set())}
+                          style={{ fontSize: 10, padding: '1px 6px', borderRadius: 4, border: '1px solid rgba(148,163,184,0.4)', background: 'transparent', cursor: 'pointer', color: '#64748b' }}
+                        >
+                          None
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                  {hasMore && (
+                    <div style={{ fontSize: 11, color: '#92400e', marginBottom: 4 }}>
+                      Showing first {candidateEdges.length} — narrow the date range or reduce max results.
+                    </div>
+                  )}
+                  {previewResult.integrity_warning && (
+                    <div style={{ fontSize: 11, color: '#92400e', marginBottom: 6 }}>
+                      ⚠ {previewResult.integrity_warning}
+                    </div>
+                  )}
+                  <div style={{ maxHeight: 220, overflowY: 'auto', display: 'grid', gap: 2, marginBottom: 8 }}>
+                    {candidateEdges.map((edge) => {
+                      const checked = selectedEdgeIds.has(edge.edge_id);
+                      const counterpartyId = seedId !== undefined
+                        ? (edge.source_node_id === seedId
+                            ? edge.target_node_id
+                            : edge.source_node_id)
+                        : (edge.source_node_id === edge.target_node_id
+                            ? edge.source_node_id
+                            : `Unknown (seed: ${edge.source_node_id} ↔ ${edge.target_node_id})`);
+                      const addrPart = counterpartyId.split(':').pop() ?? counterpartyId;
+                      const displayAddr = shortHash(addrPart, 8, 4);
+                      return (
+                        <label
+                          key={edge.edge_id}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 6,
+                            padding: '4px 6px',
+                            borderRadius: 5,
+                            background: checked ? 'rgba(15,118,110,0.07)' : 'transparent',
+                            cursor: 'pointer',
+                            fontSize: 11,
+                            color: '#334155',
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={(ev) => {
+                              const next = new Set(selectedEdgeIds);
+                              if (ev.target.checked) next.add(edge.edge_id);
+                              else next.delete(edge.edge_id);
+                              setSelectedEdgeIds(next);
+                            }}
+                            style={{ flexShrink: 0 }}
+                          />
+                          <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {displayAddr}
+                          </span>
+                          {edge.value_native != null && (
+                            <span style={{ color: '#0f766e', flexShrink: 0, fontSize: 10 }}>
+                              {formatNative(edge.value_native, edge.asset_symbol)}
+                            </span>
+                          )}
+                          {edge.timestamp && (
+                            <span style={{ color: '#94a3b8', flexShrink: 0, fontSize: 10 }}>
+                              {formatTimestamp(edge.timestamp)}
+                            </span>
+                          )}
+                          {edge.is_suspected_change && (
+                            <span title="Probable change output" style={{ color: '#7c3aed', flexShrink: 0 }}>⟲</span>
+                          )}
+                        </label>
+                      );
+                    })}
+                  </div>
+                  <div style={{ fontSize: 11, color: '#64748b', marginBottom: 6 }}>
+                    {selectedEdgeIds.size} of {candidateEdges.length} selected
+                  </div>
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                    {onApplyPreview && (
+                      <button
+                        type="button"
+                        disabled={selectedEdgeIds.size === 0}
+                        onClick={() => onApplyPreview(selectedEdgeIds)}
+                        style={{ ...applyButtonStyle, opacity: selectedEdgeIds.size === 0 ? 0.5 : 1 }}
+                      >
+                        Apply selected ({selectedEdgeIds.size})
+                      </button>
+                    )}
+                    {onApplyPreview && (
+                      <button type="button" onClick={() => onApplyPreview(undefined)} style={actionButtonStyle}>
+                        Apply all
+                      </button>
+                    )}
+                    {onDismissPreview && (
+                      <button type="button" onClick={onDismissPreview} style={actionButtonStyle}>
+                        Dismiss
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+        )}
       </Section>
 
       <Section title="Graph lineage">
@@ -1353,6 +1644,39 @@ const actionButtonStyle: React.CSSProperties = {
   fontWeight: 700,
   lineHeight: 1.2,
   cursor: 'pointer',
+};
+
+const filterLabelStyle: React.CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 4,
+  fontSize: 11,
+  color: '#64748b',
+  fontWeight: 600,
+};
+
+const filterInputStyle: React.CSSProperties = {
+  padding: '5px 8px',
+  borderRadius: 6,
+  border: '1px solid rgba(148,163,184,0.4)',
+  background: 'rgba(255,255,255,0.95)',
+  fontSize: 12,
+  color: '#1e293b',
+};
+
+const previewResultStyle: React.CSSProperties = {
+  marginTop: 4,
+  padding: '10px 12px',
+  borderRadius: 8,
+  border: '1px solid rgba(15,118,110,0.25)',
+  background: 'rgba(240,253,250,0.9)',
+};
+
+const applyButtonStyle: React.CSSProperties = {
+  ...actionButtonStyle,
+  color: '#0f766e',
+  borderColor: 'rgba(15,118,110,0.35)',
+  background: 'rgba(240,253,250,0.95)',
 };
 
 function pathStoryCardStyle(tone: string, active: boolean): React.CSSProperties {

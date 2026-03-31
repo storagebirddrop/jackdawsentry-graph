@@ -699,6 +699,8 @@ export interface ExpandRequest {
     follow_bridges?: boolean;
     continuation_token?: string;
     page_size?: number;
+    time_from?: string;  // ISO 8601 UTC datetime, inclusive lower bound
+    time_to?: string;    // ISO 8601 UTC datetime, inclusive upper bound
   };
 }
 

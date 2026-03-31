@@ -376,7 +376,7 @@ class SolanaCollector(BaseCollector):
 
             # Get signatures for this address
             signatures = await self.client.get_signatures_for_address(
-                address, limit=limit
+                Pubkey.from_string(address), limit=limit
             )
 
             if not signatures.value:
@@ -644,7 +644,7 @@ class SolanaCollector(BaseCollector):
             # SPL Token Program ID for filtering all SPL token accounts
             SPL_TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
             token_accounts = await self.client.get_token_accounts_by_owner(
-                address, TokenAccountOpts(program_id=SPL_TOKEN_PROGRAM_ID, encoding="jsonParsed")
+                Pubkey.from_string(address), TokenAccountOpts(program_id=SPL_TOKEN_PROGRAM_ID, encoding="jsonParsed")
             )
             if not token_accounts.value:
                 return []

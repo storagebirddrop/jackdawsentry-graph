@@ -275,6 +275,7 @@ export default function InvestigationGraph({
   const {
     rfNodes,
     rfEdges,
+    nodeMap,
     setRfPositions,
     syncRfPositions,
     applyExpansionDelta,
@@ -287,6 +288,8 @@ export default function InvestigationGraph({
     branchMap,
     updateBridgeHopStatus,
     markUserPlaced,
+    pendingPreview,
+    setPendingPreview,
   } = useGraphStore();
 
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>(rfNodes);
@@ -1001,6 +1004,106 @@ export default function InvestigationGraph({
     },
     [sessionId, rfNodes, rfEdges, expandingNodeIds, setExpandingNode, applyExpansionDelta, setRfPositions, showNotice, filters.selectedAssets],
   );
+
+  const [isPreviewLoading, setIsPreviewLoading] = useState(false);
+
+  // Clear any pending preview when the inspector's focused node changes.
+  // Prevents Node A's preview from rendering in Node B's Inspector panel.
+  useEffect(() => {
+    setPendingPreview(null);
+  }, [selectedNodeId, setPendingPreview]);
+
+  /**
+   * Fetch a preview of what an expansion would return without committing it to
+   * the canvas.  Stores the result in `pendingPreview`; the analyst confirms
+   * via `handleApplyPreview` or dismisses it.
+   */
+  const handlePreviewExpand = useCallback(
+    async (
+      node: Pick<InvestigationNode, 'node_id' | 'lineage_id'>,
+      operation: ExpandRequest['operation_type'],
+      filters: { timeFrom?: string; timeTo?: string; maxResults?: number },
+    ) => {
+      setIsPreviewLoading(true);
+      try {
+        const options: NonNullable<ExpandRequest['options']> = {};
+        if (filters.timeFrom) options.time_from = `${filters.timeFrom}T00:00:00Z`;
+        if (filters.timeTo) options.time_to = `${filters.timeTo}T23:59:59Z`;
+        if (filters.maxResults) options.max_results = filters.maxResults;
+        const response = await expandNode(sessionId, {
+          seed_node_id: node.node_id,
+          seed_lineage_id: node.lineage_id,
+          operation_type: operation,
+          options: Object.keys(options).length > 0 ? options : undefined,
+        });
+        setPendingPreview(response);
+      } catch (err) {
+        console.error('Preview expand failed:', err);
+        const message = err instanceof Error ? err.message : 'Preview failed — try again.';
+        showNotice(message, 'error');
+      } finally {
+        setIsPreviewLoading(false);
+      }
+    },
+    [sessionId, setPendingPreview, showNotice],
+  );
+
+  /** Apply the pending preview to the canvas (same placement logic as handleExpand).
+   *
+   * When `selectedEdgeIds` is provided, only those edges (and the nodes they
+   * reference) are applied.  `undefined` applies the full preview (V1 behaviour).
+   */
+  const handleApplyPreview = useCallback((selectedEdgeIds?: Set<string>) => {
+    if (!pendingPreview) return;
+    const allNodes = pendingPreview.nodes ?? pendingPreview.added_nodes ?? [];
+    const allEdges = pendingPreview.edges ?? pendingPreview.added_edges ?? [];
+
+    const filteredEdges = selectedEdgeIds
+      ? allEdges.filter((e) => selectedEdgeIds.has(e.edge_id))
+      : allEdges;
+    const referencedNodeIds = selectedEdgeIds
+      ? new Set(filteredEdges.flatMap((e) => [e.source_node_id, e.target_node_id]))
+      : null;
+    const filteredNodes = referencedNodeIds
+      ? allNodes.filter((n) => referencedNodeIds.has(n.node_id))
+      : allNodes;
+
+    if (filteredNodes.length === 0 && filteredEdges.length === 0) {
+      showNotice(
+        pendingPreview.empty_state?.message ?? 'No fund flows found in that date range.',
+      );
+      setPendingPreview(null);
+      return;
+    }
+
+    if (pendingPreview.integrity_warning) {
+      showNotice(pendingPreview.integrity_warning, 'info', { autoDismiss: false });
+    }
+
+    const subsetResponse = selectedEdgeIds
+      ? { ...pendingPreview, nodes: filteredNodes, edges: filteredEdges, added_nodes: filteredNodes, added_edges: filteredEdges }
+      : pendingPreview;
+
+    applyExpansionDelta(subsetResponse);
+
+    const trulyNewIds = filteredNodes
+      .filter((dn) => !nodeMap.has(dn.node_id))
+      .map((dn) => dn.node_id);
+    if (trulyNewIds.length > 0) {
+      const anchorRf = rfNodes.find((n) => n.id === pendingPreview.seed_node_id);
+      if (anchorRf) {
+        const localPositions = computeLocalPositions(
+          anchorRf.position,
+          trulyNewIds,
+          pendingPreview.operation_type,
+          rfNodes,
+        );
+        setRfPositions(localPositions);
+      }
+    }
+
+    setPendingPreview(null);
+  }, [pendingPreview, nodeMap, rfNodes, applyExpansionDelta, setRfPositions, setPendingPreview, showNotice]);
 
   // Derived set consumed by IngestPendingContext and the enrichedNodes mapping.
   const ingestPendingNodeIds = useMemo(
@@ -2682,6 +2785,15 @@ export default function InvestigationGraph({
           if (!nodeData) return;
           void handleExpand(nodeData, operation);
         }}
+        onPreviewExpand={(operation, previewFilters) => {
+          const nodeData = (selectedNode?.data as InvestigationNode | undefined) ?? null;
+          if (!nodeData) return;
+          void handlePreviewExpand(nodeData, operation, previewFilters);
+        }}
+        previewResult={pendingPreview}
+        onApplyPreview={handleApplyPreview}
+        onDismissPreview={() => setPendingPreview(null)}
+        isPreviewLoading={isPreviewLoading}
         onHideNode={handleHideNode}
         onClose={() => {
           setSelectedNodeId(null);

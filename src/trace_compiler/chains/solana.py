@@ -218,6 +218,8 @@ class SolanaChainCompiler(BaseChainCompiler):
                 sorted(symbol_filters) or None,
                 sorted(canonical_filters) or None,
                 sorted(asset_address_filters) or None,
+                options.time_from,
+                options.time_to,
             ]
 
             sql = """
@@ -267,6 +269,8 @@ class SolanaChainCompiler(BaseChainCompiler):
                         AND LOWER(COALESCE(rtt.asset_contract, '')) = ANY($5)
                     )
                   )
+                  AND ($6::timestamptz IS NULL OR rtt.timestamp >= $6)
+                  AND ($7::timestamptz IS NULL OR rtt.timestamp <= $7)
                 ORDER BY timestamp DESC, tx_hash ASC
                 LIMIT $2
             """
@@ -294,11 +298,15 @@ class SolanaChainCompiler(BaseChainCompiler):
                   AND from_address = $1
                   AND to_address IS NOT NULL
                   AND value_native > 0
+                  AND ($3::timestamptz IS NULL OR timestamp >= $3)
+                  AND ($4::timestamptz IS NULL OR timestamp <= $4)
                 ORDER BY timestamp DESC, tx_hash ASC
                 LIMIT $2
             """
             async with self._pg.acquire() as conn:
-                sol_rows = await conn.fetch(sql, address, limit)
+                sol_rows = await conn.fetch(
+                    sql, address, limit, options.time_from, options.time_to,
+                )
             rows.extend(dict(r) for r in sol_rows)
         except Exception as exc:
             logger.debug("SolanaChainCompiler outbound SOL failed for %s: %s", address, exc)
@@ -347,6 +355,8 @@ class SolanaChainCompiler(BaseChainCompiler):
                 sorted(symbol_filters) or None,
                 sorted(canonical_filters) or None,
                 sorted(asset_address_filters) or None,
+                options.time_from,
+                options.time_to,
             ]
 
             sql = """
@@ -396,6 +406,8 @@ class SolanaChainCompiler(BaseChainCompiler):
                         AND LOWER(COALESCE(rtt.asset_contract, '')) = ANY($5)
                     )
                   )
+                  AND ($6::timestamptz IS NULL OR rtt.timestamp >= $6)
+                  AND ($7::timestamptz IS NULL OR rtt.timestamp <= $7)
                 ORDER BY timestamp DESC, tx_hash ASC
                 LIMIT $2
             """
@@ -422,11 +434,15 @@ class SolanaChainCompiler(BaseChainCompiler):
                   AND to_address = $1
                   AND from_address IS NOT NULL
                   AND value_native > 0
+                  AND ($3::timestamptz IS NULL OR timestamp >= $3)
+                  AND ($4::timestamptz IS NULL OR timestamp <= $4)
                 ORDER BY timestamp DESC, tx_hash ASC
                 LIMIT $2
             """
             async with self._pg.acquire() as conn:
-                sol_rows = await conn.fetch(sql, address, limit)
+                sol_rows = await conn.fetch(
+                    sql, address, limit, options.time_from, options.time_to,
+                )
             rows.extend(dict(r) for r in sol_rows)
         except Exception as exc:
             logger.debug("SolanaChainCompiler inbound SOL failed for %s: %s", address, exc)
@@ -482,11 +498,16 @@ class SolanaChainCompiler(BaseChainCompiler):
             return []
         try:
             limit = min(options.max_results, _SQL_FETCH_LIMIT)
-            cypher = """
-                MATCH (a:Address {address: $addr, blockchain: 'solana'})
+            time_filter = ""
+            if options.time_from:
+                time_filter += " AND t.timestamp >= $time_from"
+            if options.time_to:
+                time_filter += " AND t.timestamp <= $time_to"
+            cypher = f"""
+                MATCH (a:Address {{address: $addr, blockchain: 'solana'}})
                       -[:SENT]->(t:Transaction)
                       -[:RECEIVED]->(tgt:Address)
-                WHERE tgt.address <> $addr
+                WHERE tgt.address <> $addr{time_filter}
                 RETURN tgt.address    AS counterparty,
                        t.hash         AS tx_hash,
                        t.value        AS value_native,
@@ -496,7 +517,13 @@ class SolanaChainCompiler(BaseChainCompiler):
                 LIMIT $limit
             """
             async with self._neo4j.session() as session:
-                result = await session.run(cypher, addr=address, limit=limit)
+                result = await session.run(
+                    cypher,
+                    addr=address,
+                    limit=limit,
+                    time_from=options.time_from,
+                    time_to=options.time_to,
+                )
                 custom_aiter = getattr(result, "__dict__", {}).get("__aiter__")
                 if callable(custom_aiter):
                     closure = getattr(custom_aiter, "__closure__", None) or ()
@@ -533,10 +560,15 @@ class SolanaChainCompiler(BaseChainCompiler):
             return []
         try:
             limit = min(options.max_results, _SQL_FETCH_LIMIT)
-            cypher = """
+            time_filter = ""
+            if options.time_from:
+                time_filter += " AND t.timestamp >= $time_from"
+            if options.time_to:
+                time_filter += " AND t.timestamp <= $time_to"
+            cypher = f"""
                 MATCH (src:Address)-[:SENT]->(t:Transaction)
-                      -[:RECEIVED]->(a:Address {address: $addr, blockchain: 'solana'})
-                WHERE src.address <> $addr
+                      -[:RECEIVED]->(a:Address {{address: $addr, blockchain: 'solana'}})
+                WHERE src.address <> $addr{time_filter}
                 RETURN src.address    AS counterparty,
                        t.hash         AS tx_hash,
                        t.value        AS value_native,
@@ -546,7 +578,13 @@ class SolanaChainCompiler(BaseChainCompiler):
                 LIMIT $limit
             """
             async with self._neo4j.session() as session:
-                result = await session.run(cypher, addr=address, limit=limit)
+                result = await session.run(
+                    cypher,
+                    addr=address,
+                    limit=limit,
+                    time_from=options.time_from,
+                    time_to=options.time_to,
+                )
                 custom_aiter = getattr(result, "__dict__", {}).get("__aiter__")
                 if callable(custom_aiter):
                     closure = getattr(custom_aiter, "__closure__", None) or ()

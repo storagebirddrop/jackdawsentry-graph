@@ -790,6 +790,8 @@ class ExpandOptions(BaseModel):
     follow_bridges: bool = True
     continuation_token: Optional[str] = None
     page_size: int = Field(default=25, ge=1, le=50)
+    time_from: Optional[datetime] = None  # ISO 8601 UTC, inclusive lower bound
+    time_to: Optional[datetime] = None    # ISO 8601 UTC, inclusive upper bound
 
 
 class ExpandRequest(BaseModel):

@@ -190,7 +190,7 @@ class EthereumCollector(BaseCollector):
                 hash=_to_hex(block_data["hash"]),
                 blockchain=self.blockchain,
                 number=block_data["number"],
-                timestamp=datetime.fromtimestamp(block_data["timestamp"]),
+                timestamp=datetime.fromtimestamp(block_data["timestamp"], timezone.utc),
                 transaction_count=len(block_data["transactions"]),
                 parent_hash=_to_hex(block_data["parentHash"]),
                 miner=block_data["miner"],
@@ -236,7 +236,7 @@ class EthereumCollector(BaseCollector):
                         None, self.w3.eth.get_block, block_number
                     )
                     if block_data:
-                        block_timestamp = datetime.fromtimestamp(block_data["timestamp"])
+                        block_timestamp = datetime.fromtimestamp(block_data["timestamp"], timezone.utc)
                     # Bound cache to 32 entries — evict oldest when full.
                     if len(self._block_ts_cache) >= 32:
                         self._block_ts_cache.pop(next(iter(self._block_ts_cache)))
@@ -744,7 +744,7 @@ class EthereumCollector(BaseCollector):
             if not block:
                 return []
 
-            block_timestamp = datetime.fromtimestamp(block["timestamp"])
+            block_timestamp = datetime.fromtimestamp(block["timestamp"], timezone.utc)
             # Pre-populate block cache so get_transaction skips the block fetch.
             if len(self._block_ts_cache) >= 32:
                 self._block_ts_cache.pop(next(iter(self._block_ts_cache)))

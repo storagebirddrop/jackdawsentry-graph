@@ -289,11 +289,16 @@ class EVMChainCompiler(_GenericTransferChainCompiler):
             return []
         try:
             limit = min(options.max_results, _SQL_FETCH_LIMIT)
-            cypher = """
-                MATCH (a:Address {address: $addr, blockchain: $chain})
+            time_filter = ""
+            if options.time_from:
+                time_filter += " AND t.timestamp >= $time_from"
+            if options.time_to:
+                time_filter += " AND t.timestamp <= $time_to"
+            cypher = f"""
+                MATCH (a:Address {{address: $addr, blockchain: $chain}})
                       -[:SENT]->(t:Transaction)
                       -[:RECEIVED]->(tgt:Address)
-                WHERE tgt.address <> $addr
+                WHERE tgt.address <> $addr{time_filter}
                 RETURN tgt.address    AS counterparty,
                        t.hash         AS tx_hash,
                        t.value        AS value_native,
@@ -304,7 +309,12 @@ class EVMChainCompiler(_GenericTransferChainCompiler):
             """
             async with self._neo4j.session() as session:
                 result = await session.run(
-                    cypher, addr=address, chain=chain, limit=limit
+                    cypher,
+                    addr=address,
+                    chain=chain,
+                    limit=limit,
+                    time_from=options.time_from,
+                    time_to=options.time_to,
                 )
                 return [dict(r) async for r in result]
         except Exception as exc:
@@ -319,10 +329,15 @@ class EVMChainCompiler(_GenericTransferChainCompiler):
             return []
         try:
             limit = min(options.max_results, _SQL_FETCH_LIMIT)
-            cypher = """
+            time_filter = ""
+            if options.time_from:
+                time_filter += " AND t.timestamp >= $time_from"
+            if options.time_to:
+                time_filter += " AND t.timestamp <= $time_to"
+            cypher = f"""
                 MATCH (src:Address)-[:SENT]->(t:Transaction)
-                      -[:RECEIVED]->(a:Address {address: $addr, blockchain: $chain})
-                WHERE src.address <> $addr
+                      -[:RECEIVED]->(a:Address {{address: $addr, blockchain: $chain}})
+                WHERE src.address <> $addr{time_filter}
                 RETURN src.address    AS counterparty,
                        t.hash         AS tx_hash,
                        t.value        AS value_native,
@@ -333,7 +348,12 @@ class EVMChainCompiler(_GenericTransferChainCompiler):
             """
             async with self._neo4j.session() as session:
                 result = await session.run(
-                    cypher, addr=address, chain=chain, limit=limit
+                    cypher,
+                    addr=address,
+                    chain=chain,
+                    limit=limit,
+                    time_from=options.time_from,
+                    time_to=options.time_to,
                 )
                 return [dict(r) async for r in result]
         except Exception as exc:

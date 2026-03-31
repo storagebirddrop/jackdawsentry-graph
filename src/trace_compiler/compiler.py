@@ -245,6 +245,8 @@ def _expansion_cache_key(
         "min_value_fiat": request.options.min_value_fiat,
         "include_services": request.options.include_services,
         "follow_bridges": request.options.follow_bridges,
+        "time_from": request.options.time_from.isoformat() if request.options.time_from else None,
+        "time_to": request.options.time_to.isoformat() if request.options.time_to else None,
     }
     raw = json.dumps(fingerprint, sort_keys=True, separators=(",", ":"))
     return "tc:" + hashlib.sha256(raw.encode()).hexdigest()
@@ -601,6 +603,8 @@ class TraceCompiler:
                         min_value_fiat=request.options.min_value_fiat,
                         include_services=request.options.include_services,
                         follow_bridges=request.options.follow_bridges,
+                        time_from=request.options.time_from,
+                        time_to=request.options.time_to,
                     )
                     bwd_options = ExpandOptions(
                         max_results=max_bwd,
@@ -611,6 +615,8 @@ class TraceCompiler:
                         min_value_fiat=request.options.min_value_fiat,
                         include_services=request.options.include_services,
                         follow_bridges=request.options.follow_bridges,
+                        time_from=request.options.time_from,
+                        time_to=request.options.time_to,
                     )
                     
                     fwd_n, fwd_e = await compiler.expand_next(

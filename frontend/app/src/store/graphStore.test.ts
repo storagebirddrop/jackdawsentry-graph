@@ -16,7 +16,7 @@
 
 import { describe, expect, it, beforeEach } from 'vitest';
 import { useGraphStore } from './graphStore';
-import type { InvestigationNode, ExpansionResponseV2, BridgeHopStatusResponse } from '../types/graph';
+import type { InvestigationEdge, InvestigationNode, ExpansionResponseV2, BridgeHopStatusResponse } from '../types/graph';
 
 // ---------------------------------------------------------------------------
 // Minimal fixtures
@@ -223,5 +223,210 @@ describe('updateBridgeHopStatus — userPlaced flag preservation (H1-NEW fix)', 
 
     const rf = useGraphStore.getState().rfNodes.find((n) => n.id === 'hop2');
     expect((rf?.data as { userPlaced?: boolean }).userPlaced).toBeFalsy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// pendingPreview lifecycle (V1 selective expansion)
+// ---------------------------------------------------------------------------
+
+describe('pendingPreview — lifecycle and isolation', () => {
+  it('setPendingPreview stores the response', () => {
+    const preview = makeDelta([makeNode('prev-node')]);
+    useGraphStore.getState().setPendingPreview(preview);
+    expect(useGraphStore.getState().pendingPreview).toBe(preview);
+  });
+
+  it('setPendingPreview(null) clears the stored response', () => {
+    useGraphStore.getState().setPendingPreview(makeDelta([makeNode('prev-node')]));
+    useGraphStore.getState().setPendingPreview(null);
+    expect(useGraphStore.getState().pendingPreview).toBeNull();
+  });
+
+  it('reset() clears pendingPreview — F-2 regression', () => {
+    // Set a preview, then reset the session.
+    useGraphStore.getState().setPendingPreview(makeDelta([makeNode('prev-node')]));
+    expect(useGraphStore.getState().pendingPreview).not.toBeNull();
+
+    useGraphStore.getState().reset();
+
+    expect(useGraphStore.getState().pendingPreview).toBeNull();
+  });
+
+  it('reset() clears pendingPreview alongside all other session state', () => {
+    useGraphStore.getState().setPendingPreview(makeDelta([makeNode('prev-node')]));
+
+    useGraphStore.getState().reset();
+
+    const state = useGraphStore.getState();
+    expect(state.sessionId).toBeNull();
+    expect(state.nodeMap.size).toBe(0);
+    expect(state.rfNodes).toHaveLength(0);
+    expect(state.pendingPreview).toBeNull();
+  });
+
+  it('exportSnapshot excludes pendingPreview', () => {
+    useGraphStore.getState().setPendingPreview(makeDelta([makeNode('prev-node')]));
+
+    const json = useGraphStore.getState().exportSnapshot();
+    const parsed = JSON.parse(json) as Record<string, unknown>;
+
+    expect('pendingPreview' in parsed).toBe(false);
+  });
+
+  it('importSnapshot does not restore pendingPreview even if the JSON contains it', () => {
+    // Build a snapshot that (hypothetically) contains pendingPreview.
+    const snapshot = JSON.stringify({
+      sessionId: 'sess-restore',
+      nodes: [],
+      edges: [],
+      positions: {},
+      branches: [],
+      pendingPreview: makeDelta([makeNode('stale-preview')]),
+    });
+
+    // Ensure there is no active preview before import.
+    useGraphStore.getState().setPendingPreview(null);
+    const ok = useGraphStore.getState().importSnapshot(snapshot);
+
+    expect(ok).toBe(true);
+    expect(useGraphStore.getState().pendingPreview).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// V2 subset apply — applyExpansionDelta with synthetically filtered response
+//
+// handleApplyPreview (InvestigationGraph.tsx) is not directly callable from
+// store tests.  Its observable output is a call to applyExpansionDelta() with
+// a synthetically constructed ExpansionResponseV2 subset.  These tests
+// replicate the exact filtering logic (T-V2-1 through T-V2-4) and verify the
+// store state that results.
+// ---------------------------------------------------------------------------
+
+function makeEdge(
+  edgeId: string,
+  sourceNodeId: string,
+  targetNodeId: string,
+): InvestigationEdge {
+  return {
+    edge_id: edgeId,
+    edge_type: 'transfer',
+    source_node_id: sourceNodeId,
+    target_node_id: targetNodeId,
+    direction: 'forward',
+    branch_id: 'branch-a',
+  };
+}
+
+function makePreviewWithEdges(
+  nodes: InvestigationNode[],
+  edges: InvestigationEdge[],
+): ExpansionResponseV2 {
+  return {
+    session_id: 'sess-1',
+    branch_id: 'branch-a',
+    operation_id: 'op-preview',
+    operation_type: 'expand_next',
+    seed_node_id: 'seed',
+    nodes,
+    edges,
+    layout_hints: { suggested_layout: 'layered' },
+    chain_context: { primary_chain: 'ethereum', chains_present: ['ethereum'] },
+  };
+}
+
+/** Replicate handleApplyPreview's subset construction for a given selection. */
+function buildSubsetResponse(
+  preview: ExpansionResponseV2,
+  selectedEdgeIds: Set<string>,
+): ExpansionResponseV2 {
+  const allEdges = preview.edges ?? preview.added_edges ?? [];
+  const allNodes = preview.nodes ?? preview.added_nodes ?? [];
+  const filteredEdges = allEdges.filter((e) => selectedEdgeIds.has(e.edge_id));
+  const referencedNodeIds = new Set(filteredEdges.flatMap((e) => [e.source_node_id, e.target_node_id]));
+  const filteredNodes = allNodes.filter((n) => referencedNodeIds.has(n.node_id));
+  return { ...preview, nodes: filteredNodes, edges: filteredEdges, added_nodes: filteredNodes, added_edges: filteredEdges };
+}
+
+describe('V2 subset apply — applyExpansionDelta with filtered response', () => {
+  it('T-V2-1: applies only selected edges and their referenced nodes', () => {
+    const n1 = makeNode('n1');
+    const n2 = makeNode('n2');
+    const e1 = makeEdge('e1', 'seed', 'n1');
+    const e2 = makeEdge('e2', 'seed', 'n2');
+
+    const preview = makePreviewWithEdges([n1, n2], [e1, e2]);
+    // Analyst selects only e1 — n2 and e2 must not land on canvas
+    const subset = buildSubsetResponse(preview, new Set(['e1']));
+
+    useGraphStore.getState().applyExpansionDelta(subset);
+
+    const { nodeMap, edgeMap } = useGraphStore.getState();
+    expect(nodeMap.has('n1')).toBe(true);
+    expect(nodeMap.has('n2')).toBe(false);   // not referenced by any selected edge
+    expect(edgeMap.has('e1')).toBe(true);
+    expect(edgeMap.has('e2')).toBe(false);   // not selected
+  });
+
+  it('T-V2-2: excludes nodes not referenced by any selected edge', () => {
+    const n1 = makeNode('n1');
+    const n2 = makeNode('n2');
+    const n3 = makeNode('n3');
+    const e1 = makeEdge('e1', 'seed', 'n1');
+    const e2 = makeEdge('e2', 'seed', 'n2');
+    const e3 = makeEdge('e3', 'seed', 'n3');
+
+    const preview = makePreviewWithEdges([n1, n2, n3], [e1, e2, e3]);
+    // Select e1 and e2 only — n3 and e3 must be excluded
+    const subset = buildSubsetResponse(preview, new Set(['e1', 'e2']));
+
+    useGraphStore.getState().applyExpansionDelta(subset);
+
+    const { nodeMap, edgeMap } = useGraphStore.getState();
+    expect(nodeMap.has('n1')).toBe(true);
+    expect(nodeMap.has('n2')).toBe(true);
+    expect(nodeMap.has('n3')).toBe(false);   // no selected edge references n3
+    expect(edgeMap.has('e3')).toBe(false);
+  });
+
+  it('T-V2-3: pre-existing canvas nodes are not position-reset by a subset apply', () => {
+    // Place n1 on canvas at a known position before the preview
+    useGraphStore.getState().applyExpansionDelta(makeDelta([makeNode('n1')]));
+    useGraphStore.getState().setRfPositions(new Map([['n1', { x: 500, y: 200 }]]));
+
+    const rfBefore = useGraphStore.getState().rfNodes.find((n) => n.id === 'n1');
+    expect(rfBefore?.position).toEqual({ x: 500, y: 200 });
+
+    // Subset response references n1 (as an edge endpoint) alongside a new node n2
+    const n2 = makeNode('n2');
+    const e = makeEdge('e-n1n2', 'n1', 'n2');
+    const preview = makePreviewWithEdges([makeNode('n1'), n2], [e]);
+    const subset = buildSubsetResponse(preview, new Set(['e-n1n2']));
+
+    useGraphStore.getState().applyExpansionDelta(subset);
+
+    // n1 must not have been replaced — position must be preserved
+    const rfAfter = useGraphStore.getState().rfNodes.find((n) => n.id === 'n1');
+    expect(rfAfter?.position).toEqual({ x: 500, y: 200 });
+    // n2 was genuinely new and was added
+    expect(useGraphStore.getState().nodeMap.has('n2')).toBe(true);
+  });
+
+  it('T-V2-4: apply all (undefined selectedEdgeIds) is equivalent to applying the full preview', () => {
+    const n1 = makeNode('n1');
+    const n2 = makeNode('n2');
+    const e1 = makeEdge('e1', 'seed', 'n1');
+    const e2 = makeEdge('e2', 'seed', 'n2');
+
+    // No subset filtering — pass the full preview directly (V1 / apply-all path)
+    const preview = makePreviewWithEdges([n1, n2], [e1, e2]);
+    useGraphStore.getState().applyExpansionDelta(preview);
+
+    const { nodeMap, edgeMap } = useGraphStore.getState();
+    expect(nodeMap.has('n1')).toBe(true);
+    expect(nodeMap.has('n2')).toBe(true);
+    expect(edgeMap.has('e1')).toBe(true);
+    expect(edgeMap.has('e2')).toBe(true);
   });
 });

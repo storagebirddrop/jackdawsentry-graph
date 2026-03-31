@@ -311,6 +311,7 @@ class EventStoreBackfillWorker:
         """
         if hasattr(collector, "backfill_block"):
             transactions = await collector.backfill_block(block_number)
+            transactions = [t for t in transactions or [] if t]
         else:
             tx_hashes = await collector.get_block_transactions(block_number)
             transactions = []
