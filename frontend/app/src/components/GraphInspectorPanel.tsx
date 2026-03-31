@@ -350,6 +350,15 @@ function NodeInspectorContent({
     setSelectedEdgeIds(new Set(edges.map((e) => e.edge_id)));
   }, [previewResult]);
 
+  // Reset filter state when selected node changes
+  useEffect(() => {
+    setShowFilters(false);
+    setFilterTimeFrom('');
+    setFilterTimeTo('');
+    setFilterMaxResults(25);
+    setPreviewDirection('expand_next');
+  }, [node.node_id]);
+
   return (
     <div style={{ display: 'grid', gap: 18, marginTop: 18 }}>
       <div style={heroCardStyle}>
@@ -625,8 +634,12 @@ function NodeInspectorContent({
                         : (edge.source_node_id === edge.target_node_id
                             ? edge.source_node_id
                             : `Unknown (seed: ${edge.source_node_id} ↔ ${edge.target_node_id})`);
-                      const addrPart = counterpartyId.split(':').pop() ?? counterpartyId;
-                      const displayAddr = shortHash(addrPart, 8, 4);
+                      const displayAddr = counterpartyId.startsWith("Unknown") || !counterpartyId.includes(":")
+                        ? counterpartyId
+                        : (() => {
+                            const addrPart = counterpartyId.split(':').pop() ?? counterpartyId;
+                            return shortHash(addrPart, 8, 4);
+                          })();
                       return (
                         <label
                           key={edge.edge_id}
