@@ -27,14 +27,17 @@ docker compose -f docker-compose.graph.yml down
 **Solutions**:
 1. Verify user exists:
 ```bash
-docker exec jackdawsentry_graph_api python -m scripts.dev.create_user.py your-username your-password
+docker exec jackdawsentry_graph_api python -m scripts.dev.create_user your-username your-password
 ```
 
 2. Check auth bypass settings:
 ```bash
-# For development only
-echo "GRAPH_AUTH_DISABLED=true" >> .env
-echo "AUTH_DISABLE_CONFIRM=true" >> .env
+# For development only - edit .env manually or use sed to replace existing values
+sed -i 's/^GRAPH_AUTH_DISABLED=.*/GRAPH_AUTH_DISABLED=true/' .env
+sed -i 's/^AUTH_DISABLE_CONFIRM=.*/AUTH_DISABLE_CONFIRM=true/' .env
+# Or add the lines if they don't exist:
+grep -q "^GRAPH_AUTH_DISABLED=" .env || echo "GRAPH_AUTH_DISABLED=true" >> .env
+grep -q "^AUTH_DISABLE_CONFIRM=" .env || echo "AUTH_DISABLE_CONFIRM=true" >> .env
 ```
 
 3. Restart services:
@@ -144,7 +147,8 @@ from src.api.database import get_neo4j_session
 async def test():
     async with get_neo4j_session() as session:
         result = await session.run('RETURN 1')
-        print('Neo4j OK:', result)
+        value = await result.single()
+        print('Neo4j OK:', value)
 
 import asyncio
 asyncio.run(test())

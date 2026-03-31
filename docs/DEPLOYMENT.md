@@ -44,11 +44,11 @@ This adds the `graph-ingest` service while keeping the request-serving `graph-ap
 
 | Service | Port | Purpose | Persistence |
 |---------|------|---------|------------|
-| graph-nginx | 8081 | Frontend serving |
-| neo4j | 7475 (HTTP), 7688 (Bolt) | graph_neo4j_data volume |
-| postgres | 5433 | graph_postgres_data volume |
-| redis | 6380 | graph_redis_data volume |
-| graph-api | 8000 (internal) | None |
+| graph-nginx | 8081 | Frontend serving | None |
+| neo4j | 7475 (HTTP), 7688 (Bolt) | Graph database | graph_neo4j_data volume |
+| postgres | 5433 | Compliance database | graph_postgres_data volume |
+| redis | 6380 | Cache and queue | graph_redis_data volume |
+| graph-api | 8000 (internal) | API serving | None |
 
 All services are bound to `127.0.0.1` (localhost only) for security.
 
@@ -95,6 +95,7 @@ GRAPH_INGEST_AUTO_BACKFILL_RAW_EVENT_STORE=true
 GRAPH_INGEST_BACKFILL_INTERVAL_SECONDS=30
 GRAPH_INGEST_BACKFILL_BLOCK_BATCH_SIZE=2
 GRAPH_INGEST_BACKFILL_CHAINS_PER_CYCLE=4
+GRAPH_INGEST_BACKFILL_BLOCK_TIMEOUT_SECONDS=120
 ```
 
 ## Runtime Modes
