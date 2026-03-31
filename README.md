@@ -27,7 +27,7 @@ Current honest limits:
 
 ## Important Disclaimer
 
-This project is a work in progress. The graph is a starting point for investigation, not a verdict. Results should never be treated as ground truth — address labels can be incomplete, heuristics can misfire, and the underlying data depends on what has been indexed.
+This project is a production-ready, standalone investigation tool with ongoing development. The graph is a starting point for investigation, not a verdict. Results should never be treated as ground truth — address labels can be incomplete, heuristics can misfire, and the underlying data depends on what has been indexed.
 
 Use this tool to build a picture and generate leads, then verify what you find by reading the actual blockchain data. Part of the goal of this project is to encourage users to learn how blockchains and smart contracts work and can be read directly — not to produce a black box that hands you an answer. The more you understand the underlying data, the better you can judge what the graph is telling you.
 
@@ -64,7 +64,9 @@ This repository is intentionally narrower than the private Jackdaw Sentry platfo
 - React investigation graph UI
 - graph-focused backend/runtime, contracts, and tests
 
-**Supported chains:** Bitcoin, Lightning Network, Ethereum, BSC, Polygon, Arbitrum, Base, Avalanche, Optimism, Starknet, Injective, Solana, Tron, XRP, Cosmos, Sui.
+**Supported chains:** Bitcoin, Lightning Network, Ethereum, BSC, Polygon, Arbitrum, Base, Avalanche, Optimism, Starknet, Injective, Solana, Tron, Cosmos, Sui.
+
+**Note:** XRP is not currently supported despite having a collector implementation.
 
 **Node types on the canvas:** `address`, `entity`, `utxo`, `swap_event`, `atomic_swap`, `bridge_hop`, `btc_sidechain_peg`, `lightning_channel_open`, `lightning_channel_close`, `solana_instruction`, `cluster_summary`, `service`.
 
@@ -202,6 +204,15 @@ Some older session rows only preserve a reduced seed-level snapshot. When that
 happens, the frontend surfaces a `legacy_bootstrap` restore notice instead of
 pretending the full prior canvas was recovered.
 
+## Documentation
+
+| Topic | Location |
+|-------|----------|
+| Deployment | [DEPLOYMENT.md](docs/DEPLOYMENT.md) |
+| Configuration | [CONFIGURATION.md](docs/CONFIGURATION.md) |
+| Features | [FEATURES.md](docs/FEATURES.md) |
+| Troubleshooting | [TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) |
+
 ## Recent Improvements
 
 - **Security**: Resolved authentication bypass; added audit logging on sensitive endpoints
@@ -293,8 +304,9 @@ npm run build
 
 Repo verification helpers:
 
-> **Authentication setup:** The default dev stack runs with `GRAPH_AUTH_DISABLED=true` (no
-> login required). If you have enabled auth, create your first user with
+> **Authentication setup:** The default `.env.example` ships with `GRAPH_AUTH_DISABLED=false`
+> (auth enabled). Set `GRAPH_AUTH_DISABLED=true` in your `.env` to disable login during local
+> development. If auth is enabled, create your first user with
 > `python scripts/dev/create_user.py` before running the probes below.
 > `boundary_audit.py` and `public_readiness_audit.py` are auth-agnostic.
 > `live_abuse_probe.py` and `live_perf_probe.py` assume an auth-enabled stack
