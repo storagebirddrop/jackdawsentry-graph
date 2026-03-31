@@ -767,42 +767,42 @@ class EthereumCollector(BaseCollector):
                     receipt = await loop.run_in_executor(
                         None, self.w3.eth.get_transaction_receipt, tx_hash
                     )
-                from_address = tx_data.get("from") or ""
-                to_address = tx_data.get("to") or from_address
-                value = from_wei(tx_data.get("value", 0), "ether")
-                gas_used = receipt["gasUsed"] if receipt else 0
-                gas_price = tx_data.get("gasPrice", 0)
-                fee = from_wei(gas_used * gas_price, "ether") if gas_used and gas_price else 0
-                token_transfers: List = []
-                dex_logs: List = []
-                if self.erc20_tracking and receipt:
-                    token_transfers = await self.get_token_transfers(tx_hash, receipt)
-                    dex_logs = self._extract_dex_logs(receipt)
-                block_hash_val = tx_data.get("blockHash")
-                return Transaction(
-                    hash=tx_hash,
-                    blockchain=self.blockchain,
-                    from_address=from_address,
-                    to_address=to_address,
-                    value=value,
-                    timestamp=block_timestamp,
-                    block_number=block_number,
-                    block_hash=(
-                        block_hash_val.hex()
-                        if isinstance(block_hash_val, bytes)
-                        else block_hash_val
-                    ),
-                    gas_used=gas_used,
-                    gas_price=gas_price,
-                    fee=fee,
-                    status="confirmed" if receipt and receipt.get("status") == 1 else "failed",
-                    confirmations=0,
-                    contract_address=(
-                        receipt.get("contractAddress") if receipt else None
-                    ),
-                    token_transfers=token_transfers,
-                    dex_logs=dex_logs,
-                )
+                    from_address = tx_data.get("from") or ""
+                    to_address = tx_data.get("to") or from_address
+                    value = from_wei(tx_data.get("value", 0), "ether")
+                    gas_used = receipt["gasUsed"] if receipt else 0
+                    gas_price = tx_data.get("gasPrice", 0)
+                    fee = from_wei(gas_used * gas_price, "ether") if gas_used and gas_price else 0
+                    token_transfers: List = []
+                    dex_logs: List = []
+                    if self.erc20_tracking and receipt:
+                        token_transfers = await self.get_token_transfers(tx_hash, receipt)
+                        dex_logs = self._extract_dex_logs(receipt)
+                    block_hash_val = tx_data.get("blockHash")
+                    return Transaction(
+                        hash=tx_hash,
+                        blockchain=self.blockchain,
+                        from_address=from_address,
+                        to_address=to_address,
+                        value=value,
+                        timestamp=block_timestamp,
+                        block_number=block_number,
+                        block_hash=(
+                            block_hash_val.hex()
+                            if isinstance(block_hash_val, bytes)
+                            else block_hash_val
+                        ),
+                        gas_used=gas_used,
+                        gas_price=gas_price,
+                        fee=fee,
+                        status="confirmed" if receipt and receipt.get("status") == 1 else "failed",
+                        confirmations=0,
+                        contract_address=(
+                            receipt.get("contractAddress") if receipt else None
+                        ),
+                        token_transfers=token_transfers,
+                        dex_logs=dex_logs,
+                    )
 
             results = await asyncio.gather(
                 *[_fetch_receipt(tx) for tx in raw_txs],
@@ -824,7 +824,7 @@ class EthereumCollector(BaseCollector):
             for log in receipt.get("logs", []):
                 # Check if it's a Transfer event (topic0 = keccak256("Transfer(address,address,uint256)"))
                 def _topic_hex(t: object) -> str:
-                    return t.hex() if isinstance(t, bytes) else str(t)
+                    return "0x" + t.hex() if isinstance(t, bytes) else str(t)
 
                 if (
                     len(log["topics"]) == 3
