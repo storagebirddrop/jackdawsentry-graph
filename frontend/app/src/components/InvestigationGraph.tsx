@@ -7,7 +7,7 @@
  * - Handles node expand clicks (dispatches to API, then applies delta).
  * - Shows overload warning at NODE_OVERLOAD_THRESHOLD.
  * - Hosts the filter panel (client-side node/edge hiding).
- * - Keeps the active inspector's bridge-hop status fresh while pending.
+ * - Opens the bridge hop side drawer on BridgeHopNode click.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -29,19 +29,26 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 
-import { useGraphStore, type BranchMeta } from '../store/graphStore';
-import { expandNode, getSessionAssets, saveSessionSnapshot } from '../api/client';
+import {
+  useGraphStore,
+  toRfNode,
+  type BranchMeta,
+} from '../store/graphStore';
+import { expandNode } from '../api/client';
 import { computeElkLayout } from '../layout/elkLayout';
-import { computeLocalPositions } from '../layout/incrementalPlacement';
+import {
+  buildLocalLayoutNeighborhood,
+  collectMeasuredNodeSizes,
+  createLocalNodePlacements,
+  isEligibleForElkRefinement,
+  resolveNodeCollisions,
+} from '../layout/incrementalPlacement';
 import type {
-  AssetCatalogItem,
   BridgeHopData,
   ExpandRequest,
   InvestigationEdge,
   InvestigationNode,
-  WorkspaceSnapshotV1,
 } from '../types/graph';
-import { assetSelectionKeysForEdge, preferredAssetSelectionKeyForEdge } from '../types/graph';
 
 import AddressNode from './nodes/AddressNode';
 import EntityNode from './nodes/EntityNode';
@@ -54,12 +61,7 @@ import LightningChannelOpenNode from './nodes/LightningChannelOpenNode';
 import LightningChannelCloseNode from './nodes/LightningChannelCloseNode';
 import BtcSidechainPegNode from './nodes/BtcSidechainPegNode';
 import AtomicSwapNode from './nodes/AtomicSwapNode';
-import FilterPanel, {
-  type AssetCatalogScopeMode,
-  type FilterState,
-  DEFAULT_ASSET_CATALOG_SCOPE,
-  DEFAULT_FILTERS,
-} from './FilterPanel';
+import FilterPanel, { type FilterState, DEFAULT_FILTERS } from './FilterPanel';
 import GraphAppearancePanel from './GraphAppearancePanel';
 import GraphInspectorPanel, { type PathStory } from './GraphInspectorPanel';
 import InvestigationEdgeComponent from './edges/InvestigationEdge';
@@ -67,12 +69,7 @@ import {
   DEFAULT_GRAPH_APPEARANCE,
   type GraphAppearanceState,
 } from './graphAppearance';
-import {
-  extractSnapshotWorkspacePreferences,
-  loadSessionWorkspacePreferences,
-  saveSessionWorkspacePreferences,
-} from '../workspacePersistence';
-import { useBridgeHopPoller } from '../hooks/useBridgeHopPoller';
+import { saveWorkspace } from '../workspacePersistence';
 import {
   bridgeProtocolLabel,
   bridgeRouteLabel,
@@ -113,11 +110,12 @@ type FitViewHandle = {
   }) => void;
 };
 
+type FlowCanvasHandle = FitViewHandle & {
+  getNodes?: () => Node[];
+};
+
 interface Props {
   sessionId: string;
-  initialWorkspaceRevision: number;
-  initialSavedAt: string | null;
-  initialRestoreNotice: { tone: 'info' | 'error'; message: string } | null;
   onStartNewInvestigation: () => void;
 }
 
@@ -173,14 +171,6 @@ function applyFilters(
     visibleEdges = visibleEdges.filter((e) => {
       const val = (e.data as Record<string, unknown>)?.fiat_value_usd as number | undefined;
       return val === undefined || val >= minFiat;
-    });
-  }
-
-  if (filters.selectedAssets.length > 0) {
-    const selectedAssets = new Set(filters.selectedAssets.map((asset) => asset.toLowerCase()));
-    visibleEdges = visibleEdges.filter((e) => {
-      const edgeData = (e.data ?? {}) as unknown as InvestigationEdge;
-      return assetSelectionKeysForEdge(edgeData).some((key) => selectedAssets.has(key));
     });
   }
 
@@ -265,17 +255,11 @@ function applyFilters(
   return { nodes: visibleNodes, edges: visibleEdges };
 }
 
-export default function InvestigationGraph({
-  sessionId,
-  initialWorkspaceRevision,
-  initialSavedAt,
-  initialRestoreNotice,
-  onStartNewInvestigation,
-}: Props) {
+export default function InvestigationGraph({ sessionId, onStartNewInvestigation }: Props) {
   const {
     rfNodes,
     rfEdges,
-    nodeMap,
+    layoutMetaMap,
     setRfPositions,
     syncRfPositions,
     applyExpansionDelta,
@@ -286,10 +270,6 @@ export default function InvestigationGraph({
     exportSnapshot,
     importSnapshot,
     branchMap,
-    updateBridgeHopStatus,
-    markUserPlaced,
-    pendingPreview,
-    setPendingPreview,
   } = useGraphStore();
 
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>(rfNodes);
@@ -303,18 +283,7 @@ export default function InvestigationGraph({
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [inspectorCollapsed, setInspectorCollapsed] = useState(false);
   const [briefingVisible, setBriefingVisible] = useState(false);
-  const [notice, setNotice] = useState<{
-    tone: 'info' | 'error';
-    message: string;
-    autoDismiss: boolean;
-  } | null>(null);
-  const [assetCatalog, setAssetCatalog] = useState<AssetCatalogItem[]>([]);
-  const [assetCatalogScope, setAssetCatalogScope] = useState<AssetCatalogScopeMode>(DEFAULT_ASSET_CATALOG_SCOPE);
-  const [pinnedAssetKeys, setPinnedAssetKeys] = useState<string[]>([]);
-  const [sessionSaveStatus, setSessionSaveStatus] = useState<'idle' | 'dirty' | 'saving' | 'saved' | 'save_failed'>(
-    initialSavedAt ? 'saved' : 'idle',
-  );
-  const [lastSavedAt, setLastSavedAt] = useState<string | null>(initialSavedAt);
+  const [notice, setNotice] = useState<{ tone: 'info' | 'error'; message: string } | null>(null);
   const [bridgeRouteHistory, setBridgeRouteHistory] = useState<string[]>([]);
   const [activeBranchIds, setActiveBranchIds] = useState<string[]>([]);
   const [branchHistory, setBranchHistory] = useState<string[]>([]);
@@ -330,41 +299,14 @@ export default function InvestigationGraph({
   const ingestRetryRef = useRef<
     Map<string, { node: Pick<InvestigationNode, 'node_id' | 'lineage_id'>; operation: ExpandRequest['operation_type'] }>
   >(new Map());
-  const reactFlowRef = useRef<FitViewHandle | null>(null);
+  const reactFlowRef = useRef<FlowCanvasHandle | null>(null);
   const fitViewTimerRef = useRef<number | null>(null);
   const autosaveTimerRef = useRef<number | null>(null);
-  const autosaveRequestIdRef = useRef(0);
-  const autosaveRevisionRef = useRef(initialWorkspaceRevision);
-  const lastPersistedSnapshotRef = useRef<string | null>(null);
-  const didSeedAutosaveBaselineRef = useRef(false);
-  const didHydrateManualLayoutRef = useRef(false);
-  const didHydrateSessionPrefsRef = useRef(false);
-  const lastSavedPrefsRef = useRef<{
-    selectedAssets: string[];
-    pinnedAssetKeys: string[];
-    assetCatalogScope: string;
-  } | null>(null);
+  const localLayoutRunRef = useRef<string | null>(null);
 
-  const showNotice = useCallback((
-    message: string,
-    tone: 'info' | 'error' = 'info',
-    options?: { autoDismiss?: boolean },
-  ) => {
-    setNotice({ tone, message, autoDismiss: options?.autoDismiss ?? true });
+  const showNotice = useCallback((message: string, tone: 'info' | 'error' = 'info') => {
+    setNotice({ tone, message });
   }, []);
-
-  useEffect(() => {
-    autosaveRevisionRef.current = initialWorkspaceRevision;
-    didSeedAutosaveBaselineRef.current = false;
-    lastPersistedSnapshotRef.current = null;
-    setSessionSaveStatus(initialSavedAt ? 'saved' : 'idle');
-    setLastSavedAt(initialSavedAt);
-  }, [initialSavedAt, initialWorkspaceRevision, sessionId]);
-
-  useEffect(() => {
-    if (!initialRestoreNotice) return;
-    showNotice(initialRestoreNotice.message, initialRestoreNotice.tone);
-  }, [initialRestoreNotice, showNotice]);
 
   const scheduleFitView = useCallback((duration = 260) => {
     if (typeof window === 'undefined') return;
@@ -395,24 +337,6 @@ export default function InvestigationGraph({
       autosaveTimerRef.current = null;
     }
   }, []);
-
-  useEffect(() => {
-    didHydrateSessionPrefsRef.current = false;
-    const savedPreferences = loadSessionWorkspacePreferences(sessionId);
-    if (savedPreferences) {
-      setFilters((current) => ({
-        ...current,
-        selectedAssets: savedPreferences.selectedAssets,
-      }));
-      setPinnedAssetKeys(savedPreferences.pinnedAssetKeys);
-      setAssetCatalogScope(savedPreferences.assetCatalogScope);
-    } else {
-      setFilters((current) => ({ ...current, selectedAssets: [] }));
-      setPinnedAssetKeys([]);
-      setAssetCatalogScope(DEFAULT_ASSET_CATALOG_SCOPE);
-    }
-    didHydrateSessionPrefsRef.current = true;
-  }, [sessionId]);
 
   const branchEntries = useMemo(
     () =>
@@ -525,91 +449,6 @@ export default function InvestigationGraph({
     };
   }, [rfNodes]);
 
-  const catalogChains = useMemo(() => {
-    const chains = new Set<string>();
-    for (const node of rfNodes) {
-      const data = node.data as unknown as InvestigationNode;
-      const chain = data.chain ?? data.address_data?.chain;
-      if (chain) chains.add(chain.toLowerCase());
-    }
-    return [...chains].sort((left, right) => left.localeCompare(right));
-  }, [rfNodes]);
-
-  const fallbackAssets = useMemo<AssetCatalogItem[]>(() => {
-    const assets = new Map<string, AssetCatalogItem>();
-    for (const edge of rfEdges) {
-      const data = (edge.data ?? {}) as unknown as InvestigationEdge;
-      const symbol = data.asset_symbol?.trim();
-      if (!symbol) continue;
-      const assetKey = preferredAssetSelectionKeyForEdge(data) ?? symbol;
-      const existing = assets.get(assetKey);
-      if (existing) {
-        existing.observed_transfer_count += 1;
-        continue;
-      }
-      assets.set(assetKey, {
-        asset_key: assetKey,
-        symbol,
-        canonical_asset_id: data.canonical_asset_id,
-        canonical_symbol: undefined,
-        identity_status: 'unknown',
-        variant_kind: 'unknown',
-        blockchains: data.asset_chain ? [data.asset_chain] : [],
-        token_standards: [],
-        observed_transfer_count: 1,
-        sample_asset_address: data.asset_address,
-        is_native: false,
-      });
-    }
-    return [...assets.values()].sort((left, right) => left.symbol.localeCompare(right.symbol));
-  }, [rfEdges]);
-
-  const sessionAvailableAssets = assetCatalog.length > 0 ? assetCatalog : fallbackAssets;
-
-  const lensScopedGraphForAssets = useMemo(
-    () => applyFilters(
-      rfNodes,
-      rfEdges,
-      {
-        ...filters,
-        selectedAssets: [],
-        assetFilter: '',
-      },
-      appearance,
-      { activeBranchIds, rootBranchId },
-    ),
-    [rfNodes, rfEdges, filters, appearance, activeBranchIds, rootBranchId],
-  );
-
-  const visibleLensAssetKeys = useMemo(() => {
-    const keys = new Set<string>();
-    for (const edge of lensScopedGraphForAssets.edges) {
-      const data = (edge.data ?? {}) as unknown as InvestigationEdge;
-      for (const key of assetSelectionKeysForEdge(data)) {
-        keys.add(key);
-      }
-    }
-    return keys;
-  }, [lensScopedGraphForAssets.edges]);
-
-  const visibleLensAssets = useMemo(
-    () => sessionAvailableAssets.filter((asset) => visibleLensAssetKeys.has(asset.asset_key)),
-    [sessionAvailableAssets, visibleLensAssetKeys],
-  );
-
-  const availableAssets = useMemo(() => {
-    if (assetCatalogScope !== 'visible') {
-      return sessionAvailableAssets;
-    }
-    const selectedAssetSet = new Set(filters.selectedAssets);
-    const pinnedAssetSet = new Set(pinnedAssetKeys);
-    return sessionAvailableAssets.filter((asset) => (
-      visibleLensAssetKeys.has(asset.asset_key)
-      || selectedAssetSet.has(asset.asset_key)
-      || pinnedAssetSet.has(asset.asset_key)
-    ));
-  }, [assetCatalogScope, filters.selectedAssets, pinnedAssetKeys, sessionAvailableAssets, visibleLensAssetKeys]);
-
   const semanticLegend = useMemo(() => {
     const entries = new Map<
       string,
@@ -672,93 +511,9 @@ export default function InvestigationGraph({
   }, [rfNodes, rfEdges, filters, appearance, activeBranchIds, rootBranchId, setNodes, setEdges]);
 
   useEffect(() => {
-    let cancelled = false;
-
-    async function loadAssetCatalog() {
-      try {
-        const response = await getSessionAssets(sessionId, catalogChains);
-        if (!cancelled) {
-          setAssetCatalog(response.items ?? []);
-        }
-      } catch (error) {
-        console.warn('Failed to load session asset catalog', error);
-        if (!cancelled) {
-          setAssetCatalog([]);
-        }
-      }
-    }
-
-    void loadAssetCatalog();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [sessionId, catalogChains]);
-
-  useEffect(() => {
-    if (!didHydrateSessionPrefsRef.current) {
+    if (typeof window === 'undefined' || !sessionId || rfNodes.length === 0) {
       return;
     }
-    const next = { selectedAssets: filters.selectedAssets, pinnedAssetKeys, assetCatalogScope };
-    const prev = lastSavedPrefsRef.current;
-    if (
-      prev !== null &&
-      prev.assetCatalogScope === next.assetCatalogScope &&
-      prev.selectedAssets.length === next.selectedAssets.length &&
-      prev.selectedAssets.every((v, i) => v === next.selectedAssets[i]) &&
-      prev.pinnedAssetKeys.length === next.pinnedAssetKeys.length &&
-      prev.pinnedAssetKeys.every((v, i) => v === next.pinnedAssetKeys[i])
-    ) {
-      return;
-    }
-    lastSavedPrefsRef.current = next;
-    saveSessionWorkspacePreferences(sessionId, next);
-  }, [sessionId, filters.selectedAssets, pinnedAssetKeys, assetCatalogScope]);
-
-  const currentSnapshotWorkspacePreferences = useMemo(() => ({
-    selectedAssets: filters.selectedAssets,
-    pinnedAssetKeys,
-    assetCatalogScope,
-  }), [filters.selectedAssets, pinnedAssetKeys, assetCatalogScope]);
-
-  const sessionSaveLabel = useMemo(() => {
-    if (sessionSaveStatus === 'saving') return 'Saving…';
-    if (sessionSaveStatus === 'save_failed') return 'Save failed';
-    if (sessionSaveStatus === 'dirty') return 'Unsaved changes';
-    if (lastSavedAt) {
-      return `Saved ${new Date(lastSavedAt).toLocaleTimeString([], {
-        hour: '2-digit',
-        minute: '2-digit',
-      })}`;
-    }
-    return 'Not saved yet';
-  }, [sessionSaveStatus, lastSavedAt]);
-
-  useEffect(() => {
-    if (
-      typeof window === 'undefined'
-      || !sessionId
-      || rfNodes.length === 0
-      || !didHydrateSessionPrefsRef.current
-    ) {
-      return;
-    }
-
-    const snapshotJson = exportSnapshot({
-      workspacePreferences: currentSnapshotWorkspacePreferences,
-    });
-
-    if (!didSeedAutosaveBaselineRef.current) {
-      didSeedAutosaveBaselineRef.current = true;
-      lastPersistedSnapshotRef.current = snapshotJson;
-      return;
-    }
-
-    if (snapshotJson === lastPersistedSnapshotRef.current) {
-      return;
-    }
-
-    setSessionSaveStatus((current) => (current === 'saving' ? current : 'dirty'));
 
     if (autosaveTimerRef.current !== null) {
       window.clearTimeout(autosaveTimerRef.current);
@@ -766,135 +521,104 @@ export default function InvestigationGraph({
 
     autosaveTimerRef.current = window.setTimeout(() => {
       autosaveTimerRef.current = null;
-      const requestId = ++autosaveRequestIdRef.current;
+      saveWorkspace(sessionId, exportSnapshot());
+    }, 320);
+  }, [sessionId, rfNodes, rfEdges, branchMap, layoutMetaMap, exportSnapshot]);
 
-      let snapshotPayload: WorkspaceSnapshotV1;
-      try {
-        snapshotPayload = JSON.parse(snapshotJson) as WorkspaceSnapshotV1;
-      } catch (error) {
-        console.error('Failed to serialise workspace snapshot for autosave:', error);
-        setSessionSaveStatus('save_failed');
-        return;
-      }
-
-      const nextRevision = autosaveRevisionRef.current + 1;
-      autosaveRevisionRef.current = nextRevision;
-      snapshotPayload.revision = nextRevision;
-      setSessionSaveStatus('saving');
-      void saveSessionSnapshot(sessionId, snapshotPayload)
-        .then((response) => {
-          if (autosaveRequestIdRef.current !== requestId) return;
-          autosaveRevisionRef.current = response.revision;
-          lastPersistedSnapshotRef.current = snapshotJson;
-          setSessionSaveStatus('saved');
-          setLastSavedAt(response.saved_at);
-        })
-        .catch((error) => {
-          if (autosaveRequestIdRef.current !== requestId) return;
-          console.error('Failed to autosave session workspace:', error);
-          if (error instanceof Error && error.message.includes('API 409')) {
-            showNotice(
-              'A newer workspace snapshot reached the server first. Your latest graph state remains unsaved until the next successful autosave.',
-              'error',
-            );
-          }
-          setSessionSaveStatus('save_failed');
-        });
-    }, 2000);
-
-    return () => {
-      if (autosaveTimerRef.current !== null) {
-        window.clearTimeout(autosaveTimerRef.current);
-        autosaveTimerRef.current = null;
-      }
-    };
-  }, [
-    sessionId,
-    rfNodes,
-    rfEdges,
-    branchMap,
-    exportSnapshot,
-    currentSnapshotWorkspacePreferences,
-    showNotice,
-  ]);
-
-  // Incremental ELK layout: only newly added nodes are placed freely.
-  // Nodes that have already been laid out are passed to ELK as fixed-position
-  // hints (enabling interactiveLayout mode) and their returned positions are
-  // discarded — preserving the investigator's mental map across expansions.
-  const layoutedNodeIds = useRef<Set<string>>(new Set());
-  const layoutRef = useRef<number | null>(null);
   useEffect(() => {
     if (rfNodes.length === 0) {
-      layoutedNodeIds.current.clear();
-      didHydrateManualLayoutRef.current = false;
+      localLayoutRunRef.current = null;
       return;
     }
 
-    if (!didHydrateManualLayoutRef.current) {
-      const hasSavedPositions =
-        rfNodes.length > 1
-        && rfNodes.some(
-          (node) => Math.abs(node.position.x) > 1 || Math.abs(node.position.y) > 1,
-        );
-      if (hasSavedPositions) {
-        layoutedNodeIds.current = new Set(rfNodes.map((node) => node.id));
-        didHydrateManualLayoutRef.current = true;
-        return;
-      }
-      didHydrateManualLayoutRef.current = true;
-    }
-
-    const newNodes = rfNodes.filter((n) => !layoutedNodeIds.current.has(n.id));
-    if (newNodes.length === 0) return; // Nothing new to place.
-
-    // If every incoming node already has a non-trivial position from local
-    // pre-placement, mark them as laid out and skip ELK entirely.  This makes
-    // normal expansion synchronous — no Web Worker round-trip required.
-    // ELK still runs for the initial session (seed at {0,0}) and as a fallback
-    // whenever a node somehow arrives without a pre-placed position.
-    const allPrePlaced = newNodes.every(
-      (n) => Math.abs(n.position.x) > 1 || Math.abs(n.position.y) > 1,
+    const pendingNodeIds = new Set(
+      Array.from(layoutMetaMap.entries())
+        .filter(([, meta]) => isEligibleForElkRefinement(meta))
+        .map(([nodeId]) => nodeId),
     );
-    if (allPrePlaced) {
-      for (const n of newNodes) layoutedNodeIds.current.add(n.id);
+
+    if (pendingNodeIds.size === 0) {
+      localLayoutRunRef.current = null;
       return;
     }
 
-    const currentLayout = Date.now();
-    layoutRef.current = currentLayout;
-
-    // Build fixed-position map for already-laid-out nodes so ELK treats them
-    // as anchors when computing layer assignments for new nodes.
-    const fixedPositions = new Map<string, { x: number; y: number }>();
-    for (const n of rfNodes) {
-      const d = n.data as { is_pinned?: boolean; userPlaced?: boolean };
-      if (layoutedNodeIds.current.has(n.id) || d.is_pinned || d.userPlaced) {
-        fixedPositions.set(n.id, n.position);
-      }
+    const pendingNodes = rfNodes.filter((node) => pendingNodeIds.has(node.id));
+    if (pendingNodes.length === 0) {
+      localLayoutRunRef.current = null;
+      return;
     }
 
-    // Snapshot the IDs being laid out in this pass before the async gap.
-    const passingNewIds = new Set(newNodes.map((n) => n.id));
+    const measuredSizes = collectMeasuredNodeSizes(reactFlowRef.current?.getNodes?.() ?? []);
+    const neighborhood = buildLocalLayoutNeighborhood({
+      allNodes: rfNodes,
+      allEdges: rfEdges,
+      pendingNodeIds,
+      layoutMetaMap,
+    });
+    if (neighborhood.nodes.length === 0) {
+      return;
+    }
 
-    computeElkLayout(rfNodes, rfEdges, fixedPositions)
+    const layoutRunKey = Array.from(pendingNodeIds)
+      .map((nodeId) => `${nodeId}:${layoutMetaMap.get(nodeId)?.lastLayoutToken ?? 'pending'}`)
+      .sort()
+      .join('|');
+
+    if (localLayoutRunRef.current === layoutRunKey) {
+      return;
+    }
+    localLayoutRunRef.current = layoutRunKey;
+
+    const anchorNode =
+      neighborhood.nodes.find((node) => !pendingNodeIds.has(node.id))
+      ?? rfNodes.find((node) => node.id === layoutMetaMap.get(pendingNodes[0]?.id ?? '')?.anchorNodeId)
+      ?? pendingNodes[0];
+
+    const finalizePendingLayout = (positions: Map<string, { x: number; y: number }>) => {
+      const layoutMetaUpdates = new Map(
+        pendingNodes.map((node) => [
+          node.id,
+          {
+            placementSource: 'elk_refinement' as const,
+            lastLayoutToken: layoutMetaMap.get(node.id)?.lastLayoutToken,
+          },
+        ]),
+      );
+      setRfPositions(positions, layoutMetaUpdates);
+    };
+
+    computeElkLayout(neighborhood.nodes, neighborhood.edges, {
+      fixedPositions: neighborhood.fixedPositions,
+      measuredSizes,
+    })
       .then((positions) => {
-        if (layoutRef.current !== currentLayout) return;
-        // Apply ELK output only for nodes placed in this pass — existing
-        // nodes retain their current positions regardless of what ELK returns.
-        const deltaPositions = new Map<string, { x: number; y: number }>();
-        for (const [id, pos] of positions) {
-          if (passingNewIds.has(id)) deltaPositions.set(id, pos);
+        if (localLayoutRunRef.current !== layoutRunKey) return;
+        const localPositions = new Map<string, { x: number; y: number }>();
+        for (const node of pendingNodes) {
+          const position = positions.get(node.id) ?? node.position;
+          localPositions.set(node.id, position);
         }
-        // Mark all nodes submitted to ELK in this pass as laid out
-        // so a rapid second expansion doesn't re-layout same nodes.
-        for (const nodeId of passingNewIds) layoutedNodeIds.current.add(nodeId);
-        setRfPositions(deltaPositions);
+
+        const collisionFreePositions = resolveNodeCollisions({
+          anchorNode,
+          existingNodes: rfNodes,
+          nodesToPlace: pendingNodes,
+          initialPositions: localPositions,
+          measuredSizes,
+        });
+        finalizePendingLayout(collisionFreePositions);
+        localLayoutRunRef.current = null;
       })
       .catch((error) => {
-        console.error('ELK layout computation failed:', error);
+        console.error('Local ELK layout computation failed:', error);
+        if (localLayoutRunRef.current !== layoutRunKey) return;
+        const fallbackPositions = new Map(
+          pendingNodes.map((node) => [node.id, node.position]),
+        );
+        finalizePendingLayout(fallbackPositions);
+        localLayoutRunRef.current = null;
       });
-  }, [rfNodes, rfEdges, setRfPositions]);
+  }, [rfNodes, rfEdges, layoutMetaMap, setRfPositions]);
 
   // Expand a node in a given direction
   const handleExpand = useCallback(
@@ -914,23 +638,25 @@ export default function InvestigationGraph({
       try {
         const nodeParts = node.node_id.split(':');
         const nodeChain = nodeParts[0]?.toUpperCase() ?? 'this';
-        const expandOptions: NonNullable<ExpandRequest['options']> = {};
-        if (txHashes && txHashes.length > 0) {
-          expandOptions.tx_hashes = txHashes;
-        }
-        if (filters.selectedAssets.length > 0) {
-          expandOptions.asset_filter = filters.selectedAssets;
-        }
         const response = await expandNode(sessionId, {
           seed_node_id: node.node_id,
           seed_lineage_id: node.lineage_id,
           operation_type: operation,
-          options: Object.keys(expandOptions).length > 0 ? expandOptions : undefined,
+          options: txHashes && txHashes.length > 0
+            ? { tx_hashes: txHashes }
+            : undefined,
         });
         const deltaNodes = response.nodes ?? response.added_nodes ?? [];
         const deltaEdges = response.edges ?? response.added_edges ?? [];
+        const updatedNodes = response.updated_nodes ?? [];
+        const removedNodeIds = response.removed_node_ids ?? [];
 
-        if (deltaNodes.length === 0 && deltaEdges.length === 0) {
+        if (
+          deltaNodes.length === 0
+          && deltaEdges.length === 0
+          && updatedNodes.length === 0
+          && removedNodeIds.length === 0
+        ) {
           if (response.ingest_pending) {
             // Background ingest triggered — parse address/chain from node_id
             // format "{chain}:{type}:{identifier}" and start polling.
@@ -959,41 +685,42 @@ export default function InvestigationGraph({
         const existingEdgeIds = new Set(rfEdges.map((existingEdge) => existingEdge.id));
         const hasFreshDelta =
           deltaNodes.some((deltaNode) => !existingNodeIds.has(deltaNode.node_id))
+          || updatedNodes.some((updatedNode) => !existingNodeIds.has(updatedNode.node_id))
           || deltaEdges.some((deltaEdge) => !existingEdgeIds.has(deltaEdge.edge_id));
+        const hasStructuralUpdate =
+          updatedNodes.length > 0 || removedNodeIds.length > 0;
 
-        if (!hasFreshDelta) {
+        if (!hasFreshDelta && !hasStructuralUpdate) {
           showNotice(
             `This ${expandOperationLabel(operation)} path is already visible on the canvas.`,
           );
           return;
         }
 
-        if (response.integrity_warning) {
-          showNotice(response.integrity_warning, 'info', { autoDismiss: false });
-        }
+        const freshNodes = [...deltaNodes, ...updatedNodes]
+          .filter((candidateNode, index, array) =>
+            !existingNodeIds.has(candidateNode.node_id)
+            && array.findIndex((entry) => entry.node_id === candidateNode.node_id) === index,
+          )
+          .map(toRfNode);
+        const measuredSizes = collectMeasuredNodeSizes(reactFlowRef.current?.getNodes?.() ?? []);
+        const placementEdges = deltaEdges.map((edge) => ({
+          id: edge.edge_id,
+          source: edge.source_node_id,
+          target: edge.target_node_id,
+        })) as Edge[];
+        const newNodePlacements = createLocalNodePlacements({
+          existingNodes: rfNodes,
+          newNodes: freshNodes,
+          edges: placementEdges,
+          seedNodeId: node.node_id,
+          operationType: response.operation_type ?? operation,
+          layoutHints: response.layout_hints,
+          layoutToken: response.operation_id,
+          measuredSizes,
+        });
 
-        applyExpansionDelta(response);
-
-        // Pre-place new nodes via collision-aware local placement so they never
-        // render at {0,0} and do not overlap existing nodes.  React 18 batches
-        // this setRfPositions call with applyExpansionDelta into one render cycle.
-        // The layout useEffect will skip ELK for these nodes since they already
-        // have non-trivial positions, making expansion fully synchronous.
-        const trulyNewIds = deltaNodes
-          .filter((dn) => !existingNodeIds.has(dn.node_id))
-          .map((dn) => dn.node_id);
-        if (trulyNewIds.length > 0) {
-          const anchorRf = rfNodes.find((n) => n.id === node.node_id);
-          if (anchorRf) {
-            const localPositions = computeLocalPositions(
-              anchorRf.position,
-              trulyNewIds,
-              operation,
-              rfNodes,
-            );
-            setRfPositions(localPositions);
-          }
-        }
+        applyExpansionDelta(response, { newNodePlacements });
       } catch (err) {
         console.error('Expand failed:', err);
         const message = err instanceof Error ? err.message : 'Unable to expand this node right now.';
@@ -1002,111 +729,8 @@ export default function InvestigationGraph({
         setExpandingNode(node.node_id, false);
       }
     },
-    [sessionId, rfNodes, rfEdges, expandingNodeIds, setExpandingNode, applyExpansionDelta, setRfPositions, showNotice, filters.selectedAssets],
+    [sessionId, rfNodes, rfEdges, expandingNodeIds, setExpandingNode, applyExpansionDelta, showNotice],
   );
-
-  const [isPreviewLoading, setIsPreviewLoading] = useState(false);
-
-  // Clear any pending preview when the inspector's focused node changes.
-  // Prevents Node A's preview from rendering in Node B's Inspector panel.
-  useEffect(() => {
-    setPendingPreview(null);
-  }, [selectedNodeId, setPendingPreview]);
-
-  /**
-   * Fetch a preview of what an expansion would return without committing it to
-   * the canvas.  Stores the result in `pendingPreview`; the analyst confirms
-   * via `handleApplyPreview` or dismisses it.
-   */
-  const handlePreviewExpand = useCallback(
-    async (
-      node: Pick<InvestigationNode, 'node_id' | 'lineage_id'>,
-      operation: ExpandRequest['operation_type'],
-      filters: { timeFrom?: string; timeTo?: string; maxResults?: number },
-    ) => {
-      setIsPreviewLoading(true);
-      try {
-        const options: NonNullable<ExpandRequest['options']> = {};
-        if (filters.timeFrom) options.time_from = `${filters.timeFrom}T00:00:00Z`;
-        if (filters.timeTo) options.time_to = `${filters.timeTo}T23:59:59Z`;
-        if (filters.maxResults) options.max_results = filters.maxResults;
-        const response = await expandNode(sessionId, {
-          seed_node_id: node.node_id,
-          seed_lineage_id: node.lineage_id,
-          operation_type: operation,
-          options: Object.keys(options).length > 0 ? options : undefined,
-        });
-        setPendingPreview(response);
-      } catch (err) {
-        console.error('Preview expand failed:', err);
-        const message = err instanceof Error ? err.message : 'Preview failed — try again.';
-        showNotice(message, 'error');
-      } finally {
-        setIsPreviewLoading(false);
-      }
-    },
-    [sessionId, setPendingPreview, showNotice],
-  );
-
-  /** Apply the pending preview to the canvas (same placement logic as handleExpand).
-   *
-   * When `selectedEdgeIds` is provided, only those edges (and the nodes they
-   * reference) are applied.  `undefined` applies the full preview (V1 behaviour).
-   */
-  const handleApplyPreview = useCallback((selectedEdgeIds?: Set<string>) => {
-    if (!pendingPreview) return;
-    const allNodes = pendingPreview.nodes ?? pendingPreview.added_nodes ?? [];
-    const allEdges = pendingPreview.edges ?? pendingPreview.added_edges ?? [];
-
-    const filteredEdges = selectedEdgeIds
-      ? allEdges.filter((e) => selectedEdgeIds.has(e.edge_id))
-      : allEdges;
-    const referencedNodeIds = selectedEdgeIds
-      ? new Set(filteredEdges.flatMap((e) => [e.source_node_id, e.target_node_id]))
-      : null;
-    const filteredNodes = referencedNodeIds
-      ? allNodes.filter((n) => referencedNodeIds.has(n.node_id))
-      : allNodes;
-
-    if (filteredNodes.length === 0 && filteredEdges.length === 0) {
-      showNotice(
-        pendingPreview.empty_state?.message ?? 'No fund flows found in that date range.',
-      );
-      setPendingPreview(null);
-      return;
-    }
-
-    if (pendingPreview.integrity_warning) {
-      showNotice(pendingPreview.integrity_warning, 'info', { autoDismiss: false });
-    }
-
-    const subsetResponse = selectedEdgeIds
-      ? { ...pendingPreview, nodes: filteredNodes, edges: filteredEdges, added_nodes: filteredNodes, added_edges: filteredEdges }
-      : pendingPreview;
-
-    applyExpansionDelta(subsetResponse);
-
-    const trulyNewIds = filteredNodes
-      .filter((dn) => !nodeMap.has(dn.node_id))
-      .map((dn) => dn.node_id);
-    if (trulyNewIds.length > 0) {
-      const anchorRf = rfNodes.find((n) => n.id === pendingPreview.seed_node_id);
-      if (anchorRf) {
-        // Only compute positions for expand operations, not create_session
-        if (pendingPreview.operation_type !== 'create_session') {
-          const localPositions = computeLocalPositions(
-            anchorRf.position,
-            trulyNewIds,
-            pendingPreview.operation_type as 'expand_next' | 'expand_prev' | 'expand_neighbors',
-            rfNodes,
-          );
-          setRfPositions(localPositions);
-        }
-      }
-    }
-
-    setPendingPreview(null);
-  }, [pendingPreview, nodeMap, rfNodes, applyExpansionDelta, setRfPositions, setPendingPreview, showNotice]);
 
   // Derived set consumed by IngestPendingContext and the enrichedNodes mapping.
   const ingestPendingNodeIds = useMemo(
@@ -1140,21 +764,7 @@ export default function InvestigationGraph({
     });
     ingestRetryRef.current.delete(nodeId);
     showNotice(
-      'Background data fetch did not complete before the current timeout. Current results may be incomplete, and additional ingest may not be available in this runtime.',
-      'error',
-      { autoDismiss: false },
-    );
-  }, [showNotice]);
-
-  const handleIngestUnavailable = useCallback((nodeId: string) => {
-    setIngestPendingMap((prev) => {
-      const next = new Map(prev);
-      next.delete(nodeId);
-      return next;
-    });
-    ingestRetryRef.current.delete(nodeId);
-    showNotice(
-      'Background data fetch is no longer queued for this address. Current results may be incomplete; try expanding the node again later.',
+      'Background data fetch did not complete in time. Try expanding the node again later.',
       'error',
     );
   }, [showNotice]);
@@ -1183,16 +793,13 @@ export default function InvestigationGraph({
       }));
 
     if (settledPositions.length > 0) {
-      syncRfPositions(settledPositions);
+      syncRfPositions(settledPositions, { userInitiated: true });
     }
   }, [onNodesChange, syncRfPositions]);
 
   const handleNodeDragStop = useCallback((_event: unknown, node: Node) => {
-    syncRfPositions([{ id: node.id, position: node.position }]);
-    // Mark as user-placed so future ELK passes (fallback or initial) always
-    // treat this node as a hard positional anchor regardless of layoutedNodeIds.
-    markUserPlaced(node.id);
-  }, [syncRfPositions, markUserPlaced]);
+    syncRfPositions([{ id: node.id, position: node.position }], { userInitiated: true });
+  }, [syncRfPositions]);
 
   const handleHideNode = useCallback((nodeId: string) => {
     setNodeHidden(nodeId, true);
@@ -1321,16 +928,6 @@ export default function InvestigationGraph({
     () => (selectedEdge?.data as InvestigationEdge | undefined) ?? null,
     [selectedEdge],
   );
-  const selectedNodeData = useMemo(
-    () => (selectedNode?.data as InvestigationNode | undefined) ?? null,
-    [selectedNode],
-  );
-  const bridgeStatusRefresh = useBridgeHopPoller({
-    sessionId,
-    node: selectedNodeData,
-    onStatus: updateBridgeHopStatus,
-    onNotice: showNotice,
-  });
   const visibleInvestigationNodeById = useMemo(
     () =>
       new Map(
@@ -1475,7 +1072,7 @@ export default function InvestigationGraph({
   }, [activeSemanticKey, semanticLegend.entries]);
 
   useEffect(() => {
-    if (!notice?.autoDismiss) return;
+    if (!notice) return;
     const timeoutId = window.setTimeout(() => {
       setNotice((current) => (current?.message === notice.message ? null : current));
     }, 4200);
@@ -1703,9 +1300,6 @@ export default function InvestigationGraph({
       `Session ${sessionId}`,
       `Canvas view: ${appearance.viewMode} / ${appearance.interactionMode}`,
       `Visible graph: ${nodes.length} nodes and ${edges.length} edges`,
-      `Asset picker scope: ${assetCatalogScope === 'visible' ? 'visible lens' : 'full session'}`,
-      pinnedAssetKeys.length > 0 ? `Pinned assets: ${pinnedAssetKeys.length}` : null,
-      filters.selectedAssets.length > 0 ? `Selected assets: ${filters.selectedAssets.length}` : null,
       filters.bridgeRoute ? `Route focus: ${filters.bridgeRoute}` : null,
       filters.bridgeProtocols.length > 0
         ? `Bridge protocol focus: ${filters.bridgeProtocols.map((protocolId) => bridgeProtocolLabel(protocolId)).join(', ')}`
@@ -1794,7 +1388,6 @@ export default function InvestigationGraph({
     activeSemanticEntry,
     appearance.interactionMode,
     appearance.viewMode,
-    assetCatalogScope,
     branchCompareHeadline,
     branchCompareSummaries,
     branchMetaById,
@@ -1802,9 +1395,7 @@ export default function InvestigationGraph({
     edges.length,
     filters.bridgeProtocols,
     filters.bridgeRoute,
-    filters.selectedAssets.length,
     nodes.length,
-    pinnedAssetKeys.length,
     pinnedPathStories,
     semanticLegend.entries,
     sessionId,
@@ -1839,7 +1430,6 @@ export default function InvestigationGraph({
           address={address}
           chain={chain}
           onComplete={handleIngestComplete}
-          onUnavailable={handleIngestUnavailable}
           onTimeout={handleIngestTimeout}
         />
       ))}
@@ -1879,7 +1469,6 @@ export default function InvestigationGraph({
             filters.minFiatValue !== null && filters.minFiatValue > 0,
             filters.maxDepth !== undefined && filters.maxDepth < 20,
             filters.assetFilter !== undefined && filters.assetFilter.length > 0,
-            filters.selectedAssets.length > 0,
             filters.bridgeProtocols.length > 0,
             filters.bridgeStatuses.length > 0,
             Boolean(filters.bridgeRoute),
@@ -1896,9 +1485,7 @@ export default function InvestigationGraph({
         </button>
         <button
           onClick={() => {
-            const json = exportSnapshot({
-              workspacePreferences: currentSnapshotWorkspacePreferences,
-            });
+            const json = exportSnapshot();
             const a = document.createElement('a');
             const blobUrl = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
             a.href = blobUrl;
@@ -1923,27 +1510,9 @@ export default function InvestigationGraph({
               if (!file) return;
               file.text()
                 .then((text) => {
-                  layoutedNodeIds.current.clear();
-                  didHydrateManualLayoutRef.current = false;
-                  const restored = importSnapshot(text);
-                  if (!restored) {
-                    throw new Error('Snapshot import failed.');
-                  }
-                  const snapshotPreferences = extractSnapshotWorkspacePreferences(text);
-                  if (snapshotPreferences) {
-                    setFilters((current) => ({
-                      ...current,
-                      selectedAssets: snapshotPreferences.selectedAssets,
-                    }));
-                    setPinnedAssetKeys(snapshotPreferences.pinnedAssetKeys);
-                    setAssetCatalogScope(snapshotPreferences.assetCatalogScope);
-                    saveSessionWorkspacePreferences(sessionId, snapshotPreferences);
-                  } else {
-                    setFilters((current) => ({ ...current, selectedAssets: [] }));
-                    setPinnedAssetKeys([]);
-                    setAssetCatalogScope(DEFAULT_ASSET_CATALOG_SCOPE);
-                  }
-                  showNotice('Snapshot restored. Manual positions, removed nodes, and asset workspace state are back on canvas.');
+                  localLayoutRunRef.current = null;
+                  importSnapshot(text);
+                  showNotice('Snapshot restored. Manual positions and removed nodes are back on canvas.');
                   e.target.value = '';
                 })
                 .catch((error) => {
@@ -2012,38 +1581,6 @@ export default function InvestigationGraph({
         </span>
         <span style={toolbarPillStyle}>
           {appearance.interactionMode} mode
-        </span>
-        <span
-          style={{
-            ...toolbarPillStyle,
-            color:
-              sessionSaveStatus === 'save_failed'
-                ? '#b91c1c'
-                : sessionSaveStatus === 'dirty'
-                  ? '#92400e'
-                : sessionSaveStatus === 'saving'
-                  ? '#1d4ed8'
-                  : '#334155',
-            borderColor:
-              sessionSaveStatus === 'save_failed'
-                ? 'rgba(185,28,28,0.18)'
-                : sessionSaveStatus === 'dirty'
-                  ? 'rgba(146,64,14,0.2)'
-                : sessionSaveStatus === 'saving'
-                  ? 'rgba(37,99,235,0.18)'
-                  : toolbarPillStyle.borderColor,
-            background:
-              sessionSaveStatus === 'save_failed'
-                ? 'rgba(254,242,242,0.96)'
-                : sessionSaveStatus === 'dirty'
-                  ? 'rgba(255,247,237,0.96)'
-                : sessionSaveStatus === 'saving'
-                  ? 'rgba(239,246,255,0.96)'
-                  : toolbarPillStyle.background,
-          }}
-          title="Server-backed session save status"
-        >
-          {sessionSaveLabel}
         </span>
         <span style={{ color: '#475569', fontSize: 12, alignSelf: 'center', fontWeight: 600 }}>
           {rfNodes.length} nodes · {rfEdges.length} edges
@@ -2706,13 +2243,6 @@ export default function InvestigationGraph({
           filters={filters}
           onChange={setFilters}
           onClose={() => setFilterVisible(false)}
-          availableAssets={availableAssets}
-          sessionAssetCount={sessionAvailableAssets.length}
-          visibleAssetCount={visibleLensAssets.length}
-          assetCatalogScope={assetCatalogScope}
-          onAssetCatalogScopeChange={setAssetCatalogScope}
-          pinnedAssetKeys={pinnedAssetKeys}
-          onPinnedAssetKeysChange={setPinnedAssetKeys}
           availableBridgeProtocols={bridgeFilterOptions.protocols}
           availableBridgeRoutes={bridgeFilterOptions.routes}
         />
@@ -2768,7 +2298,6 @@ export default function InvestigationGraph({
         node={selectedNode}
         edge={selectedEdge}
         collapsed={inspectorCollapsed}
-        bridgeStatusRefresh={bridgeStatusRefresh}
         activeBridgeRoute={filters.bridgeRoute}
         activeBridgeProtocols={filters.bridgeProtocols}
         activeBranchIds={activeBranchIds}
@@ -2788,15 +2317,6 @@ export default function InvestigationGraph({
           if (!nodeData) return;
           void handleExpand(nodeData, operation);
         }}
-        onPreviewExpand={(operation, previewFilters) => {
-          const nodeData = (selectedNode?.data as InvestigationNode | undefined) ?? null;
-          if (!nodeData) return;
-          void handlePreviewExpand(nodeData, operation, previewFilters);
-        }}
-        previewResult={pendingPreview}
-        onApplyPreview={handleApplyPreview}
-        onDismissPreview={() => setPendingPreview(null)}
-        isPreviewLoading={isPreviewLoading}
         onHideNode={handleHideNode}
         onClose={() => {
           setSelectedNodeId(null);

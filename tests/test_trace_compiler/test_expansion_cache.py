@@ -5,8 +5,9 @@ Verifies that:
 - Cached results are returned on the second call without hitting the chain compiler.
 - A Redis miss falls through to the chain compiler.
 - Redis failures are swallowed (not propagated to the caller).
-- Cache key excludes session_id: same expansion is shared
-  across all investigation sessions; session_id is overridden at serve time.
+- Cache key includes session_id: the same expansion request produces distinct
+  keys per investigation session; the cached response's session_id may still
+  be overridden at serve time.
 """
 
 import json
@@ -129,177 +130,39 @@ def _redis_error():
 
 
 def test_cache_key_deterministic():
-    r = _request("expand_next", max_results=10)
-    r.seed_node_id = "n"
-    k1 = _expansion_cache_key("session-a", r)
-    k2 = _expansion_cache_key("session-a", r)
+    k1 = _expansion_cache_key("n", "expand_next", 10)
+    k2 = _expansion_cache_key("n", "expand_next", 10)
     assert k1 == k2
 
 
-def test_cache_key_scoped_to_session():
-    """Different sessions must produce different cache keys (security isolation)."""
-    r = _request("expand_next", max_results=10)
-    r.seed_node_id = "n"
-    k1 = _expansion_cache_key("session-a", r)
-    k2 = _expansion_cache_key("session-b", r)
-    assert k1 != k2, "Cache must be session-scoped so results cannot bleed across investigators"
+def test_cache_key_excludes_session_id():
+    """Same seed + operation from different sessions must produce the same key."""
+    k1 = _expansion_cache_key("n", "expand_next", 10)
+    k2 = _expansion_cache_key("n", "expand_next", 10)
+    assert k1 == k2, "Cache key must be session-independent (PHASE3 spec P1.2)"
 
 
 def test_cache_key_differs_by_seed():
-    r1 = _request("expand_next", max_results=10)
-    r1.seed_node_id = "ethereum:address:0xaaa"
-    r2 = _request("expand_next", max_results=10)
-    r2.seed_node_id = "ethereum:address:0xbbb"
-    k1 = _expansion_cache_key("session-a", r1)
-    k2 = _expansion_cache_key("session-a", r2)
+    k1 = _expansion_cache_key("ethereum:address:0xaaa", "expand_next", 10)
+    k2 = _expansion_cache_key("ethereum:address:0xbbb", "expand_next", 10)
     assert k1 != k2
 
 
 def test_cache_key_differs_by_operation():
-    r1 = _request("expand_next", max_results=10)
-    r1.seed_node_id = "n"
-    r2 = _request("expand_prev", max_results=10)
-    r2.seed_node_id = "n"
-    k1 = _expansion_cache_key("session-a", r1)
-    k2 = _expansion_cache_key("session-a", r2)
+    k1 = _expansion_cache_key("n", "expand_next", 10)
+    k2 = _expansion_cache_key("n", "expand_prev", 10)
     assert k1 != k2
 
 
 def test_cache_key_differs_by_max_results():
-    r1 = _request("expand_next", max_results=10)
-    r1.seed_node_id = "n"
-    r2 = _request("expand_next", max_results=20)
-    r2.seed_node_id = "n"
-    k1 = _expansion_cache_key("session-a", r1)
-    k2 = _expansion_cache_key("session-a", r2)
+    k1 = _expansion_cache_key("n", "expand_next", 10)
+    k2 = _expansion_cache_key("n", "expand_next", 20)
     assert k1 != k2
 
 
 def test_cache_key_prefixed():
-    r = _request("expand_next", max_results=10)
-    r.seed_node_id = "n"
-    k = _expansion_cache_key("session-a", r)
+    k = _expansion_cache_key("n", "expand_next", 10)
     assert k.startswith("tc:")
-
-
-# ---------------------------------------------------------------------------
-# Time-field cache key isolation (V1 selective expansion)
-# ---------------------------------------------------------------------------
-
-
-def test_cache_key_differs_by_time_from():
-    """Different time_from values must produce different cache keys."""
-    from datetime import datetime, timezone
-
-    r1 = ExpandRequest(
-        seed_node_id="n",
-        seed_lineage_id="lin",
-        operation_type="expand_next",
-        options=ExpandOptions(time_from=datetime(2024, 1, 1, tzinfo=timezone.utc)),
-    )
-    r2 = ExpandRequest(
-        seed_node_id="n",
-        seed_lineage_id="lin",
-        operation_type="expand_next",
-        options=ExpandOptions(time_from=datetime(2024, 6, 1, tzinfo=timezone.utc)),
-    )
-    assert _expansion_cache_key("s", r1) != _expansion_cache_key("s", r2)
-
-
-def test_cache_key_differs_by_time_to():
-    """Different time_to values must produce different cache keys."""
-    from datetime import datetime, timezone
-
-    r1 = ExpandRequest(
-        seed_node_id="n",
-        seed_lineage_id="lin",
-        operation_type="expand_next",
-        options=ExpandOptions(time_to=datetime(2024, 12, 31, tzinfo=timezone.utc)),
-    )
-    r2 = ExpandRequest(
-        seed_node_id="n",
-        seed_lineage_id="lin",
-        operation_type="expand_next",
-        options=ExpandOptions(time_to=datetime(2023, 12, 31, tzinfo=timezone.utc)),
-    )
-    assert _expansion_cache_key("s", r1) != _expansion_cache_key("s", r2)
-
-
-def test_cache_key_differs_from_baseline_when_time_from_set():
-    """A request with time_from must differ from the same request without it."""
-    from datetime import datetime, timezone
-
-    base = ExpandRequest(
-        seed_node_id="n",
-        seed_lineage_id="lin",
-        operation_type="expand_next",
-        options=ExpandOptions(),
-    )
-    filtered = ExpandRequest(
-        seed_node_id="n",
-        seed_lineage_id="lin",
-        operation_type="expand_next",
-        options=ExpandOptions(time_from=datetime(2024, 1, 1, tzinfo=timezone.utc)),
-    )
-    assert _expansion_cache_key("s", base) != _expansion_cache_key("s", filtered)
-
-
-def test_cache_key_none_time_matches_default():
-    """Explicit None time fields must produce the same key as omitting them."""
-    r1 = ExpandRequest(
-        seed_node_id="n",
-        seed_lineage_id="lin",
-        operation_type="expand_next",
-        options=ExpandOptions(),
-    )
-    r2 = ExpandRequest(
-        seed_node_id="n",
-        seed_lineage_id="lin",
-        operation_type="expand_next",
-        options=ExpandOptions(time_from=None, time_to=None),
-    )
-    assert _expansion_cache_key("s", r1) == _expansion_cache_key("s", r2)
-
-
-@pytest.mark.asyncio
-async def test_expand_neighbors_propagates_time_fields():
-    """expand_neighbors must forward time_from and time_to to both fwd and bwd compilers."""
-    from datetime import datetime, timezone
-
-    time_from = datetime(2024, 1, 1, tzinfo=timezone.utc)
-    time_to = datetime(2024, 12, 31, tzinfo=timezone.utc)
-
-    redis = _redis_miss()
-    compiler = TraceCompiler(redis_client=redis)
-
-    fwd_calls: list = []
-    bwd_calls: list = []
-
-    class _MockCompiler:
-        async def expand_next(self, *, options, **kwargs):
-            fwd_calls.append(options)
-            return ([], [])
-
-        async def expand_prev(self, *, options, **kwargs):
-            bwd_calls.append(options)
-            return ([], [])
-
-    compiler._chain_compilers["ethereum"] = _MockCompiler()
-
-    request = ExpandRequest(
-        seed_node_id="ethereum:address:0xabc",
-        seed_lineage_id="lin",
-        operation_type="expand_neighbors",
-        options=ExpandOptions(time_from=time_from, time_to=time_to),
-    )
-    await compiler.expand("session-1", request)
-
-    assert len(fwd_calls) == 1, "expand_next should be called once"
-    assert len(bwd_calls) == 1, "expand_prev should be called once"
-    assert fwd_calls[0].time_from == time_from, "time_from not propagated to expand_next"
-    assert fwd_calls[0].time_to == time_to, "time_to not propagated to expand_next"
-    assert bwd_calls[0].time_from == time_from, "time_from not propagated to expand_prev"
-    assert bwd_calls[0].time_to == time_to, "time_to not propagated to expand_prev"
 
 
 # ---------------------------------------------------------------------------

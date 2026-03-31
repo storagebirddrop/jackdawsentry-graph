@@ -12,12 +12,11 @@
 import { create } from 'zustand';
 import { MarkerType, type Node, type Edge } from '@xyflow/react';
 import type {
-  BridgeHopStatusResponse,
   InvestigationNode,
   InvestigationEdge,
   ExpansionResponseV2,
+  NodeLayoutMetadata,
 } from '../types/graph';
-import type { SnapshotWorkspacePreferences } from '../workspacePersistence';
 import {
   normalizeInvestigationEdge as normalizeEdge,
   normalizeInvestigationNode as normalizeNode,
@@ -48,6 +47,36 @@ function branchColorIndex(branchId: string): number {
 
 export function branchColor(branchId: string): string {
   return BRANCH_COLORS[branchColorIndex(branchId)];
+}
+
+function ensureLayoutMetadata(
+  meta?: Partial<NodeLayoutMetadata>,
+): NodeLayoutMetadata {
+  return {
+    layoutLocked: false,
+    userPlaced: false,
+    placementSource: 'local_expansion',
+    ...meta,
+  };
+}
+
+function mergeLayoutMetadata(
+  current?: NodeLayoutMetadata,
+  next?: Partial<NodeLayoutMetadata>,
+): NodeLayoutMetadata {
+  return {
+    ...ensureLayoutMetadata(current),
+    ...next,
+  };
+}
+
+export interface NodePlacementDescriptor {
+  position: { x: number; y: number };
+  layoutMeta?: Partial<NodeLayoutMetadata>;
+}
+
+export interface ApplyExpansionDeltaOptions {
+  newNodePlacements?: Map<string, NodePlacementDescriptor>;
 }
 
 // ---------------------------------------------------------------------------
@@ -144,6 +173,9 @@ export interface GraphState {
   /** React Flow edges (derived, updated by `applyExpansionDelta`) */
   rfEdges: Edge[];
 
+  /** Frontend-only node layout metadata keyed by node_id */
+  layoutMetaMap: Map<string, NodeLayoutMetadata>;
+
   /** Nodes that are currently being expanded (to show loading state) */
   expandingNodeIds: Set<string>;
 
@@ -160,37 +192,27 @@ export interface GraphState {
   /** Max node count before auto-collapse prompt */
   maxNodes: number;
 
-  /**
-   * Pending expansion preview — holds a fetched ExpansionResponseV2 that has
-   * NOT yet been applied to the canvas.  Set by handlePreviewExpand, cleared
-   * by handleApplyPreview or an explicit dismiss.  Intentionally excluded from
-   * session snapshots; previews are transient.
-   */
-  pendingPreview: ExpansionResponseV2 | null;
-
   // Actions
   initSession: (sessionId: string, rootNode: InvestigationNode) => void;
-  applyExpansionDelta: (response: ExpansionResponseV2) => void;
-  setPendingPreview: (response: ExpansionResponseV2 | null) => void;
-  setRfPositions: (positions: Map<string, { x: number; y: number }>) => void;
-  syncRfPositions: (nodes: Array<Pick<Node, 'id' | 'position'>>) => void;
+  applyExpansionDelta: (
+    response: ExpansionResponseV2,
+    options?: ApplyExpansionDeltaOptions,
+  ) => void;
+  setRfPositions: (
+    positions: Map<string, { x: number; y: number }>,
+    layoutMetaUpdates?: Map<string, Partial<NodeLayoutMetadata>>,
+  ) => void;
+  syncRfPositions: (
+    nodes: Array<Pick<Node, 'id' | 'position'>>,
+    options?: { userInitiated?: boolean },
+  ) => void;
   setNodeHidden: (nodeId: string, hidden: boolean) => void;
   restoreAllHiddenNodes: () => void;
   setExpandingNode: (nodeId: string, expanding: boolean) => void;
-  updateBridgeHopStatus: (nodeId: string, status: BridgeHopStatusResponse) => void;
-  /**
-   * Mark a node as user-placed after a manual drag.
-   *
-   * Sets `rfNode.data.userPlaced = true` so the layout engine treats it as a
-   * hard positional anchor — equivalent to `is_pinned` but client-side only.
-   * The flag is intentionally not persisted to the server; it lives in rfNode
-   * data for the duration of the session.
-   */
-  markUserPlaced: (nodeId: string) => void;
   reset: () => void;
 
   /** Serialise current graph state to a JSON string (for session snapshot). */
-  exportSnapshot: (options?: { workspacePreferences?: SnapshotWorkspacePreferences | null }) => string;
+  exportSnapshot: () => string;
   /** Restore graph state from a JSON string previously produced by exportSnapshot. Returns true on success. */
   importSnapshot: (json: string) => boolean;
 }
@@ -205,10 +227,10 @@ export const useGraphStore = create<GraphState>((set, get) => ({
   edgeMap: new Map(),
   rfNodes: [],
   rfEdges: [],
+  layoutMetaMap: new Map(),
   expandingNodeIds: new Set(),
   branchMap: new Map(),
   maxNodes: 500,
-  pendingPreview: null,
 
   initSession(sessionId, rootNode) {
     const normalizedRoot = normalizeNode(rootNode);
@@ -228,28 +250,71 @@ export const useGraphStore = create<GraphState>((set, get) => ({
       edgeMap: new Map(),
       rfNodes: [toRfNode(normalizedRoot)],
       rfEdges: [],
+      layoutMetaMap: new Map([
+        [
+          normalizedRoot.node_id,
+          ensureLayoutMetadata({ placementSource: 'session_seed' }),
+        ],
+      ]),
       expandingNodeIds: new Set(),
       branchMap: new Map([[normalizedRoot.branch_id, seedBranch]]),
     });
   },
 
-  applyExpansionDelta(response) {
-    const { nodeMap, edgeMap, branchMap } = get();
+  applyExpansionDelta(response, options) {
+    const { nodeMap, edgeMap, branchMap, layoutMetaMap } = get();
     const deltaNodes = (response.nodes ?? response.added_nodes ?? []).map(normalizeNode);
+    const updatedNodes = (response.updated_nodes ?? []).map(normalizeNode);
     const deltaEdges = (response.edges ?? response.added_edges ?? []).map(normalizeEdge);
+    const removedNodeIds = new Set(response.removed_node_ids ?? []);
+    const placementMap = options?.newNodePlacements ?? new Map<string, NodePlacementDescriptor>();
 
-    // Create new Maps to ensure immutability
     const newNodeMap = new Map(nodeMap);
     let newEdgeMap = new Map(edgeMap);
+    const nextLayoutMetaMap = new Map(layoutMetaMap);
     let changed = false;
 
-    // Merge new nodes (existing nodes are NOT replaced — preserves position)
-    for (const node of deltaNodes) {
-      if (!newNodeMap.has(node.node_id)) {
-        newNodeMap.set(node.node_id, node);
+    for (const nodeId of removedNodeIds) {
+      if (newNodeMap.delete(nodeId)) {
+        changed = true;
+      }
+      if (nextLayoutMetaMap.delete(nodeId)) {
         changed = true;
       }
     }
+
+    for (const node of deltaNodes) {
+      if (!newNodeMap.has(node.node_id)) {
+        newNodeMap.set(node.node_id, node);
+        nextLayoutMetaMap.set(
+          node.node_id,
+          mergeLayoutMetadata(
+            nextLayoutMetaMap.get(node.node_id),
+            placementMap.get(node.node_id)?.layoutMeta,
+          ),
+        );
+        changed = true;
+      }
+    }
+
+    for (const node of updatedNodes) {
+      const existingNode = newNodeMap.get(node.node_id);
+      newNodeMap.set(
+        node.node_id,
+        existingNode ? { ...existingNode, ...node } : node,
+      );
+      const nextLayoutMeta = placementMap.get(node.node_id)?.layoutMeta;
+      nextLayoutMetaMap.set(
+        node.node_id,
+        mergeLayoutMetadata(
+          nextLayoutMetaMap.get(node.node_id),
+          nextLayoutMeta
+            ?? (!existingNode ? { placementSource: 'local_expansion' } : undefined),
+        ),
+      );
+      changed = true;
+    }
+
     const validNodeIds = new Set(newNodeMap.keys());
     for (const edge of deltaEdges) {
       if (!edgeHasKnownEndpoints(edge, validNodeIds)) {
@@ -274,96 +339,105 @@ export const useGraphStore = create<GraphState>((set, get) => ({
 
     if (!changed) return;
 
-    // Update branchMap: accumulate per-branch node statistics so that
-    // collapse operations and the branch legend have accurate metadata.
     const newBranchMap = new Map(branchMap);
-    // Count nodes per branch across the full (merged) node map.
     const branchNodeCounts = new Map<string, number>();
     const branchDepths = new Map<string, { min: number; max: number }>();
     for (const node of newNodeMap.values()) {
       branchNodeCounts.set(node.branch_id, (branchNodeCounts.get(node.branch_id) ?? 0) + 1);
-      const existing = branchDepths.get(node.branch_id);
+      const existingDepths = branchDepths.get(node.branch_id);
       branchDepths.set(node.branch_id, {
-        min: existing ? Math.min(existing.min, node.depth) : node.depth,
-        max: existing ? Math.max(existing.max, node.depth) : node.depth,
+        min: existingDepths ? Math.min(existingDepths.min, node.depth) : node.depth,
+        max: existingDepths ? Math.max(existingDepths.max, node.depth) : node.depth,
       });
     }
-    // Register any branch_id seen for the first time in this delta.
-    for (const node of deltaNodes) {
+
+    for (const node of [...deltaNodes, ...updatedNodes]) {
       if (!newBranchMap.has(node.branch_id)) {
         newBranchMap.set(node.branch_id, {
           branchId: node.branch_id,
           color: branchColor(node.branch_id),
-          // The seed of a new branch is the node that was expanded — it will
-          // have the lowest depth in this response (or is_seed may be set).
-          seedNodeId: deltaNodes.find((n) => n.branch_id === node.branch_id && n.is_seed)?.node_id ?? node.node_id,
+          seedNodeId:
+            [...deltaNodes, ...updatedNodes].find(
+              (candidate) => candidate.branch_id === node.branch_id && candidate.is_seed,
+            )?.node_id ?? node.node_id,
           minDepth: node.depth,
           maxDepth: node.depth,
-          nodeCount: 0, // updated below
+          nodeCount: 0,
         });
       }
     }
-    // Refresh counts and depth ranges for all active branches.
-    for (const [bid, meta] of newBranchMap) {
-      const depths = branchDepths.get(bid);
-      newBranchMap.set(bid, {
+
+    for (const [branchId, meta] of newBranchMap) {
+      const depths = branchDepths.get(branchId);
+      newBranchMap.set(branchId, {
         ...meta,
-        nodeCount: branchNodeCounts.get(bid) ?? 0,
+        nodeCount: branchNodeCounts.get(branchId) ?? 0,
         minDepth: depths?.min ?? meta.minDepth,
         maxDepth: depths?.max ?? meta.maxDepth,
       });
     }
 
-    // Preserve positions and client-side flags of existing nodes so they don't
-    // jump or lose their user-placement lock on delta updates.  toRfNode()
-    // rebuilds rfNode.data from InvestigationNode and cannot carry client-only
-    // flags (userPlaced) — we must merge them back explicitly.
     const existingPositions = new Map<string, { x: number; y: number }>();
-    const existingUserPlaced = new Map<string, boolean>();
-    for (const n of get().rfNodes) {
-      existingPositions.set(n.id, n.position);
-      const d = n.data as { userPlaced?: boolean };
-      if (d.userPlaced) existingUserPlaced.set(n.id, true);
+    for (const node of get().rfNodes) {
+      existingPositions.set(node.id, node.position);
     }
 
     set({
       nodeMap: newNodeMap,
       edgeMap: newEdgeMap,
       branchMap: newBranchMap,
+      layoutMetaMap: nextLayoutMetaMap,
       rfNodes: Array.from(newNodeMap.values()).map((inv) => {
         const rf = toRfNode(inv);
-        const pos = existingPositions.get(rf.id);
-        const wasUserPlaced = existingUserPlaced.get(rf.id);
-        const base = pos ? { ...rf, position: pos } : rf;
-        return wasUserPlaced ? { ...base, data: { ...base.data, userPlaced: true } } : base;
+        const placement = placementMap.get(rf.id);
+        const position = existingPositions.get(rf.id) ?? placement?.position;
+        return position ? { ...rf, position } : rf;
       }),
       rfEdges: Array.from(newEdgeMap.values()).map(toRfEdge),
     });
   },
 
-  setRfPositions(positions) {
-    set((state) => ({
-      rfNodes: state.rfNodes.map((n) => {
-        const pos = positions.get(n.id);
-        return pos ? { ...n, position: pos } : n;
-      }),
-    }));
+  setRfPositions(positions, layoutMetaUpdates) {
+    set((state) => {
+      const nextLayoutMetaMap = layoutMetaUpdates
+        ? new Map(state.layoutMetaMap)
+        : state.layoutMetaMap;
+
+      if (layoutMetaUpdates) {
+        for (const [nodeId, layoutMeta] of layoutMetaUpdates) {
+          nextLayoutMetaMap.set(
+            nodeId,
+            mergeLayoutMetadata(nextLayoutMetaMap.get(nodeId), layoutMeta),
+          );
+        }
+      }
+
+      return {
+        rfNodes: state.rfNodes.map((node) => {
+          const position = positions.get(node.id);
+          return position ? { ...node, position } : node;
+        }),
+        ...(layoutMetaUpdates ? { layoutMetaMap: nextLayoutMetaMap } : {}),
+      };
+    });
   },
 
-  syncRfPositions(nodes) {
+  syncRfPositions(nodes, options) {
     if (nodes.length === 0) return;
-    const positions = new Map(
-      nodes.map((node) => [node.id, node.position]),
-    );
-    get().setRfPositions(positions);
-  },
-
-  markUserPlaced(nodeId) {
-    set((state) => ({
-      rfNodes: state.rfNodes.map((n) =>
-        n.id === nodeId ? { ...n, data: { ...n.data, userPlaced: true } } : n,
-      ),
-    }));
+    const positions = new Map(nodes.map((node) => [node.id, node.position]));
+    const layoutMetaUpdates = options?.userInitiated
+      ? new Map(
+          nodes.map((node) => [
+            node.id,
+            {
+              layoutLocked: true,
+              userPlaced: true,
+              placementSource: 'manual_drag' as const,
+            },
+          ]),
+        )
+      : undefined;
+    get().setRfPositions(positions, layoutMetaUpdates);
   },
 
   setNodeHidden(nodeId, hidden) {
@@ -430,95 +504,6 @@ export const useGraphStore = create<GraphState>((set, get) => ({
     });
   },
 
-  setPendingPreview(response) {
-    set({ pendingPreview: response });
-  },
-
-  updateBridgeHopStatus(nodeId, status) {
-    set((state) => {
-      const existing = state.nodeMap.get(nodeId);
-      if (!existing || existing.node_type !== 'bridge_hop') {
-        return state;
-      }
-
-      const existingHop = (existing.bridge_hop_data ?? existing.node_data) as InvestigationNode['bridge_hop_data'];
-      if (!existingHop) {
-        return state;
-      }
-
-      const nextHop = {
-        ...existingHop,
-        status: status.status,
-        destination_chain: status.destination_chain ?? existingHop.destination_chain,
-        destination_address: status.destination_address ?? existingHop.destination_address,
-        destination_tx_hash: status.destination_tx_hash ?? existingHop.destination_tx_hash,
-        correlation_confidence: status.correlation_confidence ?? existingHop.correlation_confidence,
-      };
-
-      const nextActivity = existing.activity_summary
-        ? {
-            ...existing.activity_summary,
-            status: status.status,
-            destination_chain:
-              status.destination_chain ?? existing.activity_summary.destination_chain,
-            destination_address:
-              status.destination_address ?? existing.activity_summary.destination_address,
-            destination_tx_hash:
-              status.destination_tx_hash ?? existing.activity_summary.destination_tx_hash,
-          }
-        : existing.activity_summary;
-
-      const unchanged =
-        existingHop.status === nextHop.status
-        && existingHop.destination_chain === nextHop.destination_chain
-        && existingHop.destination_address === nextHop.destination_address
-        && existingHop.destination_tx_hash === nextHop.destination_tx_hash
-        && existingHop.correlation_confidence === nextHop.correlation_confidence
-        && (existing.activity_summary?.status ?? undefined) === (nextActivity?.status ?? undefined)
-        && (existing.activity_summary?.destination_chain ?? undefined)
-          === (nextActivity?.destination_chain ?? undefined)
-        && (existing.activity_summary?.destination_address ?? undefined)
-          === (nextActivity?.destination_address ?? undefined)
-        && (existing.activity_summary?.destination_tx_hash ?? undefined)
-          === (nextActivity?.destination_tx_hash ?? undefined);
-
-      if (unchanged) {
-        return state;
-      }
-
-      const nextNode: InvestigationNode = {
-        ...existing,
-        node_data: nextHop,
-        bridge_hop_data: nextHop,
-        activity_summary: nextActivity,
-      };
-
-      const nextNodeMap = new Map(state.nodeMap);
-      nextNodeMap.set(nodeId, nextNode);
-
-      return {
-        nodeMap: nextNodeMap,
-        rfNodes: state.rfNodes.map((node) => {
-          if (node.id !== nodeId) return node;
-          const existingData = node.data as unknown as InvestigationNode & {
-            branch_color_index?: number;
-            branch_color?: string;
-          };
-          const wasUserPlaced = (existingData as unknown as { userPlaced?: boolean }).userPlaced;
-          return {
-            ...node,
-            data: {
-              ...nextNode,
-              branch_color_index: existingData.branch_color_index,
-              branch_color: existingData.branch_color,
-              ...(wasUserPlaced ? { userPlaced: true } : {}),
-            },
-          };
-        }),
-      };
-    });
-  },
-
   reset() {
     set({
       sessionId: null,
@@ -526,24 +511,26 @@ export const useGraphStore = create<GraphState>((set, get) => ({
       edgeMap: new Map(),
       rfNodes: [],
       rfEdges: [],
+      layoutMetaMap: new Map(),
       expandingNodeIds: new Set(),
       branchMap: new Map(),
-      pendingPreview: null,
     });
   },
 
-  exportSnapshot(options) {
-    const { sessionId, nodeMap, edgeMap, rfNodes, branchMap } = get();
-    // Capture current positions from rfNodes so they survive round-trip.
+  exportSnapshot() {
+    const { sessionId, nodeMap, edgeMap, rfNodes, branchMap, layoutMetaMap } = get();
     const positions: Record<string, { x: number; y: number }> = {};
-    for (const n of rfNodes) positions[n.id] = n.position;
+    const layoutMeta: Record<string, NodeLayoutMetadata> = {};
+    for (const node of rfNodes) positions[node.id] = node.position;
+    for (const [nodeId, meta] of layoutMetaMap) layoutMeta[nodeId] = meta;
+
     return JSON.stringify({
       sessionId,
       nodes: Array.from(nodeMap.values()),
       edges: Array.from(edgeMap.values()),
       positions,
       branches: Array.from(branchMap.values()),
-      workspacePreferences: options?.workspacePreferences ?? null,
+      layoutMeta,
     });
   },
 
@@ -555,7 +542,7 @@ export const useGraphStore = create<GraphState>((set, get) => ({
         edges: InvestigationEdge[];
         positions: Record<string, { x: number; y: number }>;
         branches?: BranchMeta[];
-        workspacePreferences?: SnapshotWorkspacePreferences | null;
+        layoutMeta?: Record<string, Partial<NodeLayoutMetadata>>;
       };
       const normalizedNodes = data.nodes.map(normalizeNode);
       const normalizedEdges = data.edges.map(normalizeEdge);
@@ -573,38 +560,54 @@ export const useGraphStore = create<GraphState>((set, get) => ({
         return pos ? { ...rf, position: pos } : rf;
       });
       const rfEdges = sanitizedSnapshotEdges.map(toRfEdge);
+      const restoredLayoutMetaMap = new Map<string, NodeLayoutMetadata>(
+        normalizedNodes.map((node) => [
+          node.node_id,
+          ensureLayoutMetadata(
+            data.layoutMeta?.[node.node_id]
+              ? data.layoutMeta[node.node_id]
+              : { placementSource: 'snapshot_restore' },
+          ),
+        ]),
+      );
+
       // Restore branchMap from snapshot if present; otherwise re-derive it.
-      const branchMap = data.branches 
+      const branchMap = data.branches
         ? new Map<string, BranchMeta>(data.branches.map((b) => [b.branchId, b]))
         : (() => {
-            // Derive branchMap from nodeMap when legacy snapshots lack branches
             const derivedBranchMap = new Map<string, BranchMeta>();
             const branchNodeGroups = new Map<string, InvestigationNode[]>();
-            
-            // Group nodes by branch_id
+
             for (const node of nodeMap.values()) {
               if (!branchNodeGroups.has(node.branch_id)) {
                 branchNodeGroups.set(node.branch_id, []);
               }
               branchNodeGroups.get(node.branch_id)!.push(node);
             }
-            
-            // Create BranchMeta entries for each branch
+
             for (const [branchId, nodes] of branchNodeGroups) {
-              const depths = nodes.map(n => n.depth);
+              const depths = nodes.map((node) => node.depth);
               derivedBranchMap.set(branchId, {
                 branchId,
                 color: branchColor(branchId),
-                seedNodeId: nodes[0]?.node_id || '', // Use first node as seed
+                seedNodeId: nodes[0]?.node_id || '',
                 minDepth: Math.min(...depths),
                 maxDepth: Math.max(...depths),
                 nodeCount: nodes.length,
               });
             }
-            
+
             return derivedBranchMap;
           })();
-      set({ sessionId: data.sessionId, nodeMap, edgeMap, rfNodes, rfEdges, branchMap });
+      set({
+        sessionId: data.sessionId,
+        nodeMap,
+        edgeMap,
+        rfNodes,
+        rfEdges,
+        branchMap,
+        layoutMetaMap: restoredLayoutMetaMap,
+      });
       return true;
     } catch (err) {
       console.error('importSnapshot failed:', err);

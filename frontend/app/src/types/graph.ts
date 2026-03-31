@@ -100,7 +100,7 @@ export interface BridgeHopData {
   destination_amount?: number | null;
   destination_tx_hash?: string;
   correlation_confidence: number;
-  status: 'pending' | 'completed' | 'failed' | 'expired';
+  status: 'pending' | 'completed' | 'failed';
   time_delta_seconds?: number;
   is_same_asset?: boolean;
 }
@@ -242,6 +242,25 @@ export type NodeData =
   | ClusterSummaryData;
 
 // ---------------------------------------------------------------------------
+// Frontend-only layout state
+// ---------------------------------------------------------------------------
+
+export type NodePlacementSource =
+  | 'session_seed'
+  | 'local_expansion'
+  | 'elk_refinement'
+  | 'manual_drag'
+  | 'snapshot_restore';
+
+export interface NodeLayoutMetadata {
+  layoutLocked: boolean;
+  userPlaced: boolean;
+  placementSource: NodePlacementSource;
+  anchorNodeId?: string;
+  lastLayoutToken?: string;
+}
+
+// ---------------------------------------------------------------------------
 // Investigation node and edge
 // ---------------------------------------------------------------------------
 
@@ -296,44 +315,6 @@ const EVM_CHAINS = new Set([
   'starknet',
   'injective',
 ]);
-
-const NATIVE_SYMBOLS: Record<string, string> = {
-  ethereum: 'ETH',
-  bsc: 'BNB',
-  polygon: 'MATIC',
-  arbitrum: 'ETH',
-  base: 'ETH',
-  avalanche: 'AVAX',
-  optimism: 'ETH',
-  starknet: 'ETH',
-  injective: 'INJ',
-  tron: 'TRX',
-  solana: 'SOL',
-  xrp: 'XRP',
-  cosmos: 'ATOM',
-  sui: 'SUI',
-  bitcoin: 'BTC',
-  lightning: 'BTC',
-};
-
-const NATIVE_CANONICAL_IDS: Record<string, string> = {
-  ethereum: 'ethereum',
-  bsc: 'binancecoin',
-  polygon: 'matic-network',
-  arbitrum: 'ethereum',
-  base: 'ethereum',
-  avalanche: 'avalanche-2',
-  optimism: 'ethereum',
-  starknet: 'ethereum',
-  injective: 'injective-protocol',
-  tron: 'tron',
-  solana: 'solana',
-  xrp: 'ripple',
-  cosmos: 'cosmos',
-  sui: 'sui',
-  bitcoin: 'bitcoin',
-  lightning: 'bitcoin',
-};
 
 function canonicalizeNodeId(nodeId: string): string {
   const parts = nodeId.split(':');
@@ -423,86 +404,21 @@ export interface InvestigationEdge {
   edge_type: EdgeType;
   source_node_id: string;
   target_node_id: string;
-  direction: 'forward' | 'backward';
+  path_id?: string;
+  direction: 'forward' | 'backward' | 'lateral';
   asset_symbol?: string;
   canonical_asset_id?: string;
-  asset_address?: string;
-  asset_chain?: string;
   value_native?: number;
   fiat_value_usd?: number;
+  value_fiat?: number;
   tx_hash?: string;
+  tx_chain?: string;
   timestamp?: string;
   is_suspected_change?: boolean;
   activity_summary?: ActivitySummary;
   branch_id: string;
   /** Same branch_color_index as the source node */
   branch_color_index?: number;
-}
-
-export function assetSelectionKeysForEdge(
-  edge: Pick<InvestigationEdge, 'asset_symbol' | 'canonical_asset_id' | 'asset_address' | 'asset_chain'>,
-): string[] {
-  const keys = new Set<string>();
-  const chain = edge.asset_chain?.toLowerCase();
-  if (chain && edge.asset_address) {
-    const assetAddress = (
-      EVM_CHAINS.has(chain) || edge.asset_address.startsWith('0x')
-        ? edge.asset_address.toLowerCase()
-        : edge.asset_address.toLowerCase()
-    );
-    keys.add(`asset:${chain}:${assetAddress}`);
-  }
-  if (edge.canonical_asset_id) {
-    keys.add(`canonical:${edge.canonical_asset_id.toLowerCase()}`);
-    keys.add(edge.canonical_asset_id.toLowerCase());
-  }
-  if (edge.asset_symbol) {
-    keys.add(`symbol:${edge.asset_symbol.toLowerCase()}`);
-    keys.add(edge.asset_symbol.toLowerCase());
-  }
-  if (
-    chain
-    && !edge.asset_address
-    && (
-      (edge.asset_symbol && edge.asset_symbol.toUpperCase() === NATIVE_SYMBOLS[chain])
-      || (
-        edge.canonical_asset_id
-        && edge.canonical_asset_id.toLowerCase() === NATIVE_CANONICAL_IDS[chain]
-      )
-    )
-  ) {
-    keys.add(`native:${chain}`);
-  }
-  return [...keys];
-}
-
-export function preferredAssetSelectionKeyForEdge(
-  edge: Pick<InvestigationEdge, 'asset_symbol' | 'canonical_asset_id' | 'asset_address' | 'asset_chain'>,
-): string | null {
-  const chain = edge.asset_chain?.toLowerCase();
-  if (
-    chain
-    && !edge.asset_address
-    && (
-      (edge.asset_symbol && edge.asset_symbol.toUpperCase() === NATIVE_SYMBOLS[chain])
-      || (
-        edge.canonical_asset_id
-        && edge.canonical_asset_id.toLowerCase() === NATIVE_CANONICAL_IDS[chain]
-      )
-    )
-  ) {
-    return `native:${chain}`;
-  }
-  if (chain && edge.asset_address) {
-    return `asset:${chain}:${edge.asset_address.toLowerCase()}`;
-  }
-  if (edge.canonical_asset_id) {
-    return `canonical:${edge.canonical_asset_id.toLowerCase()}`;
-  }
-  if (edge.asset_symbol) {
-    return `symbol:${edge.asset_symbol.toLowerCase()}`;
-  }
-  return null;
 }
 
 export function normalizeInvestigationEdge(edge: InvestigationEdge): InvestigationEdge {
@@ -525,9 +441,12 @@ export function normalizeInvestigationEdge(edge: InvestigationEdge): Investigati
 // ---------------------------------------------------------------------------
 
 export interface LayoutHints {
-  suggested_layout: 'layered' | 'force_directed' | 'hierarchical';
+  suggested_layout: 'layered' | 'force_directed' | 'force' | 'hierarchical';
   direction?: 'LR' | 'TB';
   spacing?: number;
+  anchor_node_ids?: string[];
+  new_branch_root_id?: string | null;
+  collapse_candidates?: string[];
 }
 
 export interface ChainContext {
@@ -546,30 +465,6 @@ export interface AssetContext {
   canonical_asset_ids: string[];
 }
 
-export interface AssetCatalogItem {
-  asset_key: string;
-  symbol: string;
-  display_name?: string;
-  canonical_asset_id?: string;
-  canonical_symbol?: string;
-  identity_status: 'verified' | 'heuristic' | 'unknown';
-  variant_kind: 'native' | 'canonical' | 'wrapped' | 'bridged' | 'unknown';
-  blockchains: string[];
-  token_standards: string[];
-  observed_transfer_count: number;
-  last_seen_at?: string;
-  sample_asset_address?: string;
-  is_native: boolean;
-}
-
-export interface AssetCatalogResponse {
-  session_id: string;
-  seed_chain: string;
-  chains_present: string[];
-  items: AssetCatalogItem[];
-  generated_at: string;
-}
-
 export interface ExpansionEmptyState {
   reason: string;
   message: string;
@@ -584,6 +479,8 @@ export interface ExpansionEmptyState {
 export interface ExpansionResponseV2 {
   session_id: string;
   branch_id: string;
+  parent_branch_id?: string | null;
+  expansion_depth?: number;
   operation_id: string;
   operation_type: 'expand_next' | 'expand_prev' | 'expand_neighbors' | 'create_session';
   seed_node_id?: string;
@@ -592,14 +489,15 @@ export interface ExpansionResponseV2 {
   edges: InvestigationEdge[];
   added_nodes?: InvestigationNode[];
   added_edges?: InvestigationEdge[];
+  updated_nodes?: InvestigationNode[];
+  removed_node_ids?: string[];
   layout_hints: LayoutHints;
   chain_context: ChainContext;
   pagination?: PaginationMeta;
   asset_context?: AssetContext;
-  data_sources?: Array<'event_store' | 'neo4j_fallback' | 'live_history'>;
-  integrity_warning?: string | null;
   empty_state?: ExpansionEmptyState;
   ingest_pending?: boolean;
+  timestamp?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -615,73 +513,6 @@ export interface SessionCreateRequest {
 export interface SessionCreateResponse {
   session_id: string;
   root_node: InvestigationNode;
-  created_at: string;
-}
-
-export interface WorkspacePosition {
-  x: number;
-  y: number;
-}
-
-export interface WorkspaceBranchSnapshot {
-  branchId: string;
-  color: string;
-  seedNodeId: string;
-  minDepth: number;
-  maxDepth: number;
-  nodeCount: number;
-}
-
-export interface WorkspacePreferencesSnapshot {
-  selectedAssets: string[];
-  pinnedAssetKeys: string[];
-  assetCatalogScope: 'session' | 'visible';
-}
-
-export interface WorkspaceSnapshotV1 {
-  schema_version?: number;
-  revision: number;
-  sessionId: string;
-  nodes: InvestigationNode[];
-  edges: InvestigationEdge[];
-  positions: Record<string, WorkspacePosition>;
-  branches?: WorkspaceBranchSnapshot[] | null;
-  workspacePreferences?: WorkspacePreferencesSnapshot | null;
-}
-
-export interface SessionSnapshotResponse {
-  snapshot_id: string;
-  saved_at: string;
-  revision: number;
-}
-
-export interface RecentSessionSummary {
-  session_id: string;
-  seed_address?: string | null;
-  seed_chain?: string | null;
-  created_at?: string | null;
-  updated_at?: string | null;
-  snapshot_saved_at?: string | null;
-}
-
-export interface RecentSessionsResponse {
-  items: RecentSessionSummary[];
-}
-
-export interface InvestigationSessionResponse {
-  session_id: string;
-  seed_address?: string | null;
-  seed_chain?: string | null;
-  case_id?: string | null;
-  snapshot?: unknown;
-  workspace: WorkspaceSnapshotV1;
-  restore_state: 'full' | 'legacy_bootstrap';
-  nodes: InvestigationNode[];
-  edges: InvestigationEdge[];
-  branch_map: Record<string, WorkspaceBranchSnapshot>;
-  created_at?: string | null;
-  updated_at?: string | null;
-  snapshot_saved_at?: string | null;
 }
 
 export interface ExpandRequest {
@@ -699,8 +530,6 @@ export interface ExpandRequest {
     follow_bridges?: boolean;
     continuation_token?: string;
     page_size?: number;
-    time_from?: string;  // ISO 8601 UTC datetime, inclusive lower bound
-    time_to?: string;    // ISO 8601 UTC datetime, inclusive upper bound
   };
 }
 
@@ -711,7 +540,6 @@ export interface BridgeHopStatusResponse {
   destination_chain?: string;
   destination_address?: string;
   correlation_confidence?: number;
-  updated_at?: string;
 }
 
 export interface IngestStatusResponse {
