@@ -7,6 +7,8 @@
 
 import type {
   AssetCatalogResponse,
+  AssetOptionsRequest,
+  AssetOptionsResponse,
   SessionCreateRequest,
   SessionCreateResponse,
   InvestigationSessionResponse,
@@ -153,6 +155,20 @@ export async function expandNode(
     body: JSON.stringify(req),
   });
   return normalizeExpansionResponse(await handleResponse<ExpansionResponseV2>(res));
+}
+
+/** Fetch address-level asset options for selective expansion. */
+export async function getAssetOptions(
+  sessionId: string,
+  req: AssetOptionsRequest,
+): Promise<AssetOptionsResponse> {
+  const res = await fetch(`${API_BASE}/graph/sessions/${sessionId}/asset-options`, {
+    method: 'POST',
+    headers: authHeaders(),
+    credentials: 'same-origin',
+    body: JSON.stringify(req),
+  });
+  return handleResponse<AssetOptionsResponse>(res);
 }
 
 /** Load the asset catalog available to the current session. */

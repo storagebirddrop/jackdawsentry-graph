@@ -304,6 +304,7 @@ class BridgeHopCompiler:
         value_fiat: Optional[float],
         asset_symbol: Optional[str],
         canonical_asset_id: Optional[str],
+        chain_asset_id: Optional[str],
     ) -> List[InvestigationEdge]:
         """Build source → hop and (if resolved) hop → destination edges.
 
@@ -339,6 +340,7 @@ class BridgeHopCompiler:
                 value_fiat=value_fiat,
                 asset_symbol=asset_symbol,
                 canonical_asset_id=canonical_asset_id,
+                chain_asset_id=chain_asset_id,
                 tx_hash=tx_hash or None,
                 tx_chain=source_chain,
                 timestamp=timestamp,
@@ -359,6 +361,7 @@ class BridgeHopCompiler:
                     order_id=hop_node.activity_summary.order_id if hop_node.activity_summary else None,
                     asset_symbol=asset_symbol,
                     canonical_asset_id=canonical_asset_id,
+                    chain_asset_id=chain_asset_id,
                     value_native=value_native,
                     value_fiat=value_fiat,
                 ),
@@ -773,6 +776,7 @@ class BridgeHopCompiler:
         value_fiat: Optional[float],
         asset_symbol: Optional[str],
         canonical_asset_id: Optional[str],
+        chain_asset_id: Optional[str],
     ) -> Optional[Tuple[List[InvestigationNode], List[InvestigationEdge]]]:
         """Process a single expansion row and return bridge nodes + edges if detected.
 
@@ -868,6 +872,7 @@ class BridgeHopCompiler:
             value_fiat=value_fiat,
             asset_symbol=asset_symbol,
             canonical_asset_id=canonical_asset_id,
+            chain_asset_id=chain_asset_id,
         )
 
         logger.debug(

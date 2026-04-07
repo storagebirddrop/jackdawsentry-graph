@@ -2014,6 +2014,8 @@ async def _get_trace_compiler():
 from src.trace_compiler.models import (  # noqa: E402
     AssetCatalogItem,
     AssetCatalogResponse,
+    AssetOptionsRequest,
+    AssetOptionsResponse,
     BridgeHopStatusResponse,
     ExpandRequest,
     ExpansionResponseV2,
@@ -2402,6 +2404,18 @@ async def expand_session_node(
     _validate_expand_request(request)
     compiler = await _get_trace_compiler()
     return await compiler.expand(session_id, request)
+
+
+@router.post("/sessions/{session_id}/asset-options", response_model=AssetOptionsResponse)
+async def list_session_asset_options(
+    session_id: str,
+    request: AssetOptionsRequest,
+    current_user: User = Depends(check_permissions([PERMISSIONS["read_blockchain"]])),
+):
+    """Return address-level asset options for selective expansion."""
+    await _get_owned_session_row(session_id, current_user)
+    compiler = await _get_trace_compiler()
+    return await compiler.get_asset_options(session_id, request)
 
 
 @router.get(

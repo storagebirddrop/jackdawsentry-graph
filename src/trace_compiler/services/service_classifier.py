@@ -297,6 +297,7 @@ class ServiceClassifier:
         value_fiat: Optional[float] = None,
         asset_symbol: Optional[str] = None,
         canonical_asset_id: Optional[str] = None,
+        chain_asset_id: Optional[str] = None,
         direction: Optional[str] = None,
     ) -> InvestigationNode:
         """Build a ServiceNode InvestigationNode for a known protocol contract.
@@ -349,6 +350,7 @@ class ServiceClassifier:
                 contract_address=contract_address.lower(),
                 asset_symbol=asset_symbol,
                 canonical_asset_id=canonical_asset_id,
+                chain_asset_id=chain_asset_id,
                 value_native=value_native,
                 value_fiat=value_fiat,
                 route_summary=f"{record.display_name} {record.service_type} contract interaction",
@@ -375,6 +377,7 @@ class ServiceClassifier:
         value_fiat: Optional[float],
         asset_symbol: Optional[str],
         canonical_asset_id: Optional[str],
+        chain_asset_id: Optional[str],
         direction: str,
     ) -> Optional[Tuple[List[InvestigationNode], List[InvestigationEdge]]]:
         """Process a single expansion row and return service nodes + edge if detected.
@@ -420,6 +423,7 @@ class ServiceClassifier:
             value_fiat=value_fiat,
             asset_symbol=asset_symbol,
             canonical_asset_id=canonical_asset_id,
+            chain_asset_id=chain_asset_id,
             direction=direction,
         )
 
@@ -441,6 +445,7 @@ class ServiceClassifier:
             value_fiat=value_fiat,
             asset_symbol=asset_symbol,
             canonical_asset_id=canonical_asset_id,
+            chain_asset_id=chain_asset_id,
             tx_hash=tx_hash or None,
             tx_chain=chain,
             timestamp=timestamp,

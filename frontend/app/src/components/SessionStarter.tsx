@@ -78,7 +78,7 @@ export default function SessionStarter({
       onSessionCreated({
         sessionId: resp.session_id,
         initialWorkspaceRevision: 0,
-        initialSavedAt: resp.created_at,
+        initialSavedAt: resp.created_at ?? null,
         initialRestoreNotice: null,
       });
     } catch (err) {

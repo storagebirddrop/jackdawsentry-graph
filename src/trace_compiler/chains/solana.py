@@ -33,6 +33,10 @@ from typing import Optional
 from typing import Set
 from typing import Tuple
 
+from src.trace_compiler.asset_selection import build_asset_option
+from src.trace_compiler.asset_selection import effective_asset_selector
+from src.trace_compiler.asset_selection import normalize_chain_asset_id
+from src.trace_compiler.asset_selection import selector_requires_event_store_only
 from src.trace_compiler.chains.base import BaseChainCompiler
 from src.trace_compiler.lineage import edge_id as mk_edge_id
 from src.trace_compiler.lineage import lineage_id as mk_lineage
@@ -41,6 +45,7 @@ from src.trace_compiler.lineage import path_id as mk_path
 from src.trace_compiler.lineage import swap_event_id as mk_swap_event_id
 from src.trace_compiler.models import ActivitySummary
 from src.trace_compiler.models import AddressNodeData
+from src.trace_compiler.models import AssetOption
 from src.trace_compiler.models import ExpandOptions
 from src.trace_compiler.models import InvestigationEdge
 from src.trace_compiler.models import InvestigationNode
@@ -50,6 +55,19 @@ logger = logging.getLogger(__name__)
 
 # Maximum rows fetched from the event store per expansion call.
 _SQL_FETCH_LIMIT = 1000
+
+
+def _normalized_tx_hash_filter(options: ExpandOptions) -> Optional[List[str]]:
+    if not options.tx_hashes:
+        return None
+    normalized = sorted(
+        {
+            tx_hash.strip().lower()
+            for tx_hash in options.tx_hashes
+            if isinstance(tx_hash, str) and tx_hash.strip()
+        }
+    )
+    return normalized or None
 
 
 class SolanaChainCompiler(BaseChainCompiler):
@@ -68,6 +86,66 @@ class SolanaChainCompiler(BaseChainCompiler):
     def supported_chains(self) -> List[str]:
         """Return the list of chain names this compiler handles."""
         return ["solana"]
+
+    async def list_asset_options(
+        self,
+        *,
+        seed_address: str,
+        chain: str,
+    ) -> List[AssetOption]:
+        if self._pg is None:
+            return []
+
+        try:
+            async with self._pg.acquire() as conn:
+                native_exists = await conn.fetchval(
+                    """
+                    SELECT EXISTS(
+                        SELECT 1
+                        FROM raw_transactions
+                        WHERE blockchain = 'solana'
+                          AND (from_address = $1 OR to_address = $1)
+                          AND value_native > 0
+                    )
+                    """,
+                    seed_address,
+                )
+                token_rows = await conn.fetch(
+                    """
+                    SELECT
+                        asset_contract AS chain_asset_id,
+                        MAX(NULLIF(asset_symbol, '')) AS asset_symbol,
+                        MAX(canonical_asset_id) AS canonical_asset_id,
+                        MAX(timestamp) AS last_seen
+                    FROM raw_token_transfers
+                    WHERE blockchain = 'solana'
+                      AND (from_address = $1 OR to_address = $1)
+                      AND asset_contract IS NOT NULL
+                    GROUP BY asset_contract
+                    ORDER BY MAX(timestamp) DESC NULLS LAST
+                    LIMIT 40
+                    """,
+                    seed_address,
+                )
+        except Exception as exc:
+            logger.debug("SolanaChainCompiler.list_asset_options failed for %s: %s", seed_address, exc)
+            return []
+
+        options: List[AssetOption] = []
+        if native_exists:
+            options.append(build_asset_option(mode="native", chain=chain, asset_symbol="SOL"))
+        for row in token_rows:
+            record = dict(row)
+            options.append(
+                build_asset_option(
+                    mode="asset",
+                    chain=chain,
+                    asset_symbol=record.get("asset_symbol") or "Token",
+                    chain_asset_id=record.get("chain_asset_id"),
+                    canonical_asset_id=record.get("canonical_asset_id"),
+                )
+            )
+        return options
 
     async def expand_next(
         self,
@@ -100,12 +178,14 @@ class SolanaChainCompiler(BaseChainCompiler):
         rows = await self._fetch_outbound(seed_address, options)
         if rows:
             self._set_expansion_data_sources("event_store")
-        else:
+        elif not selector_requires_event_store_only(options, chain="solana"):
             rows = await self._fetch_outbound_neo4j(seed_address, options)
             if rows:
                 self._set_expansion_data_sources("neo4j_fallback")
             else:
                 self._set_expansion_data_sources()
+        else:
+            self._set_expansion_data_sources()
 
         ata_map = await self._resolve_atas_bulk(
             {row.get("counterparty", "") for row in rows}
@@ -146,12 +226,14 @@ class SolanaChainCompiler(BaseChainCompiler):
         rows = await self._fetch_inbound(seed_address, options)
         if rows:
             self._set_expansion_data_sources("event_store")
-        else:
+        elif not selector_requires_event_store_only(options, chain="solana"):
             rows = await self._fetch_inbound_neo4j(seed_address, options)
             if rows:
                 self._set_expansion_data_sources("neo4j_fallback")
             else:
                 self._set_expansion_data_sources()
+        else:
+            self._set_expansion_data_sources()
 
         # For inbound transfers the seed is the destination; resolve the
         # *source* addresses in case they are ATAs.
@@ -182,108 +264,51 @@ class SolanaChainCompiler(BaseChainCompiler):
         if self._pg is None:
             return []
         limit = min(options.max_results, _SQL_FETCH_LIMIT)
+        tx_hashes = _normalized_tx_hash_filter(options)
+        selector = effective_asset_selector(options, chain="solana")
         rows: List[Dict[str, Any]] = []
-        asset_filter = [str(asset).strip() for asset in (options.asset_filter or []) if str(asset).strip()]
-        symbol_filters: set[str] = set()
-        canonical_filters: set[str] = set()
-        asset_address_filters: set[str] = set()
-        include_native = not asset_filter
-        for asset in asset_filter:
-            lowered = asset.lower()
-            if lowered.startswith("symbol:"):
-                symbol_filters.add(asset.split(":", 1)[1].strip().upper())
-                continue
-            if lowered.startswith("canonical:"):
-                canonical_filters.add(asset.split(":", 1)[1].strip().lower())
-                continue
-            if lowered.startswith("native:"):
-                if asset.split(":", 1)[1].strip().lower() == "solana":
-                    include_native = True
-                continue
-            if lowered.startswith("asset:"):
-                parts = asset.split(":", 2)
-                if len(parts) == 3 and parts[1].strip().lower() == "solana":
-                    asset_address_filters.add(parts[2].strip().lower())
-                continue
-            symbol_filters.add(asset.upper())
-            canonical_filters.add(lowered)
-        if "SOL" in symbol_filters or "solana" in canonical_filters:
-            include_native = True
 
         # SPL token transfers (from_address is the sender wallet / ATA authority)
         try:
-            params: List[Any] = [
-                address,
-                limit,
-                sorted(symbol_filters) or None,
-                sorted(canonical_filters) or None,
-                sorted(asset_address_filters) or None,
-                options.time_from,
-                options.time_to,
-            ]
+            if selector.mode == "asset" and not selector.chain_asset_id:
+                return []
 
             sql = """
                 SELECT
                     rtt.tx_hash,
                     rtt.to_address        AS counterparty,
                     rtt.amount_normalized AS value_native,
-                    COALESCE(
-                        NULLIF(tmc.symbol, ''),
-                        NULLIF(rtt.asset_symbol, ''),
-                        rtt.asset_contract
-                    ) AS asset_symbol,
-                    COALESCE(
-                        NULLIF(tmc.canonical_asset_id, ''),
-                        NULLIF(rtt.canonical_asset_id, '')
-                    ) AS canonical_asset_id,
-                    rtt.asset_contract AS asset_address,
+                    rtt.asset_symbol,
+                    rtt.canonical_asset_id,
+                    rtt.asset_contract AS chain_asset_id,
                     rtt.timestamp
                 FROM raw_token_transfers rtt
-                LEFT JOIN token_metadata_cache tmc
-                  ON tmc.blockchain = rtt.blockchain
-                 AND tmc.asset_address = rtt.asset_contract
                 WHERE rtt.blockchain = 'solana'
                   AND rtt.from_address = $1
-                  AND (
-                    ($3::text[] IS NULL AND $4::text[] IS NULL AND $5::text[] IS NULL)
-                    OR (
-                        $3::text[] IS NOT NULL
-                        AND UPPER(
-                            COALESCE(
-                                NULLIF(tmc.symbol, ''),
-                                NULLIF(rtt.asset_symbol, '')
-                            )
-                        ) = ANY($3)
-                    )
-                    OR (
-                        $4::text[] IS NOT NULL
-                        AND LOWER(
-                            COALESCE(
-                                NULLIF(tmc.canonical_asset_id, ''),
-                                NULLIF(rtt.canonical_asset_id, '')
-                            )
-                        ) = ANY($4)
-                    )
-                    OR (
-                        $5::text[] IS NOT NULL
-                        AND LOWER(COALESCE(rtt.asset_contract, '')) = ANY($5)
-                    )
-                  )
-                  AND ($6::timestamptz IS NULL OR rtt.timestamp >= $6)
-                  AND ($7::timestamptz IS NULL OR rtt.timestamp <= $7)
+                  AND ($2::text[] IS NULL OR LOWER(rtt.tx_hash) = ANY($2))
+                  AND ($4::text IS NULL OR LOWER(rtt.asset_contract) = LOWER($4))
+                  AND ($5::timestamptz IS NULL OR rtt.timestamp >= $5)
+                  AND ($6::timestamptz IS NULL OR rtt.timestamp <= $6)
                 ORDER BY timestamp DESC, tx_hash ASC
-                LIMIT $2
+                LIMIT $3
             """
-            async with self._pg.acquire() as conn:
-                spl_rows = await conn.fetch(sql, *params)
-            rows.extend(dict(r) for r in spl_rows)
+            if selector.mode in {"all", "asset"}:
+                async with self._pg.acquire() as conn:
+                    spl_rows = await conn.fetch(
+                        sql,
+                        address,
+                        tx_hashes,
+                        limit,
+                        selector.chain_asset_id,
+                        options.time_from,
+                        options.time_to,
+                    )
+                rows.extend(dict(r) for r in spl_rows)
         except Exception as exc:
             logger.debug("SolanaChainCompiler outbound SPL failed for %s: %s", address, exc)
 
         # Native SOL transfers
         try:
-            if not include_native:
-                return rows
             sql = """
                 SELECT
                     tx_hash,
@@ -291,23 +316,30 @@ class SolanaChainCompiler(BaseChainCompiler):
                     value_native,
                     'SOL'             AS asset_symbol,
                     NULL              AS canonical_asset_id,
-                    NULL              AS asset_address,
+                    NULL              AS chain_asset_id,
                     timestamp
                 FROM raw_transactions
                 WHERE blockchain = 'solana'
                   AND from_address = $1
+                  AND ($2::text[] IS NULL OR LOWER(tx_hash) = ANY($2))
                   AND to_address IS NOT NULL
                   AND value_native > 0
-                  AND ($3::timestamptz IS NULL OR timestamp >= $3)
-                  AND ($4::timestamptz IS NULL OR timestamp <= $4)
+                  AND ($4::timestamptz IS NULL OR timestamp >= $4)
+                  AND ($5::timestamptz IS NULL OR timestamp <= $5)
                 ORDER BY timestamp DESC, tx_hash ASC
-                LIMIT $2
+                LIMIT $3
             """
-            async with self._pg.acquire() as conn:
-                sol_rows = await conn.fetch(
-                    sql, address, limit, options.time_from, options.time_to,
-                )
-            rows.extend(dict(r) for r in sol_rows)
+            if selector.mode in {"all", "native"}:
+                async with self._pg.acquire() as conn:
+                    sol_rows = await conn.fetch(
+                        sql,
+                        address,
+                        tx_hashes,
+                        limit,
+                        options.time_from,
+                        options.time_to,
+                    )
+                rows.extend(dict(r) for r in sol_rows)
         except Exception as exc:
             logger.debug("SolanaChainCompiler outbound SOL failed for %s: %s", address, exc)
 
@@ -320,106 +352,49 @@ class SolanaChainCompiler(BaseChainCompiler):
         if self._pg is None:
             return []
         limit = min(options.max_results, _SQL_FETCH_LIMIT)
+        tx_hashes = _normalized_tx_hash_filter(options)
+        selector = effective_asset_selector(options, chain="solana")
         rows: List[Dict[str, Any]] = []
-        asset_filter = [str(asset).strip() for asset in (options.asset_filter or []) if str(asset).strip()]
-        symbol_filters: set[str] = set()
-        canonical_filters: set[str] = set()
-        asset_address_filters: set[str] = set()
-        include_native = not asset_filter
-        for asset in asset_filter:
-            lowered = asset.lower()
-            if lowered.startswith("symbol:"):
-                symbol_filters.add(asset.split(":", 1)[1].strip().upper())
-                continue
-            if lowered.startswith("canonical:"):
-                canonical_filters.add(asset.split(":", 1)[1].strip().lower())
-                continue
-            if lowered.startswith("native:"):
-                if asset.split(":", 1)[1].strip().lower() == "solana":
-                    include_native = True
-                continue
-            if lowered.startswith("asset:"):
-                parts = asset.split(":", 2)
-                if len(parts) == 3 and parts[1].strip().lower() == "solana":
-                    asset_address_filters.add(parts[2].strip().lower())
-                continue
-            symbol_filters.add(asset.upper())
-            canonical_filters.add(lowered)
-        if "SOL" in symbol_filters or "solana" in canonical_filters:
-            include_native = True
 
         try:
-            params: List[Any] = [
-                address,
-                limit,
-                sorted(symbol_filters) or None,
-                sorted(canonical_filters) or None,
-                sorted(asset_address_filters) or None,
-                options.time_from,
-                options.time_to,
-            ]
+            if selector.mode == "asset" and not selector.chain_asset_id:
+                return []
 
             sql = """
                 SELECT
                     rtt.tx_hash,
                     rtt.from_address      AS counterparty,
                     rtt.amount_normalized AS value_native,
-                    COALESCE(
-                        NULLIF(tmc.symbol, ''),
-                        NULLIF(rtt.asset_symbol, ''),
-                        rtt.asset_contract
-                    ) AS asset_symbol,
-                    COALESCE(
-                        NULLIF(tmc.canonical_asset_id, ''),
-                        NULLIF(rtt.canonical_asset_id, '')
-                    ) AS canonical_asset_id,
-                    rtt.asset_contract AS asset_address,
+                    rtt.asset_symbol,
+                    rtt.canonical_asset_id,
+                    rtt.asset_contract AS chain_asset_id,
                     rtt.timestamp
                 FROM raw_token_transfers rtt
-                LEFT JOIN token_metadata_cache tmc
-                  ON tmc.blockchain = rtt.blockchain
-                 AND tmc.asset_address = rtt.asset_contract
                 WHERE rtt.blockchain = 'solana'
                   AND rtt.to_address = $1
-                  AND (
-                    ($3::text[] IS NULL AND $4::text[] IS NULL AND $5::text[] IS NULL)
-                    OR (
-                        $3::text[] IS NOT NULL
-                        AND UPPER(
-                            COALESCE(
-                                NULLIF(tmc.symbol, ''),
-                                NULLIF(rtt.asset_symbol, '')
-                            )
-                        ) = ANY($3)
-                    )
-                    OR (
-                        $4::text[] IS NOT NULL
-                        AND LOWER(
-                            COALESCE(
-                                NULLIF(tmc.canonical_asset_id, ''),
-                                NULLIF(rtt.canonical_asset_id, '')
-                            )
-                        ) = ANY($4)
-                    )
-                    OR (
-                        $5::text[] IS NOT NULL
-                        AND LOWER(COALESCE(rtt.asset_contract, '')) = ANY($5)
-                    )
-                  )
-                  AND ($6::timestamptz IS NULL OR rtt.timestamp >= $6)
-                  AND ($7::timestamptz IS NULL OR rtt.timestamp <= $7)
+                  AND ($2::text[] IS NULL OR LOWER(rtt.tx_hash) = ANY($2))
+                  AND ($4::text IS NULL OR LOWER(rtt.asset_contract) = LOWER($4))
+                  AND ($5::timestamptz IS NULL OR rtt.timestamp >= $5)
+                  AND ($6::timestamptz IS NULL OR rtt.timestamp <= $6)
                 ORDER BY timestamp DESC, tx_hash ASC
-                LIMIT $2
+                LIMIT $3
             """
-            async with self._pg.acquire() as conn:
-                spl_rows = await conn.fetch(sql, *params)
-            rows.extend(dict(r) for r in spl_rows)
+            if selector.mode in {"all", "asset"}:
+                async with self._pg.acquire() as conn:
+                    spl_rows = await conn.fetch(
+                        sql,
+                        address,
+                        tx_hashes,
+                        limit,
+                        selector.chain_asset_id,
+                        options.time_from,
+                        options.time_to,
+                    )
+                rows.extend(dict(r) for r in spl_rows)
         except Exception as exc:
             logger.debug("SolanaChainCompiler inbound SPL failed for %s: %s", address, exc)
 
         try:
-            if not include_native:
-                return rows
             sql = """
                 SELECT
                     tx_hash,
@@ -427,23 +402,30 @@ class SolanaChainCompiler(BaseChainCompiler):
                     value_native,
                     'SOL'             AS asset_symbol,
                     NULL              AS canonical_asset_id,
-                    NULL              AS asset_address,
+                    NULL              AS chain_asset_id,
                     timestamp
                 FROM raw_transactions
                 WHERE blockchain = 'solana'
                   AND to_address = $1
+                  AND ($2::text[] IS NULL OR LOWER(tx_hash) = ANY($2))
                   AND from_address IS NOT NULL
                   AND value_native > 0
-                  AND ($3::timestamptz IS NULL OR timestamp >= $3)
-                  AND ($4::timestamptz IS NULL OR timestamp <= $4)
+                  AND ($4::timestamptz IS NULL OR timestamp >= $4)
+                  AND ($5::timestamptz IS NULL OR timestamp <= $5)
                 ORDER BY timestamp DESC, tx_hash ASC
-                LIMIT $2
+                LIMIT $3
             """
-            async with self._pg.acquire() as conn:
-                sol_rows = await conn.fetch(
-                    sql, address, limit, options.time_from, options.time_to,
-                )
-            rows.extend(dict(r) for r in sol_rows)
+            if selector.mode in {"all", "native"}:
+                async with self._pg.acquire() as conn:
+                    sol_rows = await conn.fetch(
+                        sql,
+                        address,
+                        tx_hashes,
+                        limit,
+                        options.time_from,
+                        options.time_to,
+                    )
+                rows.extend(dict(r) for r in sol_rows)
         except Exception as exc:
             logger.debug("SolanaChainCompiler inbound SOL failed for %s: %s", address, exc)
 
@@ -1006,6 +988,7 @@ class SolanaChainCompiler(BaseChainCompiler):
             value_fiat: Optional[float] = row.get("value_fiat")
             asset_symbol: Optional[str] = row.get("asset_symbol")
             canonical_asset_id: Optional[str] = row.get("canonical_asset_id")
+            chain_asset_id: Optional[str] = row.get("chain_asset_id")
 
             _ts_str: Optional[str] = None
             raw_ts = row.get("timestamp")
@@ -1032,6 +1015,7 @@ class SolanaChainCompiler(BaseChainCompiler):
                     value_fiat=value_fiat,
                     asset_symbol=asset_symbol or "SOL",
                     canonical_asset_id=canonical_asset_id,
+                    chain_asset_id=normalize_chain_asset_id("solana", chain_asset_id),
                 )
                 if bridge_result is not None:
                     for bn in bridge_result[0]:
@@ -1125,6 +1109,7 @@ class SolanaChainCompiler(BaseChainCompiler):
                 value_fiat=value_fiat,
                 asset_symbol=asset_symbol or "SOL",
                 canonical_asset_id=canonical_asset_id,
+                chain_asset_id=normalize_chain_asset_id("solana", chain_asset_id),
                 direction=direction,
             )
             if svc_result is not None:
@@ -1181,8 +1166,7 @@ class SolanaChainCompiler(BaseChainCompiler):
                 value_fiat=value_fiat,
                 asset_symbol=asset_symbol or "SOL",
                 canonical_asset_id=canonical_asset_id,
-                asset_address=row.get("asset_address"),
-                asset_chain="solana",
+                chain_asset_id=normalize_chain_asset_id("solana", chain_asset_id),
                 tx_hash=tx_hash or None,
                 tx_chain="solana",
                 timestamp=_ts_str,

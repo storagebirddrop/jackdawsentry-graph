@@ -217,6 +217,7 @@ export interface ActivitySummary {
   order_id?: string;
   asset_symbol?: string;
   canonical_asset_id?: string;
+  chain_asset_id?: string;
   value_native?: number;
   value_fiat?: number;
   source_asset?: string;
@@ -408,6 +409,7 @@ export interface InvestigationEdge {
   direction: 'forward' | 'backward' | 'lateral';
   asset_symbol?: string;
   canonical_asset_id?: string;
+  chain_asset_id?: string;
   value_native?: number;
   fiat_value_usd?: number;
   value_fiat?: number;
@@ -463,6 +465,19 @@ export interface PaginationMeta {
 export interface AssetContext {
   assets_present: string[];
   canonical_asset_ids: string[];
+  total_value_fiat?: number;
+}
+
+export interface AssetSelector {
+  mode: 'all' | 'native' | 'asset';
+  chain: string;
+  chain_asset_id?: string;
+  asset_symbol?: string;
+  canonical_asset_id?: string;
+}
+
+export interface AssetOption extends AssetSelector {
+  display_label: string;
 }
 
 export interface ExpansionEmptyState {
@@ -496,6 +511,7 @@ export interface ExpansionResponseV2 {
   pagination?: PaginationMeta;
   asset_context?: AssetContext;
   empty_state?: ExpansionEmptyState;
+  integrity_warning?: string;
   ingest_pending?: boolean;
   timestamp?: string;
 }
@@ -513,6 +529,97 @@ export interface SessionCreateRequest {
 export interface SessionCreateResponse {
   session_id: string;
   root_node: InvestigationNode;
+  created_at?: string;
+}
+
+export interface AssetCatalogItem {
+  asset_key: string;
+  symbol: string;
+  display_name?: string;
+  canonical_asset_id?: string;
+  canonical_symbol?: string;
+  identity_status: 'verified' | 'heuristic' | 'unknown';
+  variant_kind: 'native' | 'canonical' | 'wrapped' | 'bridged' | 'unknown';
+  blockchains: string[];
+  token_standards: string[];
+  observed_transfer_count: number;
+  last_seen_at?: string;
+  sample_asset_address?: string;
+  is_native: boolean;
+}
+
+export interface AssetCatalogResponse {
+  session_id: string;
+  seed_chain: string;
+  chains_present: string[];
+  items: AssetCatalogItem[];
+  generated_at?: string;
+}
+
+export interface WorkspacePosition {
+  x: number;
+  y: number;
+}
+
+export interface WorkspaceBranchSnapshot {
+  branchId: string;
+  color: string;
+  seedNodeId: string;
+  minDepth: number;
+  maxDepth: number;
+  nodeCount: number;
+}
+
+export interface WorkspacePreferencesSnapshot {
+  selectedAssets: string[];
+  pinnedAssetKeys: string[];
+  assetCatalogScope: 'session' | 'visible';
+}
+
+export interface WorkspaceSnapshotV1 {
+  schema_version?: number;
+  revision: number;
+  sessionId: string;
+  nodes: InvestigationNode[];
+  edges: InvestigationEdge[];
+  positions: Record<string, WorkspacePosition>;
+  branches?: WorkspaceBranchSnapshot[] | null;
+  workspacePreferences?: WorkspacePreferencesSnapshot | null;
+}
+
+export interface SessionSnapshotResponse {
+  snapshot_id: string;
+  saved_at?: string;
+  revision: number;
+}
+
+export interface RecentSessionSummary {
+  session_id: string;
+  seed_address?: string | null;
+  seed_chain?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  snapshot_saved_at?: string | null;
+}
+
+export interface RecentSessionsResponse {
+  items: RecentSessionSummary[];
+}
+
+export interface InvestigationSessionResponse {
+  session_id: string;
+  seed_address?: string | null;
+  seed_chain?: string | null;
+  case_id?: string | null;
+  snapshot?: unknown;
+  workspace: WorkspaceSnapshotV1;
+  restore_state: 'full' | 'legacy_bootstrap';
+  nodes: InvestigationNode[];
+  edges: InvestigationEdge[];
+  branch_map: Record<string, WorkspaceBranchSnapshot>;
+  created_at?: string | null;
+  updated_at?: string | null;
+  snapshot_saved_at?: string | null;
 }
 
 export interface ExpandRequest {
@@ -522,6 +629,7 @@ export interface ExpandRequest {
   options?: {
     depth?: number;
     asset_filter?: string[];
+    asset_selector?: AssetSelector;
     chain_filter?: string[];
     tx_hashes?: string[];
     min_value_fiat?: number;
@@ -530,7 +638,21 @@ export interface ExpandRequest {
     follow_bridges?: boolean;
     continuation_token?: string;
     page_size?: number;
+    time_from?: string;
+    time_to?: string;
   };
+}
+
+export interface AssetOptionsRequest {
+  seed_node_id: string;
+  seed_lineage_id?: string;
+}
+
+export interface AssetOptionsResponse {
+  session_id: string;
+  seed_node_id: string;
+  seed_lineage_id?: string | null;
+  options: AssetOption[];
 }
 
 export interface BridgeHopStatusResponse {
@@ -540,6 +662,7 @@ export interface BridgeHopStatusResponse {
   destination_chain?: string;
   destination_address?: string;
   correlation_confidence?: number;
+  updated_at?: string;
 }
 
 export interface IngestStatusResponse {

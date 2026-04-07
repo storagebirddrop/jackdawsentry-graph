@@ -34,7 +34,7 @@ import {
   toRfNode,
   type BranchMeta,
 } from '../store/graphStore';
-import { expandNode } from '../api/client';
+import { expandNode, getAssetOptions } from '../api/client';
 import { computeElkLayout } from '../layout/elkLayout';
 import {
   buildLocalLayoutNeighborhood,
@@ -44,8 +44,11 @@ import {
   resolveNodeCollisions,
 } from '../layout/incrementalPlacement';
 import type {
+  AssetOption,
+  AssetSelector,
   BridgeHopData,
   ExpandRequest,
+  ExpansionResponseV2,
   InvestigationEdge,
   InvestigationNode,
 } from '../types/graph';
@@ -61,10 +64,22 @@ import LightningChannelOpenNode from './nodes/LightningChannelOpenNode';
 import LightningChannelCloseNode from './nodes/LightningChannelCloseNode';
 import BtcSidechainPegNode from './nodes/BtcSidechainPegNode';
 import AtomicSwapNode from './nodes/AtomicSwapNode';
-import FilterPanel, { type FilterState, DEFAULT_FILTERS } from './FilterPanel';
+import FilterPanel, {
+  type AssetCatalogScopeMode,
+  type FilterState,
+  DEFAULT_ASSET_CATALOG_SCOPE,
+  DEFAULT_FILTERS,
+} from './FilterPanel';
 import GraphAppearancePanel from './GraphAppearancePanel';
 import GraphInspectorPanel, { type PathStory } from './GraphInspectorPanel';
 import InvestigationEdgeComponent from './edges/InvestigationEdge';
+import {
+  buildExpandRequest,
+  createEdgeTraceInvocation,
+  createInspectorExpandInvocation,
+  createQuickExpandInvocation,
+  type ExpandInvocation,
+} from './expandRequestPolicy';
 import {
   DEFAULT_GRAPH_APPEARANCE,
   type GraphAppearanceState,
@@ -117,12 +132,31 @@ type FlowCanvasHandle = FitViewHandle & {
 interface Props {
   sessionId: string;
   onStartNewInvestigation: () => void;
+  initialWorkspaceRevision?: number;
+  initialSavedAt?: string | null;
+  initialRestoreNotice?: { tone: 'info' | 'error'; message: string } | null;
 }
 
 interface SessionBriefing {
   title: string;
   headline: string;
   markdown: string;
+}
+
+function assetOptionKey(option: Pick<AssetSelector, 'mode' | 'chain' | 'chain_asset_id' | 'asset_symbol' | 'canonical_asset_id'>): string {
+  if (option.mode === 'all') {
+    return `all:${option.chain}`;
+  }
+  if (option.mode === 'native') {
+    return `native:${option.chain}`;
+  }
+  return [
+    'asset',
+    option.chain,
+    option.chain_asset_id ?? '',
+    option.asset_symbol ?? '',
+    option.canonical_asset_id ?? '',
+  ].join(':');
 }
 
 /** Apply filter state to raw nodes/edges, returning the visible subset. */
@@ -276,11 +310,15 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>(rfEdges);
 
   const [filters, setFilters] = useState<FilterState>(DEFAULT_FILTERS);
+  const [assetCatalogScope, setAssetCatalogScope] = useState<AssetCatalogScopeMode>(DEFAULT_ASSET_CATALOG_SCOPE);
+  const [pinnedAssetKeys, setPinnedAssetKeys] = useState<string[]>([]);
   const [filterVisible, setFilterVisible] = useState(false);
   const [appearance, setAppearance] = useState<GraphAppearanceState>(DEFAULT_GRAPH_APPEARANCE);
   const [appearanceVisible, setAppearanceVisible] = useState(false);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
+  const [previewResult, setPreviewResult] = useState<ExpansionResponseV2 | null>(null);
+  const [isPreviewLoading, setIsPreviewLoading] = useState(false);
   const [inspectorCollapsed, setInspectorCollapsed] = useState(false);
   const [briefingVisible, setBriefingVisible] = useState(false);
   const [notice, setNotice] = useState<{ tone: 'info' | 'error'; message: string } | null>(null);
@@ -289,6 +327,15 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
   const [branchHistory, setBranchHistory] = useState<string[]>([]);
   const [pinnedPathIds, setPinnedPathIds] = useState<string[]>([]);
   const [activeSemanticKey, setActiveSemanticKey] = useState<string | null>(null);
+  const [assetOptionsByNodeId, setAssetOptionsByNodeId] = useState<Map<string, AssetOption[]>>(new Map());
+  const [assetSelectorByNodeId, setAssetSelectorByNodeId] = useState<Map<string, AssetSelector>>(new Map());
+  const [loadingAssetOptionNodeIds, setLoadingAssetOptionNodeIds] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    setAssetOptionsByNodeId(new Map());
+    setAssetSelectorByNodeId(new Map());
+    setLoadingAssetOptionNodeIds(new Set());
+  }, [sessionId]);
 
   // Tracks nodes whose expansion returned ingest_pending=true.
   // Key: node_id. Value: { address, chain } needed for status polling.
@@ -297,7 +344,7 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
   >(new Map());
   // Stores the pending retry payload so handleIngestComplete can re-expand.
   const ingestRetryRef = useRef<
-    Map<string, { node: Pick<InvestigationNode, 'node_id' | 'lineage_id'>; operation: ExpandRequest['operation_type'] }>
+    Map<string, ExpandInvocation>
   >(new Map());
   const reactFlowRef = useRef<FlowCanvasHandle | null>(null);
   const fitViewTimerRef = useRef<number | null>(null);
@@ -622,11 +669,11 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
 
   // Expand a node in a given direction
   const handleExpand = useCallback(
-    async (
-      node: Pick<InvestigationNode, 'node_id' | 'lineage_id'>,
-      operation: ExpandRequest['operation_type'],
-      txHashes?: string[],
-    ) => {
+    async (invocation: ExpandInvocation) => {
+      const {
+        node,
+        operation,
+      } = invocation;
       if (expandingNodeIds.has(node.node_id)) return;
       if (rfNodes.length >= NODE_OVERLOAD_THRESHOLD) {
         showNotice(
@@ -638,14 +685,7 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
       try {
         const nodeParts = node.node_id.split(':');
         const nodeChain = nodeParts[0]?.toUpperCase() ?? 'this';
-        const response = await expandNode(sessionId, {
-          seed_node_id: node.node_id,
-          seed_lineage_id: node.lineage_id,
-          operation_type: operation,
-          options: txHashes && txHashes.length > 0
-            ? { tx_hashes: txHashes }
-            : undefined,
-        });
+        const response = await expandNode(sessionId, buildExpandRequest(invocation));
         const deltaNodes = response.nodes ?? response.added_nodes ?? [];
         const deltaEdges = response.edges ?? response.added_edges ?? [];
         const updatedNodes = response.updated_nodes ?? [];
@@ -668,7 +708,7 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
               next.set(node.node_id, { address: nodeAddress, chain: nodeChain });
               return next;
             });
-            ingestRetryRef.current.set(node.node_id, { node, operation });
+            ingestRetryRef.current.set(node.node_id, invocation);
             showNotice(
               `Fetching ${expandOperationLabel(operation)} activity for this address — will retry automatically when data is ready.`,
             );
@@ -732,6 +772,62 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
     [sessionId, rfNodes, rfEdges, expandingNodeIds, setExpandingNode, applyExpansionDelta, showNotice],
   );
 
+  const handlePreviewExpand = useCallback(
+    async (
+      operation: 'expand_prev' | 'expand_next' | 'expand_neighbors',
+      filters: { timeFrom?: string; timeTo?: string; maxResults?: number },
+    ) => {
+      const nodeData = (
+        selectedNodeId
+          ? (nodes.find((node) => node.id === selectedNodeId)?.data as InvestigationNode | undefined)
+          : undefined
+      ) ?? null;
+      if (!nodeData || !sessionId) return;
+      setIsPreviewLoading(true);
+      try {
+        const response = await expandNode(sessionId, {
+          seed_node_id: nodeData.node_id,
+          seed_lineage_id: nodeData.lineage_id,
+          operation_type: operation,
+          options: {
+            max_results: filters.maxResults ?? 25,
+            time_from: filters.timeFrom,
+            time_to: filters.timeTo,
+          },
+        });
+        setPreviewResult(response);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Preview failed.';
+        showNotice(message, 'error');
+      } finally {
+        setIsPreviewLoading(false);
+      }
+    },
+    [nodes, selectedNodeId, sessionId, showNotice],
+  );
+
+  const handleApplyPreview = useCallback(
+    (selectedEdgeIds?: Set<string>) => {
+      if (!previewResult) return;
+      const allEdges = previewResult.added_edges ?? previewResult.edges ?? [];
+      const allNodes = previewResult.added_nodes ?? previewResult.nodes ?? [];
+      const filteredEdges = selectedEdgeIds
+        ? allEdges.filter((e) => selectedEdgeIds.has(e.edge_id))
+        : allEdges;
+      const reachableNodeIds = new Set(
+        filteredEdges.flatMap((e) => [e.source_node_id, e.target_node_id]),
+      );
+      const filteredNodes = selectedEdgeIds
+        ? allNodes.filter((n) => reachableNodeIds.has(n.node_id))
+        : allNodes;
+      applyExpansionDelta(
+        { ...previewResult, added_edges: filteredEdges, added_nodes: filteredNodes },
+      );
+      setPreviewResult(null);
+    },
+    [previewResult, applyExpansionDelta],
+  );
+
   // Derived set consumed by IngestPendingContext and the enrichedNodes mapping.
   const ingestPendingNodeIds = useMemo(
     () => new Set(ingestPendingMap.keys()),
@@ -750,7 +846,7 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
       const retry = ingestRetryRef.current.get(nodeId);
       ingestRetryRef.current.delete(nodeId);
       if (retry) {
-        void handleExpand(retry.node, retry.operation);
+        void handleExpand(retry);
       }
     },
     [handleExpand],
@@ -766,6 +862,19 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
     showNotice(
       'Background data fetch did not complete in time. Try expanding the node again later.',
       'error',
+    );
+  }, [showNotice]);
+
+  const handleIngestUnavailable = useCallback((nodeId: string) => {
+    setIngestPendingMap((prev) => {
+      const next = new Map(prev);
+      next.delete(nodeId);
+      return next;
+    });
+    ingestRetryRef.current.delete(nodeId);
+    showNotice(
+      'Background data fetch is still queued. Try expanding this node again in a moment.',
+      'info',
     );
   }, [showNotice]);
 
@@ -856,8 +965,20 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
       },
       data: {
         ...n.data,
-        onExpandNext: () => handleExpand(invNode, 'expand_next'),
-        onExpandPrev: () => handleExpand(invNode, 'expand_prev'),
+        onExpandNext: () => handleExpand(
+          createQuickExpandInvocation(
+            invNode,
+            'expand_next',
+            assetSelectorByNodeId,
+          ),
+        ),
+        onExpandPrev: () => handleExpand(
+          createQuickExpandInvocation(
+            invNode,
+            'expand_prev',
+            assetSelectorByNodeId,
+          ),
+        ),
         isExpanding: expandingNodeIds.has(n.id),
         isIngestPending: ingestPendingNodeIds.has(n.id),
         appearance,
@@ -953,6 +1074,109 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
     && selectedEdgeTargetNode?.node_type === 'address'
     && selectedEdgeTargetNode.expandable_directions.includes('next'),
   );
+  const selectedNodeData = useMemo(
+    () => ((selectedNode?.data as InvestigationNode | undefined) ?? null),
+    [selectedNode],
+  );
+  const selectedNodeChain = useMemo(
+    () => (selectedNodeData?.chain ?? selectedNodeData?.address_data?.chain ?? '').toLowerCase(),
+    [selectedNodeData],
+  );
+  const selectedNodeAssetOptions = useMemo(
+    () => (selectedNodeData ? assetOptionsByNodeId.get(selectedNodeData.node_id) ?? [] : []),
+    [assetOptionsByNodeId, selectedNodeData],
+  );
+  const selectedNodeAssetSelector = useMemo(() => {
+    if (!selectedNodeData) return null;
+    return assetSelectorByNodeId.get(selectedNodeData.node_id)
+      ?? selectedNodeAssetOptions.find((option) => option.mode === 'all')
+      ?? selectedNodeAssetOptions[0]
+      ?? null;
+  }, [assetSelectorByNodeId, selectedNodeAssetOptions, selectedNodeData]);
+  const selectedNodeAssetOptionsLoading = useMemo(
+    () => (selectedNodeData ? loadingAssetOptionNodeIds.has(selectedNodeData.node_id) : false),
+    [loadingAssetOptionNodeIds, selectedNodeData],
+  );
+
+  useEffect(() => {
+    if (!selectedNodeData || selectedNodeData.node_type !== 'address') {
+      return;
+    }
+    if (!selectedNodeChain || selectedNodeChain === 'bitcoin') {
+      return;
+    }
+    if (
+      assetOptionsByNodeId.has(selectedNodeData.node_id)
+      || loadingAssetOptionNodeIds.has(selectedNodeData.node_id)
+    ) {
+      return;
+    }
+
+    let cancelled = false;
+    setLoadingAssetOptionNodeIds((prev) => new Set(prev).add(selectedNodeData.node_id));
+    void getAssetOptions(sessionId, {
+      seed_node_id: selectedNodeData.node_id,
+      seed_lineage_id: selectedNodeData.lineage_id,
+    })
+      .then((response) => {
+        if (cancelled) return;
+        const options = response.options ?? [];
+        setAssetOptionsByNodeId((prev) => {
+          const next = new Map(prev);
+          next.set(selectedNodeData.node_id, options);
+          return next;
+        });
+        setAssetSelectorByNodeId((prev) => {
+          if (prev.has(selectedNodeData.node_id) || options.length === 0) {
+            return prev;
+          }
+          const next = new Map(prev);
+          const defaultOption = options.find((option) => option.mode === 'all') ?? options[0];
+          next.set(selectedNodeData.node_id, defaultOption);
+          return next;
+        });
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        console.error('Asset option lookup failed:', error);
+        setAssetOptionsByNodeId((prev) => {
+          const next = new Map(prev);
+          next.set(selectedNodeData.node_id, []);
+          return next;
+        });
+        showNotice('Unable to load asset choices for this address right now.', 'error');
+      })
+      .finally(() => {
+        if (cancelled) return;
+        setLoadingAssetOptionNodeIds((prev) => {
+          const next = new Set(prev);
+          next.delete(selectedNodeData.node_id);
+          return next;
+        });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    assetOptionsByNodeId,
+    loadingAssetOptionNodeIds,
+    selectedNodeChain,
+    selectedNodeData,
+    sessionId,
+    showNotice,
+  ]);
+
+  const handleSelectedNodeAssetChange = useCallback((optionKey: string) => {
+    if (!selectedNodeData) return;
+    const option = selectedNodeAssetOptions.find((candidate) => assetOptionKey(candidate) === optionKey);
+    if (!option) return;
+    setAssetSelectorByNodeId((prev) => {
+      const next = new Map(prev);
+      next.set(selectedNodeData.node_id, option);
+      return next;
+    });
+  }, [selectedNodeAssetOptions, selectedNodeData]);
 
   const handleTraceSelectedEdge = useCallback(
     (direction: 'forward' | 'backward') => {
@@ -971,8 +1195,16 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
         return;
       }
 
-      const operation = direction === 'forward' ? 'expand_next' : 'expand_prev';
-      void handleExpand(endpoint, operation, [selectedEdgeData.tx_hash]);
+      const invocation = createEdgeTraceInvocation(
+        selectedEdgeData,
+        endpoint,
+        direction,
+      );
+      if (!invocation) {
+        showNotice('The selected edge could not be converted into an expansion request.', 'error');
+        return;
+      }
+      void handleExpand(invocation);
     },
     [handleExpand, selectedEdgeData, selectedEdgeSourceNode, selectedEdgeTargetNode, showNotice],
   );
@@ -1012,6 +1244,11 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
       window.removeEventListener('keydown', handleKeyDown);
     };
   }, [handleHideNode, selectedNodeId]);
+
+  // Discard stale preview whenever the selected node changes.
+  useEffect(() => {
+    setPreviewResult(null);
+  }, [selectedNodeId]);
 
   const selectedPathStory = useMemo(() => {
     if (!selectedNode) return null;
@@ -1430,6 +1667,7 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
           address={address}
           chain={chain}
           onComplete={handleIngestComplete}
+          onUnavailable={handleIngestUnavailable}
           onTimeout={handleIngestTimeout}
         />
       ))}
@@ -2243,6 +2481,13 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
           filters={filters}
           onChange={setFilters}
           onClose={() => setFilterVisible(false)}
+          availableAssets={[]}
+          sessionAssetCount={0}
+          visibleAssetCount={0}
+          assetCatalogScope={assetCatalogScope}
+          onAssetCatalogScopeChange={setAssetCatalogScope}
+          pinnedAssetKeys={pinnedAssetKeys}
+          onPinnedAssetKeysChange={setPinnedAssetKeys}
           availableBridgeProtocols={bridgeFilterOptions.protocols}
           availableBridgeRoutes={bridgeFilterOptions.routes}
         />
@@ -2312,11 +2557,26 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
         canTraceEdgeForward={canTraceSelectedEdgeForward}
         onTraceEdgeBackward={() => handleTraceSelectedEdge('backward')}
         onTraceEdgeForward={() => handleTraceSelectedEdge('forward')}
-        onExpandNode={(operation) => {
+        assetOptions={selectedNodeData?.node_type === 'address' ? selectedNodeAssetOptions : []}
+        assetOptionsLoading={selectedNodeData?.node_type === 'address' ? selectedNodeAssetOptionsLoading : false}
+        selectedAssetOptionKey={selectedNodeAssetSelector ? assetOptionKey(selectedNodeAssetSelector) : null}
+        onSelectAssetOption={handleSelectedNodeAssetChange}
+        onExpandNode={(operation, assetSelector) => {
           const nodeData = (selectedNode?.data as InvestigationNode | undefined) ?? null;
           if (!nodeData) return;
-          void handleExpand(nodeData, operation);
+          void handleExpand(
+            createInspectorExpandInvocation(
+              nodeData,
+              operation,
+              assetSelector,
+            ),
+          );
         }}
+        onPreviewExpand={handlePreviewExpand}
+        previewResult={previewResult}
+        isPreviewLoading={isPreviewLoading}
+        onApplyPreview={handleApplyPreview}
+        onDismissPreview={() => setPreviewResult(null)}
         onHideNode={handleHideNode}
         onClose={() => {
           setSelectedNodeId(null);

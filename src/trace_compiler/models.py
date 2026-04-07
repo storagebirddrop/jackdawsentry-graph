@@ -88,6 +88,8 @@ ExpansionDataSource = Literal[
     "live_history",
 ]
 
+AssetSelectorMode = Literal["all", "native", "asset"]
+
 
 # ---------------------------------------------------------------------------
 # Type-specific node data payloads
@@ -303,6 +305,7 @@ class ActivitySummary(BaseModel):
     order_id: Optional[str] = None
     asset_symbol: Optional[str] = None
     canonical_asset_id: Optional[str] = None
+    chain_asset_id: Optional[str] = None
     value_native: Optional[float] = None
     value_fiat: Optional[float] = None
     source_asset: Optional[str] = None
@@ -418,6 +421,7 @@ class InvestigationEdge(BaseModel):
     value_fiat: Optional[float] = None
     asset_symbol: Optional[str] = None
     canonical_asset_id: Optional[str] = None
+    chain_asset_id: Optional[str] = None
     asset_address: Optional[str] = None
     asset_chain: Optional[str] = None
 
@@ -478,7 +482,29 @@ class AssetContext(BaseModel):
     """Asset summary attached to expansion responses."""
 
     assets_present: List[str] = []
+    canonical_asset_ids: List[str] = []
     total_value_fiat: Optional[float] = None
+
+
+class AssetSelector(BaseModel):
+    """Single-asset expansion selector shared by the UI and compiler."""
+
+    mode: AssetSelectorMode = "all"
+    chain: str
+    chain_asset_id: Optional[str] = None
+    asset_symbol: Optional[str] = None
+    canonical_asset_id: Optional[str] = None
+
+
+class AssetOption(BaseModel):
+    """One asset-selection choice exposed to the frontend."""
+
+    mode: AssetSelectorMode = "all"
+    chain: str
+    chain_asset_id: Optional[str] = None
+    asset_symbol: Optional[str] = None
+    canonical_asset_id: Optional[str] = None
+    display_label: str
 
 
 class ExpansionEmptyState(BaseModel):
@@ -782,6 +808,7 @@ class ExpandOptions(BaseModel):
 
     depth: int = Field(default=1, ge=1, le=3)
     asset_filter: List[str] = []
+    asset_selector: Optional[AssetSelector] = None
     chain_filter: List[str] = []
     tx_hashes: List[str] = []
     min_value_fiat: Optional[float] = None
@@ -801,6 +828,22 @@ class ExpandRequest(BaseModel):
     seed_node_id: str
     seed_lineage_id: Optional[str] = None
     options: ExpandOptions = Field(default_factory=ExpandOptions)
+
+
+class AssetOptionsRequest(BaseModel):
+    """Request body for POST /api/v1/graph/sessions/{session_id}/asset-options."""
+
+    seed_node_id: str
+    seed_lineage_id: Optional[str] = None
+
+
+class AssetOptionsResponse(BaseModel):
+    """Address-level asset options for selective expansion."""
+
+    session_id: str
+    seed_node_id: str
+    seed_lineage_id: Optional[str] = None
+    options: List[AssetOption] = []
 
 
 # ---------------------------------------------------------------------------
