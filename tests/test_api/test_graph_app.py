@@ -91,12 +91,15 @@ def _load_openapi_paths(*, graph_auth_disabled: bool) -> set[str]:
         graph_app_module.settings.GRAPH_AUTH_DISABLED = previous_auth_disabled
 
     return set(schema["paths"])
+
+
 def test_graph_app_openapi_can_be_enabled_in_auth_disabled_mode():
     paths = _load_openapi_paths(graph_auth_disabled=True)
 
     assert "/api/v1/auth/login" not in paths
     assert "/api/v1/graph/sessions" in paths
     assert "/api/v1/graph/sessions/{session_id}/assets" in paths
+    assert "/api/v1/graph/sessions/{session_id}/asset-options" in paths
     assert "/api/v1/graph/sessions/{session_id}/expand" in paths
     assert "/api/v1/graph/expand" not in paths
     assert "/api/v1/graph/trace" not in paths
@@ -115,6 +118,7 @@ def test_graph_app_openapi_can_be_enabled_in_auth_enabled_mode():
     assert "/api/v1/auth/login" in paths
     assert "/api/v1/graph/sessions" in paths
     assert "/api/v1/graph/sessions/{session_id}/assets" in paths
+    assert "/api/v1/graph/sessions/{session_id}/asset-options" in paths
     assert "/api/v1/graph/sessions/{session_id}/expand" in paths
     assert "/api/v1/graph/expand" not in paths
     assert "/api/v1/graph/trace" not in paths

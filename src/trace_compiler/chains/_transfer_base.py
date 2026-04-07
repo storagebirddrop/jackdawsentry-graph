@@ -26,6 +26,8 @@ from typing import List
 from typing import Optional
 from typing import Tuple
 
+from src.trace_compiler.asset_selection import effective_asset_selector
+from src.trace_compiler.asset_selection import normalize_chain_asset_id
 from src.trace_compiler.chains.base import BaseChainCompiler
 from src.trace_compiler.chains.evm_log_decoder import DEX_SWAP_SIGS
 from src.trace_compiler.chains.evm_log_decoder import decode_swap_log
@@ -116,6 +118,34 @@ class _GenericTransferChainCompiler(BaseChainCompiler):
         options: ExpandOptions,
     ) -> tuple[list[str], list[str], list[str], bool]:
         """Return normalized symbol, canonical-id, address, and native filters."""
+        selector = effective_asset_selector(options, chain=chain)
+        if options.asset_selector is not None:
+            symbol_filters: set[str] = set()
+            canonical_filters: set[str] = set()
+            asset_address_filters: set[str] = set()
+            native_selected = False
+
+            if selector.mode == "native":
+                native_selected = True
+            elif selector.mode == "asset":
+                if selector.asset_symbol:
+                    symbol_filters.add(selector.asset_symbol.upper())
+                if selector.canonical_asset_id:
+                    canonical_filters.add(selector.canonical_asset_id.lower())
+                normalized_chain_asset_id = normalize_chain_asset_id(
+                    chain,
+                    selector.chain_asset_id,
+                )
+                if normalized_chain_asset_id:
+                    asset_address_filters.add(normalized_chain_asset_id)
+
+            return (
+                sorted(symbol_filters),
+                sorted(canonical_filters),
+                sorted(asset_address_filters),
+                native_selected,
+            )
+
         raw_values = [
             str(value).strip()
             for value in (options.asset_filter or [])
@@ -157,7 +187,8 @@ class _GenericTransferChainCompiler(BaseChainCompiler):
 
     def _include_native_asset(self, chain: str, options: ExpandOptions) -> bool:
         """Return True when the native asset should be included for a query."""
-        if not options.asset_filter:
+        selector = effective_asset_selector(options, chain=chain)
+        if not options.asset_filter and selector.mode == "all":
             return True
         symbol_filters, canonical_filters, _, native_selected = self._normalized_asset_filters(
             chain,
@@ -171,7 +202,8 @@ class _GenericTransferChainCompiler(BaseChainCompiler):
 
     def _include_token_assets(self, chain: str, options: ExpandOptions) -> bool:
         """Return True when non-native token transfers should be queried."""
-        if not options.asset_filter:
+        selector = effective_asset_selector(options, chain=chain)
+        if not options.asset_filter and selector.mode == "all":
             return True
         (
             symbol_filters,
@@ -318,6 +350,7 @@ class _GenericTransferChainCompiler(BaseChainCompiler):
                     WHERE blockchain = $1
                       AND from_address = $2
                       AND to_address IS NOT NULL
+                      AND value_native > 0
                       AND ($4::timestamptz IS NULL OR timestamp >= $4)
                       AND ($5::timestamptz IS NULL OR timestamp <= $5)
                     ORDER BY timestamp DESC, tx_hash ASC
@@ -382,6 +415,7 @@ class _GenericTransferChainCompiler(BaseChainCompiler):
                     WHERE blockchain = $1
                       AND to_address = $2
                       AND from_address IS NOT NULL
+                      AND value_native > 0
                       AND ($4::timestamptz IS NULL OR timestamp >= $4)
                       AND ($5::timestamptz IS NULL OR timestamp <= $5)
                     ORDER BY timestamp DESC, tx_hash ASC
@@ -627,6 +661,7 @@ class _GenericTransferChainCompiler(BaseChainCompiler):
                     transfer_index,
                     asset_symbol,
                     canonical_asset_id,
+                    asset_contract AS chain_asset_id,
                     from_address,
                     to_address,
                     amount_normalized
@@ -778,6 +813,10 @@ class _GenericTransferChainCompiler(BaseChainCompiler):
             value_native: Optional[float] = row.get("value_native")
             asset_symbol: Optional[str] = row.get("asset_symbol")
             canonical_asset_id: Optional[str] = row.get("canonical_asset_id")
+            chain_asset_id = normalize_chain_asset_id(
+                chain,
+                row.get("chain_asset_id") or row.get("asset_address"),
+            )
 
             # Apply fiat value filter using pre-fetched price data.
             price_usd: Optional[float] = (
@@ -821,6 +860,7 @@ class _GenericTransferChainCompiler(BaseChainCompiler):
                     value_fiat=value_fiat,
                     asset_symbol=asset_symbol or self._native_symbol(chain),
                     canonical_asset_id=canonical_asset_id,
+                    chain_asset_id=chain_asset_id,
                 )
                 if bridge_result is not None:
                     bridge_nodes, bridge_edges = bridge_result
@@ -901,6 +941,7 @@ class _GenericTransferChainCompiler(BaseChainCompiler):
                     self._native_symbol(chain) if value_native else None
                 ),
                 canonical_asset_id=canonical_asset_id,
+                chain_asset_id=chain_asset_id,
                 direction=direction,
             )
             if svc_result is not None:
@@ -957,6 +998,7 @@ class _GenericTransferChainCompiler(BaseChainCompiler):
                     self._native_symbol(chain) if value_native else None
                 ),
                 canonical_asset_id=canonical_asset_id,
+                chain_asset_id=chain_asset_id,
                 asset_address=row.get("asset_address"),
                 asset_chain=chain,
                 tx_hash=tx_hash or None,
@@ -1171,6 +1213,7 @@ class _GenericTransferChainCompiler(BaseChainCompiler):
                 address=to_addr if from_addr == seed_address else from_addr,
                 asset_symbol=str(symbol).upper(),
                 canonical_asset_id=leg.get("canonical_asset_id"),
+                chain_asset_id=normalize_chain_asset_id(chain, leg.get("chain_asset_id")),
                 amount=float(amount),
             )
             if from_addr == seed_address:
@@ -1221,10 +1264,10 @@ class _GenericTransferChainCompiler(BaseChainCompiler):
                 swap_id=swap_id,
                 protocol_id=protocol_id,
                 chain=chain,
-                input_asset=input_leg.asset_symbol,
-                input_amount=final_input_amount,
-                output_asset=output_leg.asset_symbol,
-                output_amount=final_output_amount,
+                in_asset=input_leg.asset_symbol,
+                in_amount=final_input_amount,
+                out_asset=output_leg.asset_symbol,
+                out_amount=final_output_amount,
                 exchange_rate=exchange_rate,
                 route_summary=route_summary,
                 tx_hash=tx_hash,
@@ -1266,6 +1309,7 @@ class _GenericTransferChainCompiler(BaseChainCompiler):
             value_native=final_input_amount,
             asset_symbol=input_leg.asset_symbol,
             canonical_asset_id=input_leg.canonical_asset_id,
+            chain_asset_id=input_leg.chain_asset_id,
             asset_chain=chain,
             tx_hash=tx_hash,
             tx_chain=chain,
@@ -1284,6 +1328,7 @@ class _GenericTransferChainCompiler(BaseChainCompiler):
             value_native=final_output_amount,
             asset_symbol=output_leg.asset_symbol,
             canonical_asset_id=output_leg.canonical_asset_id,
+            chain_asset_id=output_leg.chain_asset_id,
             asset_chain=chain,
             tx_hash=tx_hash,
             tx_chain=chain,
@@ -1304,4 +1349,5 @@ class _SwapLeg:
     address: str
     asset_symbol: str
     canonical_asset_id: Optional[str]
+    chain_asset_id: Optional[str]
     amount: float

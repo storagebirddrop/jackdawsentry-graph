@@ -28,11 +28,14 @@ from typing import List
 from typing import Optional
 from typing import Tuple
 
+from src.trace_compiler.asset_selection import build_asset_option
+from src.trace_compiler.asset_selection import selector_requires_event_store_only
 from src.trace_compiler.chains._transfer_base import _GenericTransferChainCompiler
 from src.trace_compiler.chains._transfer_base import _SwapLeg
 from src.trace_compiler.lineage import edge_id as mk_edge_id
 from src.trace_compiler.lineage import lineage_id as mk_lineage
 from src.trace_compiler.lineage import node_id as mk_node_id
+from src.trace_compiler.models import AssetOption
 from src.trace_compiler.models import ExpandOptions
 from src.trace_compiler.models import InvestigationEdge
 from src.trace_compiler.models import InvestigationNode
@@ -118,6 +121,70 @@ class EVMChainCompiler(_GenericTransferChainCompiler):
             "starknet": "ethereum",
         }
         return _MAP.get(chain)
+
+    async def list_asset_options(
+        self,
+        *,
+        seed_address: str,
+        chain: str,
+    ) -> List[AssetOption]:
+        if self._pg is None:
+            return []
+
+        address = seed_address.lower()
+        native_symbol = self._native_symbol(chain)
+        try:
+            async with self._pg.acquire() as conn:
+                native_exists = await conn.fetchval(
+                    """
+                    SELECT EXISTS(
+                        SELECT 1
+                        FROM raw_transactions
+                        WHERE blockchain = $1
+                          AND (from_address = $2 OR to_address = $2)
+                          AND value_native > 0
+                    )
+                    """,
+                    chain,
+                    address,
+                )
+                token_rows = await conn.fetch(
+                    """
+                    SELECT
+                        asset_contract AS chain_asset_id,
+                        MAX(NULLIF(asset_symbol, '')) AS asset_symbol,
+                        MAX(canonical_asset_id) AS canonical_asset_id,
+                        MAX(timestamp) AS last_seen
+                    FROM raw_token_transfers
+                    WHERE blockchain = $1
+                      AND (from_address = $2 OR to_address = $2)
+                      AND asset_contract IS NOT NULL
+                    GROUP BY asset_contract
+                    ORDER BY MAX(timestamp) DESC NULLS LAST
+                    LIMIT 40
+                    """,
+                    chain,
+                    address,
+                )
+        except Exception as exc:
+            logger.debug("EVMChainCompiler.list_asset_options failed for %s/%s: %s", chain, address, exc)
+            return []
+
+        options: List[AssetOption] = []
+        if native_exists:
+            options.append(build_asset_option(mode="native", chain=chain, asset_symbol=native_symbol))
+        for row in token_rows:
+            record = dict(row)
+            options.append(
+                build_asset_option(
+                    mode="asset",
+                    chain=chain,
+                    asset_symbol=record.get("asset_symbol") or "Token",
+                    chain_asset_id=record.get("chain_asset_id"),
+                    canonical_asset_id=record.get("canonical_asset_id"),
+                )
+            )
+        return options
 
     async def _try_swap_promotion(
         self,
@@ -210,12 +277,14 @@ class EVMChainCompiler(_GenericTransferChainCompiler):
         rows = await self._fetch_outbound_event_store(addr, chain, options)
         if rows:
             self._set_expansion_data_sources("event_store")
-        else:
+        elif not selector_requires_event_store_only(options, chain=chain):
             rows = await self._fetch_outbound_neo4j(addr, chain, options)
             if rows:
                 self._set_expansion_data_sources("neo4j_fallback")
             else:
                 self._set_expansion_data_sources()
+        else:
+            self._set_expansion_data_sources()
 
         prices = await self._prefetch_prices(rows)
         return await self._build_graph(
@@ -256,12 +325,14 @@ class EVMChainCompiler(_GenericTransferChainCompiler):
         rows = await self._fetch_inbound_event_store(addr, chain, options)
         if rows:
             self._set_expansion_data_sources("event_store")
-        else:
+        elif not selector_requires_event_store_only(options, chain=chain):
             rows = await self._fetch_inbound_neo4j(addr, chain, options)
             if rows:
                 self._set_expansion_data_sources("neo4j_fallback")
             else:
                 self._set_expansion_data_sources()
+        else:
+            self._set_expansion_data_sources()
 
         prices = await self._prefetch_prices(rows)
         return await self._build_graph(

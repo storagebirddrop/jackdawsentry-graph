@@ -4,6 +4,8 @@ import type { Edge, Node } from '@xyflow/react';
 import type {
   ActivitySummary,
   AddressNodeData,
+  AssetOption,
+  AssetSelector,
   BtcSidechainPegData,
   BridgeHopData,
   EntityNodeData,
@@ -18,6 +20,10 @@ import type {
 } from '../types/graph';
 import type { BranchMeta } from '../store/graphStore';
 import type { BridgeStatusRefreshState } from '../hooks/useBridgeHopPoller';
+import {
+  deriveEdgeTraceAssetSelector,
+  describeEdgeSelectiveTraceScope,
+} from './assetExpansionPolicy';
 import {
   bridgeAssetRouteLabel,
   bridgeMechanismLabel,
@@ -51,6 +57,22 @@ import {
   `;
   document.head.appendChild(style);
 })();
+
+function assetOptionKey(option: Pick<AssetSelector, 'mode' | 'chain' | 'chain_asset_id' | 'asset_symbol' | 'canonical_asset_id'>): string {
+  if (option.mode === 'all') {
+    return `all:${option.chain}`;
+  }
+  if (option.mode === 'native') {
+    return `native:${option.chain}`;
+  }
+  return [
+    'asset',
+    option.chain,
+    option.chain_asset_id ?? '',
+    option.asset_symbol ?? '',
+    option.canonical_asset_id ?? '',
+  ].join(':');
+}
 
 export interface PathStory {
   pathId: string;
@@ -95,7 +117,14 @@ interface Props {
   canTraceEdgeBackward?: boolean;
   onTraceEdgeForward?: () => void;
   onTraceEdgeBackward?: () => void;
-  onExpandNode?: (operation: 'expand_prev' | 'expand_next' | 'expand_neighbors') => void;
+  assetOptions?: AssetOption[];
+  assetOptionsLoading?: boolean;
+  selectedAssetOptionKey?: string | null;
+  onSelectAssetOption?: (optionKey: string) => void;
+  onExpandNode?: (
+    operation: 'expand_prev' | 'expand_next' | 'expand_neighbors',
+    assetSelector?: AssetSelector | null,
+  ) => void;
   onPreviewExpand?: (
     operation: 'expand_prev' | 'expand_next' | 'expand_neighbors',
     filters: { timeFrom?: string; timeTo?: string; maxResults?: number },
@@ -138,6 +167,10 @@ export default function GraphInspectorPanel({
   canTraceEdgeBackward = false,
   onTraceEdgeForward,
   onTraceEdgeBackward,
+  assetOptions = [],
+  assetOptionsLoading = false,
+  selectedAssetOptionKey = null,
+  onSelectAssetOption,
   onExpandNode,
   onPreviewExpand,
   previewResult = null,
@@ -224,6 +257,10 @@ export default function GraphInspectorPanel({
           activeSemanticKey={activeSemanticKey}
           onFocusSemanticKey={onFocusSemanticKey}
           onClearSemanticFocus={onClearSemanticFocus}
+          assetOptions={assetOptions}
+          assetOptionsLoading={assetOptionsLoading}
+          selectedAssetOptionKey={selectedAssetOptionKey}
+          onSelectAssetOption={onSelectAssetOption}
           onExpandNode={onExpandNode}
           onPreviewExpand={onPreviewExpand}
           previewResult={previewResult}
@@ -289,6 +326,10 @@ function NodeInspectorContent({
   activeSemanticKey,
   onFocusSemanticKey,
   onClearSemanticFocus,
+  assetOptions,
+  assetOptionsLoading,
+  selectedAssetOptionKey,
+  onSelectAssetOption,
   onExpandNode,
   onPreviewExpand,
   previewResult,
@@ -319,7 +360,14 @@ function NodeInspectorContent({
   activeSemanticKey: string | null;
   onFocusSemanticKey?: (key: string) => void;
   onClearSemanticFocus?: () => void;
-  onExpandNode?: (operation: 'expand_prev' | 'expand_next' | 'expand_neighbors') => void;
+  assetOptions: AssetOption[];
+  assetOptionsLoading: boolean;
+  selectedAssetOptionKey: string | null;
+  onSelectAssetOption?: (optionKey: string) => void;
+  onExpandNode?: (
+    operation: 'expand_prev' | 'expand_next' | 'expand_neighbors',
+    assetSelector?: AssetSelector | null,
+  ) => void;
   onPreviewExpand?: (
     operation: 'expand_prev' | 'expand_next' | 'expand_neighbors',
     filters: { timeFrom?: string; timeTo?: string; maxResults?: number },
@@ -337,6 +385,15 @@ function NodeInspectorContent({
   const subtitle = nodeSubtitle(node);
   const activity = node.activity_summary;
   const nodeSemantic = semanticMeta ?? semanticMetaForNode(node);
+  const selectedAssetOption = useMemo(
+    () =>
+      assetOptions.find((option) => assetOptionKey(option) === selectedAssetOptionKey)
+      ?? assetOptions.find((option) => option.mode === 'all')
+      ?? assetOptions[0]
+      ?? null,
+    [assetOptions, selectedAssetOptionKey],
+  );
+  const showAssetSelector = node.node_type === 'address' && (assetOptionsLoading || assetOptions.length > 1);
 
   // Filter & Preview local state
   const [showFilters, setShowFilters] = useState(false);
@@ -448,19 +505,40 @@ function NodeInspectorContent({
       )}
 
       <Section title="Workspace actions">
+        {showAssetSelector && (
+          <label style={{ display: 'grid', gap: 6, color: '#475569', fontSize: 12 }}>
+            Asset scope
+            <select
+              value={selectedAssetOption ? assetOptionKey(selectedAssetOption) : ''}
+              onChange={(event) => onSelectAssetOption?.(event.target.value)}
+              disabled={assetOptionsLoading || assetOptions.length === 0}
+              style={selectStyle}
+            >
+              {assetOptionsLoading && assetOptions.length === 0 ? (
+                <option value="">Loading asset choices…</option>
+              ) : (
+                assetOptions.map((option) => (
+                  <option key={assetOptionKey(option)} value={assetOptionKey(option)}>
+                    {option.display_label}
+                  </option>
+                ))
+              )}
+            </select>
+          </label>
+        )}
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           {node.expandable_directions.includes('prev') && onExpandNode && (
-            <button type="button" onClick={() => onExpandNode('expand_prev')} style={actionButtonStyle}>
+            <button type="button" onClick={() => onExpandNode('expand_prev', selectedAssetOption)} style={actionButtonStyle}>
               Expand previous
             </button>
           )}
           {node.expandable_directions.includes('next') && onExpandNode && (
-            <button type="button" onClick={() => onExpandNode('expand_next')} style={actionButtonStyle}>
+            <button type="button" onClick={() => onExpandNode('expand_next', selectedAssetOption)} style={actionButtonStyle}>
               Expand next
             </button>
           )}
           {node.expandable_directions.includes('neighbors') && onExpandNode && (
-            <button type="button" onClick={() => onExpandNode('expand_neighbors')} style={actionButtonStyle}>
+            <button type="button" onClick={() => onExpandNode('expand_neighbors', selectedAssetOption)} style={actionButtonStyle}>
               Expand around
             </button>
           )}
@@ -624,6 +702,18 @@ function NodeInspectorContent({
                       ⚠ {previewResult.integrity_warning}
                     </div>
                   )}
+                  {(previewResult.asset_context?.assets_present ?? []).length > 0 && (
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 6 }}>
+                      {(previewResult.asset_context!.assets_present).map((sym) => (
+                        <span
+                          key={sym}
+                          style={{ fontSize: 10, padding: '1px 6px', borderRadius: 999, background: 'rgba(15,118,110,0.1)', color: '#0f766e', fontWeight: 600 }}
+                        >
+                          {sym}
+                        </span>
+                      ))}
+                    </div>
+                  )}
                   <div style={{ maxHeight: 220, overflowY: 'auto', display: 'grid', gap: 2, marginBottom: 8 }}>
                     {candidateEdges.map((edge) => {
                       const checked = selectedEdgeIds.has(edge.edge_id);
@@ -672,6 +762,14 @@ function NodeInspectorContent({
                           {edge.value_native != null && (
                             <span style={{ color: '#0f766e', flexShrink: 0, fontSize: 10 }}>
                               {formatNative(edge.value_native, edge.asset_symbol)}
+                            </span>
+                          )}
+                          {edge.chain_asset_id && (
+                            <span
+                              title={edge.chain_asset_id}
+                              style={{ fontSize: 9, padding: '0px 4px', borderRadius: 3, background: 'rgba(100,116,139,0.12)', color: '#64748b', flexShrink: 0 }}
+                            >
+                              token
                             </span>
                           )}
                           {edge.timestamp && (
@@ -1262,6 +1360,9 @@ function EdgeInspectorContent({
   onTraceBackward?: () => void;
 }) {
   const activity = edge.activity_summary;
+  const traceAssetScoped = Boolean(
+    deriveEdgeTraceAssetSelector(edge, activity?.tx_chain),
+  );
   return (
     <div style={{ display: 'grid', gap: 18, marginTop: 18 }}>
       <div style={heroCardStyle}>
@@ -1293,18 +1394,17 @@ function EdgeInspectorContent({
       {edge.tx_hash && (canTraceForward || canTraceBackward) && (
         <Section title="Selective trace">
           <div style={{ color: '#475569', fontSize: 12, lineHeight: 1.55 }}>
-            Continue the investigation using only this transaction hash instead of
-            expanding every transfer attached to the endpoint address.
+            {describeEdgeSelectiveTraceScope(edge, activity?.tx_chain)}
           </div>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             {canTraceBackward && onTraceBackward && (
               <button type="button" onClick={onTraceBackward} style={actionButtonStyle}>
-                Trace input only
+                {traceAssetScoped ? 'Trace input only (scoped)' : 'Trace input only'}
               </button>
             )}
             {canTraceForward && onTraceForward && (
               <button type="button" onClick={onTraceForward} style={actionButtonStyle}>
-                Trace output only
+                {traceAssetScoped ? 'Trace output only (scoped)' : 'Trace output only'}
               </button>
             )}
           </div>
@@ -1675,6 +1775,12 @@ const filterInputStyle: React.CSSProperties = {
   background: 'rgba(255,255,255,0.95)',
   fontSize: 12,
   color: '#1e293b',
+};
+
+const selectStyle: React.CSSProperties = {
+  ...filterInputStyle,
+  width: '100%',
+  minHeight: 36,
 };
 
 const previewResultStyle: React.CSSProperties = {

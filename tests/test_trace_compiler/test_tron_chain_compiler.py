@@ -19,7 +19,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from src.trace_compiler.chains.tron import TronChainCompiler
-from src.trace_compiler.models import ExpandOptions
+from src.trace_compiler.models import AssetSelector, ExpandOptions
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -262,6 +262,43 @@ async def test_token_transfer_rows_produce_nodes():
     assert edges[0].asset_symbol == "USDT"
 
 
+@pytest.mark.asyncio
+async def test_fetch_outbound_asset_selector_filters_specific_trc20_contract():
+    token_row = _token_row(COUNTERPARTY, value=25.0, symbol="USDT")
+    token_row["asset_address"] = "txyzopyrdj2d9xrtbg411xzz3km5vkaebf"
+
+    async def _fetch(sql, *params):
+        if "FROM raw_transactions" in sql:
+            return []
+        if "FROM raw_token_transfers" in sql:
+            assert "LOWER(COALESCE(rtt.asset_contract, '')) = ANY($6)" in sql
+            assert params[5] == ["txyzopyrdj2d9xrtbg411xzz3km5vkaebf"]
+            return [token_row]
+        return []
+
+    conn = MagicMock()
+    conn.fetch = AsyncMock(side_effect=_fetch)
+    pg = MagicMock()
+    pg.acquire = MagicMock(return_value=_AsyncCtxMgr(conn))
+    compiler = TronChainCompiler(postgres_pool=pg)
+
+    rows = await compiler._fetch_outbound_token_transfers(
+        SEED,
+        "tron",
+        ExpandOptions(
+            max_results=10,
+            asset_selector=AssetSelector(
+                mode="asset",
+                chain="tron",
+                chain_asset_id="txyzopyrdj2d9xrtbg411xzz3km5vkaebf",
+                asset_symbol="USDT",
+            ),
+        ),
+    )
+
+    assert rows == [token_row]
+
+
 # ---------------------------------------------------------------------------
 # Bridge detection
 # ---------------------------------------------------------------------------
@@ -481,12 +518,11 @@ async def test_justswap_interaction_produces_swap_event_node():
     sd = swap_node.swap_event_data
     assert sd is not None
     assert sd.protocol_id == "justswap_v1"
-    assert sd.input_asset == "USDT"
-    assert sd.output_asset == "USDC"
-    assert sd.input_amount == 100.0
-    assert sd.output_amount == 99.5
+    assert sd.in_asset == "USDT"
+    assert sd.out_asset == "USDC"
+    assert sd.in_amount == 100.0
+    assert sd.out_amount == 99.5
     assert sd.tx_hash == TX_HASH_1
-    assert sd.chain == "tron"
 
     # Two edges: seed → swap (swap_input) and swap → seed (swap_output).
     assert len(edges) == 2, f"Expected 2 edges, got {len(edges)}: {edges}"

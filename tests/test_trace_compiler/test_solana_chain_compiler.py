@@ -19,8 +19,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from src.trace_compiler.asset_selection import selector_requires_event_store_only
 from src.trace_compiler.chains.solana import SolanaChainCompiler
-from src.trace_compiler.models import ExpandOptions
+from src.trace_compiler.models import AssetSelector, ExpandOptions
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -90,79 +91,6 @@ async def test_expand_prev_no_pg_returns_empty():
     )
     assert nodes == []
     assert edges == []
-
-
-@pytest.mark.asyncio
-async def test_fetch_outbound_asset_filter_excludes_native_sol():
-    mock_pg = MagicMock()
-    mock_conn = AsyncMock()
-    mock_conn.fetch = AsyncMock(return_value=[_row(COUNTERPARTY, symbol="USDC")])
-    mock_pg.acquire = MagicMock(return_value=AsyncMock(
-        __aenter__=AsyncMock(return_value=mock_conn),
-        __aexit__=AsyncMock(return_value=False),
-    ))
-
-    compiler = SolanaChainCompiler(postgres_pool=mock_pg)
-    rows = await compiler._fetch_outbound(SEED, ExpandOptions(max_results=10, asset_filter=["USDC"]))
-
-    assert len(rows) == 1
-    assert rows[0]["asset_symbol"] == "USDC"
-    assert mock_conn.fetch.await_count == 1
-
-
-@pytest.mark.asyncio
-async def test_fetch_inbound_asset_filter_includes_sol_when_selected():
-    mock_pg = MagicMock()
-    mock_conn = AsyncMock()
-    mock_conn.fetch = AsyncMock(side_effect=[
-        [_row(COUNTERPARTY, symbol="USDC")],
-        [{
-            "tx_hash": TX_HASH_2,
-            "counterparty": COUNTERPARTY,
-            "value_native": 0.5,
-            "asset_symbol": "SOL",
-            "canonical_asset_id": None,
-            "timestamp": None,
-        }],
-    ])
-    mock_pg.acquire = MagicMock(return_value=AsyncMock(
-        __aenter__=AsyncMock(return_value=mock_conn),
-        __aexit__=AsyncMock(return_value=False),
-    ))
-
-    compiler = SolanaChainCompiler(postgres_pool=mock_pg)
-    rows = await compiler._fetch_inbound(SEED, ExpandOptions(max_results=10, asset_filter=["SOL", "USDC"]))
-
-    assert len(rows) == 2
-    assert {row["asset_symbol"] for row in rows} == {"USDC", "SOL"}
-    assert mock_conn.fetch.await_count == 2
-
-
-@pytest.mark.asyncio
-async def test_fetch_outbound_asset_filter_accepts_exact_mint_selector():
-    mock_pg = MagicMock()
-    mock_conn = AsyncMock()
-    mock_conn.fetch = AsyncMock(return_value=[_row(COUNTERPARTY, symbol="USDC")])
-    mock_pg.acquire = MagicMock(return_value=AsyncMock(
-        __aenter__=AsyncMock(return_value=mock_conn),
-        __aexit__=AsyncMock(return_value=False),
-    ))
-
-    compiler = SolanaChainCompiler(postgres_pool=mock_pg)
-    await compiler._fetch_outbound(
-        SEED,
-        ExpandOptions(
-            max_results=10,
-            asset_filter=["asset:solana:EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"],
-        ),
-    )
-
-    _, address, limit, symbol_filters, canonical_filters, asset_filters = mock_conn.fetch.await_args.args
-    assert address == SEED
-    assert limit == 10
-    assert symbol_filters is None
-    assert canonical_filters is None
-    assert asset_filters == ["epjfwdd5aufqssqem2qn1xzybapc8g4weggkzwytdt1v"]
 
 
 # ---------------------------------------------------------------------------
@@ -338,6 +266,153 @@ async def test_build_graph_deduplicates_plain_address():
     )
     assert len(nodes) == 1
     assert len(edges) == 2
+
+
+@pytest.mark.asyncio
+async def test_fetch_outbound_asset_selector_filters_specific_mint():
+    token_row = {
+        "tx_hash": TX_HASH_1,
+        "counterparty": COUNTERPARTY,
+        "value_native": 42.0,
+        "asset_symbol": "USDC",
+        "canonical_asset_id": "usdc",
+        "chain_asset_id": "EPjFWdd5AufqSSqeM2qN1xzybAPq3n1LhF7sB7fJf5D",
+        "timestamp": None,
+    }
+
+    async def _fetch(sql, *params):
+        if "FROM raw_transactions" in sql:
+            raise AssertionError("Native SOL rows should not be queried for token-specific expansion")
+        if "FROM raw_token_transfers" in sql:
+            assert "rtt.tx_hash = ANY($2)" in sql
+            assert "rtt.asset_contract = $4" in sql
+            assert params[1] == ["SigCaseExact"]
+            assert params[3] == "EPjFWdd5AufqSSqeM2qN1xzybAPq3n1LhF7sB7fJf5D"
+            return [token_row]
+        return []
+
+    mock_conn = MagicMock()
+    mock_conn.fetch = AsyncMock(side_effect=_fetch)
+    mock_pg = MagicMock()
+    mock_pg.acquire = MagicMock(return_value=AsyncMock(
+        __aenter__=AsyncMock(return_value=mock_conn),
+        __aexit__=AsyncMock(return_value=False),
+    ))
+    compiler = SolanaChainCompiler(postgres_pool=mock_pg)
+
+    rows = await compiler._fetch_outbound(
+        SEED,
+        ExpandOptions(
+            max_results=10,
+            tx_hashes=["SigCaseExact"],
+            asset_selector=AssetSelector(
+                mode="asset",
+                chain="solana",
+                chain_asset_id="EPjFWdd5AufqSSqeM2qN1xzybAPq3n1LhF7sB7fJf5D",
+                asset_symbol="USDC",
+            ),
+        ),
+    )
+
+    assert rows == [token_row]
+
+
+@pytest.mark.asyncio
+async def test_fetch_outbound_asset_selector_without_mint_refuses_symbol_only_guessing():
+    mock_conn = MagicMock()
+    mock_conn.fetch = AsyncMock()
+    mock_pg = MagicMock()
+    mock_pg.acquire = MagicMock(return_value=AsyncMock(
+        __aenter__=AsyncMock(return_value=mock_conn),
+        __aexit__=AsyncMock(return_value=False),
+    ))
+    compiler = SolanaChainCompiler(postgres_pool=mock_pg)
+
+    rows = await compiler._fetch_outbound(
+        SEED,
+        ExpandOptions(
+            max_results=10,
+            asset_selector=AssetSelector(
+                mode="asset",
+                chain="solana",
+                asset_symbol="USDC",
+            ),
+        ),
+    )
+
+    assert rows == []
+    mock_conn.fetch.assert_not_called()
+
+
+def test_selector_requires_event_store_only_when_tx_hashes_are_present():
+    assert selector_requires_event_store_only(
+        ExpandOptions(max_results=10, tx_hashes=["SigCaseExact"]),
+        chain="solana",
+    )
+
+
+@pytest.mark.asyncio
+async def test_expand_next_with_tx_hashes_does_not_fallback_to_neo4j():
+    mock_pg = MagicMock()
+    mock_conn = AsyncMock()
+    mock_conn.fetch = AsyncMock(return_value=[])
+    mock_pg.acquire = MagicMock(return_value=AsyncMock(
+        __aenter__=AsyncMock(return_value=mock_conn),
+        __aexit__=AsyncMock(return_value=False),
+    ))
+
+    mock_result = AsyncMock()
+    mock_result.__aiter__ = lambda: aiter_from([])
+    mock_session = AsyncMock()
+    mock_session.run = AsyncMock(return_value=mock_result)
+    mock_neo4j = MagicMock()
+    mock_neo4j.session = MagicMock(return_value=AsyncMock(
+        __aenter__=AsyncMock(return_value=mock_session),
+        __aexit__=AsyncMock(return_value=False),
+    ))
+
+    compiler = SolanaChainCompiler(postgres_pool=mock_pg, neo4j_driver=mock_neo4j)
+    compiler._resolve_atas_bulk = AsyncMock(return_value={})
+
+    nodes, edges = await compiler.expand_next(
+        session_id="s",
+        branch_id="b",
+        path_sequence=0,
+        depth=0,
+        seed_address=SEED,
+        chain="solana",
+        options=ExpandOptions(max_results=10, tx_hashes=["SigCaseExact"]),
+    )
+
+    assert nodes == []
+    assert edges == []
+    mock_session.run.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_list_asset_options_keeps_symbolless_mints_distinguishable():
+    mock_conn = MagicMock()
+    mock_conn.fetchval = AsyncMock(return_value=False)
+    mock_conn.fetch = AsyncMock(return_value=[
+        {
+            "chain_asset_id": "EPjFWdd5AufqSSqeM2qN1xzybAPq3n1LhF7sB7fJf5D",
+            "asset_symbol": None,
+            "canonical_asset_id": None,
+            "last_seen": None,
+        },
+    ])
+    mock_pg = MagicMock()
+    mock_pg.acquire = MagicMock(return_value=AsyncMock(
+        __aenter__=AsyncMock(return_value=mock_conn),
+        __aexit__=AsyncMock(return_value=False),
+    ))
+    compiler = SolanaChainCompiler(postgres_pool=mock_pg)
+
+    options = await compiler.list_asset_options(seed_address=SEED, chain="solana")
+
+    assert len(options) == 1
+    assert options[0].asset_symbol is None
+    assert options[0].display_label.startswith("Asset · ")
 
 
 # ---------------------------------------------------------------------------

@@ -25,6 +25,9 @@ from typing import List
 from typing import Optional
 
 from src.collectors.rpc.factory import get_rpc_client
+from src.trace_compiler.asset_selection import build_asset_option
+from src.trace_compiler.asset_selection import normalize_asset_selector
+from src.trace_compiler.asset_selection import selector_requires_event_store_only
 from src.trace_compiler.chains.bitcoin import UTXOChainCompiler
 from src.trace_compiler.chains.evm import EVM_CHAINS
 from src.trace_compiler.chains.evm import EVMChainCompiler
@@ -35,9 +38,12 @@ from src.trace_compiler.lineage import lineage_id as mk_lineage_id
 from src.trace_compiler.lineage import new_operation_id
 from src.trace_compiler.lineage import path_id as mk_path_id
 from src.trace_compiler.models import AssetContext
+from src.trace_compiler.models import AssetOptionsRequest
+from src.trace_compiler.models import AssetOptionsResponse
 from src.trace_compiler.models import AddressNodeData
 from src.trace_compiler.models import BridgeHopStatusResponse
 from src.trace_compiler.models import ChainContext
+from src.trace_compiler.models import ExpandOptions
 from src.trace_compiler.models import ExpandRequest
 from src.trace_compiler.models import ExpansionEmptyState
 from src.trace_compiler.models import ExpansionResponseV2
@@ -225,6 +231,11 @@ def _expansion_cache_key(
             if isinstance(asset, str) and asset.strip()
         }
     )
+    selector_chain = request.seed_node_id.split(":", 1)[0] if ":" in request.seed_node_id else ""
+    normalized_asset_selector = normalize_asset_selector(
+        request.options.asset_selector,
+        chain=selector_chain,
+    )
     normalized_tx_hashes = sorted(
         {
             tx_hash.strip().lower()
@@ -233,7 +244,7 @@ def _expansion_cache_key(
         }
     )
     fingerprint = {
-        "version": 2,
+        "version": 4,
         "session_id": session_id,
         "seed_node_id": _canonical_node_id(request.seed_node_id),
         "operation_type": request.operation_type,
@@ -241,6 +252,11 @@ def _expansion_cache_key(
         "page_size": request.options.page_size,
         "max_results": request.options.max_results,
         "asset_filter": normalized_asset_filter,
+        "asset_selector": (
+            normalized_asset_selector.model_dump(mode="json")
+            if normalized_asset_selector is not None
+            else None
+        ),
         "tx_hashes": normalized_tx_hashes,
         "min_value_fiat": request.options.min_value_fiat,
         "include_services": request.options.include_services,
@@ -592,13 +608,12 @@ class TraceCompiler:
                     max_fwd = (max_total + 1) // 2 if max_total is not None else None
                     max_bwd = max_total // 2 if max_total is not None else None
                     
-                    # Create separate options for each direction
-                    from src.trace_compiler.models import ExpandOptions
                     fwd_options = ExpandOptions(
                         max_results=max_fwd,
                         page_size=request.options.page_size,
                         depth=request.options.depth,
                         asset_filter=request.options.asset_filter,
+                        asset_selector=request.options.asset_selector,
                         tx_hashes=request.options.tx_hashes,
                         min_value_fiat=request.options.min_value_fiat,
                         include_services=request.options.include_services,
@@ -611,6 +626,7 @@ class TraceCompiler:
                         page_size=request.options.page_size,
                         depth=request.options.depth,
                         asset_filter=request.options.asset_filter,
+                        asset_selector=request.options.asset_selector,
                         tx_hashes=request.options.tx_hashes,
                         min_value_fiat=request.options.min_value_fiat,
                         include_services=request.options.include_services,
@@ -678,19 +694,21 @@ class TraceCompiler:
             )
 
         if node_type == "address" and not added_nodes and not added_edges:
-            live_nodes, live_edges = await self._expand_from_live_history(
-                session_id=session_id,
-                branch_id=_branch,
-                request=request,
-                chain=chain,
-                seed_address=identifier,
-                chain_compiler=compiler,
-            )
-            if live_nodes or live_edges:
-                added_nodes = live_nodes
-                added_edges = live_edges
-                data_sources = _merge_data_sources(data_sources, ["live_history"])
-            else:
+            if not selector_requires_event_store_only(request.options, chain=chain):
+                live_nodes, live_edges = await self._expand_from_live_history(
+                    session_id=session_id,
+                    branch_id=_branch,
+                    request=request,
+                    chain=chain,
+                    seed_address=identifier,
+                    chain_compiler=compiler,
+                )
+                if live_nodes or live_edges:
+                    added_nodes = live_nodes
+                    added_edges = live_edges
+                    data_sources = _merge_data_sources(data_sources, ["live_history"])
+
+            if not added_nodes and not added_edges:
                 if _supports_on_demand_address_history(chain):
                     try:
                         from src.trace_compiler.ingest.trigger import maybe_trigger_address_ingest
@@ -754,6 +772,17 @@ class TraceCompiler:
                 assets_present=list(
                     {e.asset_symbol for e in added_edges if e.asset_symbol}
                 ),
+                canonical_asset_ids=sorted(
+                    {
+                        e.canonical_asset_id
+                        for e in added_edges
+                        if e.canonical_asset_id
+                    }
+                ),
+                total_value_fiat=round(
+                    sum(e.value_fiat for e in added_edges if e.value_fiat is not None),
+                    2,
+                ) if any(e.value_fiat is not None for e in added_edges) else None,
             ),
             data_sources=data_sources,
             integrity_warning=integrity_warning,
@@ -804,6 +833,56 @@ class TraceCompiler:
                 logger.debug("Redis cache write failed: %s", cache_exc)
 
         return response
+
+    async def get_asset_options(
+        self,
+        session_id: str,
+        request: AssetOptionsRequest,
+    ) -> AssetOptionsResponse:
+        """Return address-level asset options for selective expansion."""
+        canonical_seed_node_id = _canonical_node_id(request.seed_node_id)
+        if canonical_seed_node_id != request.seed_node_id:
+            request = request.model_copy(update={"seed_node_id": canonical_seed_node_id})
+
+        parts = request.seed_node_id.split(":", 2)
+        chain = parts[0] if parts else "unknown"
+        node_type = parts[1] if len(parts) > 1 else "address"
+        identifier = parts[2] if len(parts) > 2 else request.seed_node_id
+
+        if node_type != "address":
+            return AssetOptionsResponse(
+                session_id=session_id,
+                seed_node_id=request.seed_node_id,
+                seed_lineage_id=request.seed_lineage_id,
+                options=[],
+            )
+
+        compiler = self._chain_compilers.get(chain)
+        options = []
+        if compiler is not None and hasattr(compiler, "list_asset_options"):
+            try:
+                options = await compiler.list_asset_options(
+                    seed_address=identifier,
+                    chain=chain,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "TraceCompiler.get_asset_options failed for %s/%s: %s",
+                    chain,
+                    identifier,
+                    exc,
+                )
+                options = []
+
+        if chain != "bitcoin" and not any(option.mode == "all" for option in options):
+            options = [build_asset_option(mode="all", chain=chain), *options]
+
+        return AssetOptionsResponse(
+            session_id=session_id,
+            seed_node_id=request.seed_node_id,
+            seed_lineage_id=request.seed_lineage_id,
+            options=options,
+        )
 
     async def _expand_from_live_history(
         self,
