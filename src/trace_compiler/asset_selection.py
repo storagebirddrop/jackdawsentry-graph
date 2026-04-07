@@ -7,6 +7,7 @@ from typing import Optional
 
 from src.trace_compiler.models import AssetOption
 from src.trace_compiler.models import AssetSelector
+from src.trace_compiler.models import AssetSelectorMode
 from src.trace_compiler.models import ExpandOptions
 
 _EVM_LIKE_CHAINS = {
@@ -85,6 +86,48 @@ def normalize_legacy_asset_filter(asset_filter: Iterable[str]) -> list[str]:
     )
 
 
+def _selector_from_single_legacy_filter(value: str, *, chain: str) -> AssetSelector:
+    normalized_chain = (chain or "").strip().lower()
+    native_symbol = native_symbol_for_chain(normalized_chain)
+    lowered = value.lower()
+
+    if lowered.startswith("native:"):
+        selector_chain = value.split(":", 1)[1].strip().lower()
+        if selector_chain == normalized_chain:
+            return AssetSelector(
+                mode="native",
+                chain=normalized_chain,
+                asset_symbol=native_symbol,
+            )
+        return AssetSelector(mode="all", chain=normalized_chain, asset_symbol=native_symbol)
+
+    if lowered.startswith("canonical:"):
+        return AssetSelector(
+            mode="asset",
+            chain=normalized_chain,
+            canonical_asset_id=value.split(":", 1)[1].strip().lower() or None,
+        )
+
+    if lowered.startswith("asset:"):
+        parts = value.split(":", 2)
+        if len(parts) == 3 and parts[1].strip().lower() == normalized_chain:
+            return AssetSelector(
+                mode="asset",
+                chain=normalized_chain,
+                chain_asset_id=normalize_chain_asset_id(normalized_chain, parts[2].strip()),
+            )
+        return AssetSelector(mode="all", chain=normalized_chain, asset_symbol=native_symbol)
+
+    if lowered.startswith("symbol:"):
+        return AssetSelector(
+            mode="asset",
+            chain=normalized_chain,
+            asset_symbol=value.split(":", 1)[1].strip() or None,
+        )
+
+    return AssetSelector(mode="asset", chain=normalized_chain, asset_symbol=value)
+
+
 def effective_asset_selector(options: ExpandOptions, *, chain: str) -> AssetSelector:
     selector = normalize_asset_selector(options.asset_selector, chain=chain)
     if selector is not None:
@@ -100,10 +143,9 @@ def effective_asset_selector(options: ExpandOptions, *, chain: str) -> AssetSele
         return AssetSelector(mode="native", chain=chain, asset_symbol=native_symbol)
 
     if len(legacy_filters) == 1:
-        return AssetSelector(
-            mode="asset",
+        return normalize_asset_selector(
+            _selector_from_single_legacy_filter(legacy_filters[0], chain=chain),
             chain=chain,
-            asset_symbol=legacy_filters[0],
         )
 
     return AssetSelector(mode="all", chain=chain, asset_symbol=native_symbol)
@@ -118,6 +160,8 @@ def selector_is_native_only(selector: Optional[AssetSelector]) -> bool:
 
 
 def selector_requires_event_store_only(options: ExpandOptions, *, chain: str) -> bool:
+    if options.tx_hashes:
+        return True
     return selector_is_specific_asset(effective_asset_selector(options, chain=chain))
 
 
@@ -150,7 +194,7 @@ def format_asset_option_label(option: AssetOption) -> str:
 
 def build_asset_option(
     *,
-    mode: AssetSelector["mode"],
+    mode: AssetSelectorMode,
     chain: str,
     asset_symbol: Optional[str] = None,
     chain_asset_id: Optional[str] = None,

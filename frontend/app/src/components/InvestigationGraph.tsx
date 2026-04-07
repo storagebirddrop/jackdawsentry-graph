@@ -330,11 +330,25 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
   const [assetOptionsByNodeId, setAssetOptionsByNodeId] = useState<Map<string, AssetOption[]>>(new Map());
   const [assetSelectorByNodeId, setAssetSelectorByNodeId] = useState<Map<string, AssetSelector>>(new Map());
   const [loadingAssetOptionNodeIds, setLoadingAssetOptionNodeIds] = useState<Set<string>>(new Set());
+  const assetOptionsByNodeIdRef = useRef(assetOptionsByNodeId);
+  const loadingAssetOptionNodeIdsRef = useRef(loadingAssetOptionNodeIds);
 
   useEffect(() => {
-    setAssetOptionsByNodeId(new Map());
+    assetOptionsByNodeIdRef.current = assetOptionsByNodeId;
+  }, [assetOptionsByNodeId]);
+
+  useEffect(() => {
+    loadingAssetOptionNodeIdsRef.current = loadingAssetOptionNodeIds;
+  }, [loadingAssetOptionNodeIds]);
+
+  useEffect(() => {
+    const emptyOptions = new Map<string, AssetOption[]>();
+    const emptyLoading = new Set<string>();
+    assetOptionsByNodeIdRef.current = emptyOptions;
+    loadingAssetOptionNodeIdsRef.current = emptyLoading;
+    setAssetOptionsByNodeId(emptyOptions);
     setAssetSelectorByNodeId(new Map());
-    setLoadingAssetOptionNodeIds(new Set());
+    setLoadingAssetOptionNodeIds(emptyLoading);
   }, [sessionId]);
 
   // Tracks nodes whose expansion returned ingest_pending=true.
@@ -785,11 +799,17 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
       if (!nodeData || !sessionId) return;
       setIsPreviewLoading(true);
       try {
+        const selectedAssetSelector = assetSelectorByNodeId.get(nodeData.node_id)
+          ?? assetOptionsByNodeId.get(nodeData.node_id)?.find((option) => option.mode === 'all')
+          ?? assetOptionsByNodeId.get(nodeData.node_id)?.[0]
+          ?? null;
+        const request = buildExpandRequest(
+          createInspectorExpandInvocation(nodeData, operation, selectedAssetSelector),
+        );
         const response = await expandNode(sessionId, {
-          seed_node_id: nodeData.node_id,
-          seed_lineage_id: nodeData.lineage_id,
-          operation_type: operation,
+          ...request,
           options: {
+            ...request.options,
             max_results: filters.maxResults ?? 25,
             time_from: filters.timeFrom,
             time_to: filters.timeTo,
@@ -803,7 +823,7 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
         setIsPreviewLoading(false);
       }
     },
-    [nodes, selectedNodeId, sessionId, showNotice],
+    [assetOptionsByNodeId, assetSelectorByNodeId, nodes, selectedNodeId, sessionId, showNotice],
   );
 
   const handleApplyPreview = useCallback(
@@ -1082,6 +1102,9 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
     () => (selectedNodeData?.chain ?? selectedNodeData?.address_data?.chain ?? '').toLowerCase(),
     [selectedNodeData],
   );
+  const selectedNodeType = selectedNodeData?.node_type ?? null;
+  const selectedNodeAssetOptionNodeId = selectedNodeData?.node_id ?? null;
+  const selectedNodeAssetOptionLineageId = selectedNodeData?.lineage_id ?? null;
   const selectedNodeAssetOptions = useMemo(
     () => (selectedNodeData ? assetOptionsByNodeId.get(selectedNodeData.node_id) ?? [] : []),
     [assetOptionsByNodeId, selectedNodeData],
@@ -1099,40 +1122,51 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
   );
 
   useEffect(() => {
-    if (!selectedNodeData || selectedNodeData.node_type !== 'address') {
-      return;
-    }
-    if (!selectedNodeChain || selectedNodeChain === 'bitcoin') {
+    if (!sessionId || selectedNodeType !== 'address') {
       return;
     }
     if (
-      assetOptionsByNodeId.has(selectedNodeData.node_id)
-      || loadingAssetOptionNodeIds.has(selectedNodeData.node_id)
+      !selectedNodeAssetOptionNodeId
+      || !selectedNodeAssetOptionLineageId
+      || !selectedNodeChain
+      || selectedNodeChain === 'bitcoin'
+    ) {
+      return;
+    }
+    if (
+      assetOptionsByNodeIdRef.current.has(selectedNodeAssetOptionNodeId)
+      || loadingAssetOptionNodeIdsRef.current.has(selectedNodeAssetOptionNodeId)
     ) {
       return;
     }
 
     let cancelled = false;
-    setLoadingAssetOptionNodeIds((prev) => new Set(prev).add(selectedNodeData.node_id));
+    setLoadingAssetOptionNodeIds((prev) => {
+      const next = new Set(prev);
+      next.add(selectedNodeAssetOptionNodeId);
+      loadingAssetOptionNodeIdsRef.current = next;
+      return next;
+    });
     void getAssetOptions(sessionId, {
-      seed_node_id: selectedNodeData.node_id,
-      seed_lineage_id: selectedNodeData.lineage_id,
+      seed_node_id: selectedNodeAssetOptionNodeId,
+      seed_lineage_id: selectedNodeAssetOptionLineageId,
     })
       .then((response) => {
         if (cancelled) return;
         const options = response.options ?? [];
         setAssetOptionsByNodeId((prev) => {
           const next = new Map(prev);
-          next.set(selectedNodeData.node_id, options);
+          next.set(selectedNodeAssetOptionNodeId, options);
+          assetOptionsByNodeIdRef.current = next;
           return next;
         });
         setAssetSelectorByNodeId((prev) => {
-          if (prev.has(selectedNodeData.node_id) || options.length === 0) {
+          if (prev.has(selectedNodeAssetOptionNodeId) || options.length === 0) {
             return prev;
           }
           const next = new Map(prev);
           const defaultOption = options.find((option) => option.mode === 'all') ?? options[0];
-          next.set(selectedNodeData.node_id, defaultOption);
+          next.set(selectedNodeAssetOptionNodeId, defaultOption);
           return next;
         });
       })
@@ -1141,7 +1175,8 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
         console.error('Asset option lookup failed:', error);
         setAssetOptionsByNodeId((prev) => {
           const next = new Map(prev);
-          next.set(selectedNodeData.node_id, []);
+          next.set(selectedNodeAssetOptionNodeId, []);
+          assetOptionsByNodeIdRef.current = next;
           return next;
         });
         showNotice('Unable to load asset choices for this address right now.', 'error');
@@ -1150,7 +1185,8 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
         if (cancelled) return;
         setLoadingAssetOptionNodeIds((prev) => {
           const next = new Set(prev);
-          next.delete(selectedNodeData.node_id);
+          next.delete(selectedNodeAssetOptionNodeId);
+          loadingAssetOptionNodeIdsRef.current = next;
           return next;
         });
       });
@@ -1159,11 +1195,11 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
       cancelled = true;
     };
   }, [
-    assetOptionsByNodeId,
-    loadingAssetOptionNodeIds,
     selectedNodeChain,
-    selectedNodeData,
     sessionId,
+    selectedNodeAssetOptionLineageId,
+    selectedNodeAssetOptionNodeId,
+    selectedNodeType,
     showNotice,
   ]);
 

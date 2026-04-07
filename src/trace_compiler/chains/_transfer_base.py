@@ -187,7 +187,8 @@ class _GenericTransferChainCompiler(BaseChainCompiler):
 
     def _include_native_asset(self, chain: str, options: ExpandOptions) -> bool:
         """Return True when the native asset should be included for a query."""
-        if not options.asset_filter:
+        selector = effective_asset_selector(options, chain=chain)
+        if not options.asset_filter and selector.mode == "all":
             return True
         symbol_filters, canonical_filters, _, native_selected = self._normalized_asset_filters(
             chain,
@@ -201,7 +202,8 @@ class _GenericTransferChainCompiler(BaseChainCompiler):
 
     def _include_token_assets(self, chain: str, options: ExpandOptions) -> bool:
         """Return True when non-native token transfers should be queried."""
-        if not options.asset_filter:
+        selector = effective_asset_selector(options, chain=chain)
+        if not options.asset_filter and selector.mode == "all":
             return True
         (
             symbol_filters,

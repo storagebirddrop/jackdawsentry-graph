@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from src.trace_compiler.asset_selection import selector_requires_event_store_only
 from src.trace_compiler.chains.solana import SolanaChainCompiler
 from src.trace_compiler.models import AssetSelector, ExpandOptions
 
@@ -283,7 +284,9 @@ async def test_fetch_outbound_asset_selector_filters_specific_mint():
         if "FROM raw_transactions" in sql:
             raise AssertionError("Native SOL rows should not be queried for token-specific expansion")
         if "FROM raw_token_transfers" in sql:
-            assert "LOWER(rtt.asset_contract) = LOWER($4)" in sql
+            assert "rtt.tx_hash = ANY($2)" in sql
+            assert "rtt.asset_contract = $4" in sql
+            assert params[1] == ["SigCaseExact"]
             assert params[3] == "EPjFWdd5AufqSSqeM2qN1xzybAPq3n1LhF7sB7fJf5D"
             return [token_row]
         return []
@@ -301,6 +304,7 @@ async def test_fetch_outbound_asset_selector_filters_specific_mint():
         SEED,
         ExpandOptions(
             max_results=10,
+            tx_hashes=["SigCaseExact"],
             asset_selector=AssetSelector(
                 mode="asset",
                 chain="solana",
@@ -338,6 +342,77 @@ async def test_fetch_outbound_asset_selector_without_mint_refuses_symbol_only_gu
 
     assert rows == []
     mock_conn.fetch.assert_not_called()
+
+
+def test_selector_requires_event_store_only_when_tx_hashes_are_present():
+    assert selector_requires_event_store_only(
+        ExpandOptions(max_results=10, tx_hashes=["SigCaseExact"]),
+        chain="solana",
+    )
+
+
+@pytest.mark.asyncio
+async def test_expand_next_with_tx_hashes_does_not_fallback_to_neo4j():
+    mock_pg = MagicMock()
+    mock_conn = AsyncMock()
+    mock_conn.fetch = AsyncMock(return_value=[])
+    mock_pg.acquire = MagicMock(return_value=AsyncMock(
+        __aenter__=AsyncMock(return_value=mock_conn),
+        __aexit__=AsyncMock(return_value=False),
+    ))
+
+    mock_result = AsyncMock()
+    mock_result.__aiter__ = lambda: aiter_from([])
+    mock_session = AsyncMock()
+    mock_session.run = AsyncMock(return_value=mock_result)
+    mock_neo4j = MagicMock()
+    mock_neo4j.session = MagicMock(return_value=AsyncMock(
+        __aenter__=AsyncMock(return_value=mock_session),
+        __aexit__=AsyncMock(return_value=False),
+    ))
+
+    compiler = SolanaChainCompiler(postgres_pool=mock_pg, neo4j_driver=mock_neo4j)
+    compiler._resolve_atas_bulk = AsyncMock(return_value={})
+
+    nodes, edges = await compiler.expand_next(
+        session_id="s",
+        branch_id="b",
+        path_sequence=0,
+        depth=0,
+        seed_address=SEED,
+        chain="solana",
+        options=ExpandOptions(max_results=10, tx_hashes=["SigCaseExact"]),
+    )
+
+    assert nodes == []
+    assert edges == []
+    mock_session.run.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_list_asset_options_keeps_symbolless_mints_distinguishable():
+    mock_conn = MagicMock()
+    mock_conn.fetchval = AsyncMock(return_value=False)
+    mock_conn.fetch = AsyncMock(return_value=[
+        {
+            "chain_asset_id": "EPjFWdd5AufqSSqeM2qN1xzybAPq3n1LhF7sB7fJf5D",
+            "asset_symbol": None,
+            "canonical_asset_id": None,
+            "last_seen": None,
+        },
+    ])
+    mock_pg = MagicMock()
+    mock_pg.acquire = MagicMock(return_value=AsyncMock(
+        __aenter__=AsyncMock(return_value=mock_conn),
+        __aexit__=AsyncMock(return_value=False),
+    ))
+    compiler = SolanaChainCompiler(postgres_pool=mock_pg)
+
+    options = await compiler.list_asset_options(seed_address=SEED, chain="solana")
+
+    assert len(options) == 1
+    assert options[0].asset_symbol is None
+    assert options[0].display_label.startswith("Asset · ")
 
 
 # ---------------------------------------------------------------------------

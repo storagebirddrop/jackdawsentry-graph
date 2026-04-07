@@ -23,6 +23,7 @@ from pydantic import AliasChoices
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
+from pydantic import computed_field
 
 
 # ---------------------------------------------------------------------------
@@ -173,17 +174,57 @@ class BridgeHopData(BaseModel):
 class SwapEventData(BaseModel):
     """DEX / AMM swap event data."""
 
+    model_config = ConfigDict(populate_by_name=True)
+
+    swap_id: Optional[str] = None
+    chain: Optional[str] = None
     protocol_id: str
-    in_asset: str
-    in_amount: float
-    in_fiat: Optional[float] = None
-    out_asset: str
-    out_amount: float
-    out_fiat: Optional[float] = None
-    exchange_rate: float
+    in_asset: str = Field(validation_alias=AliasChoices("in_asset", "input_asset"))
+    in_amount: float = Field(validation_alias=AliasChoices("in_amount", "input_amount"))
+    in_fiat: Optional[float] = Field(
+        default=None,
+        validation_alias=AliasChoices("in_fiat", "input_fiat"),
+    )
+    out_asset: str = Field(validation_alias=AliasChoices("out_asset", "output_asset"))
+    out_amount: float = Field(validation_alias=AliasChoices("out_amount", "output_amount"))
+    out_fiat: Optional[float] = Field(
+        default=None,
+        validation_alias=AliasChoices("out_fiat", "output_fiat"),
+    )
+    exchange_rate: Optional[float] = None
     route_summary: Optional[str] = None
     tx_hash: str
-    timestamp: str
+    timestamp: Optional[str] = None
+
+    @computed_field(return_type=str)
+    @property
+    def input_asset(self) -> str:
+        return self.in_asset
+
+    @computed_field(return_type=float)
+    @property
+    def input_amount(self) -> float:
+        return self.in_amount
+
+    @computed_field(return_type=Optional[float])
+    @property
+    def input_fiat(self) -> Optional[float]:
+        return self.in_fiat
+
+    @computed_field(return_type=str)
+    @property
+    def output_asset(self) -> str:
+        return self.out_asset
+
+    @computed_field(return_type=float)
+    @property
+    def output_amount(self) -> float:
+        return self.out_amount
+
+    @computed_field(return_type=Optional[float])
+    @property
+    def output_fiat(self) -> Optional[float]:
+        return self.out_fiat
 
 
 class LightningChannelOpenData(BaseModel):

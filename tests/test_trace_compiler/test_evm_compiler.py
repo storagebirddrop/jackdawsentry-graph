@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from src.trace_compiler.asset_selection import effective_asset_selector
 from src.trace_compiler.chains.evm import EVMChainCompiler, _native_symbol
 from src.trace_compiler.models import AssetSelector, ExpandOptions
 
@@ -64,6 +65,40 @@ def test_supported_chains_includes_all_evm():
     c = _make_compiler()
     for chain in ("bsc", "polygon", "arbitrum", "base", "avalanche", "optimism"):
         assert chain in c.supported_chains
+
+
+@pytest.mark.parametrize(
+    ("legacy_filter", "expected"),
+    [
+        (
+            "canonical:usd-coin",
+            {"mode": "asset", "canonical_asset_id": "usd-coin", "asset_symbol": None, "chain_asset_id": None},
+        ),
+        (
+            "asset:ethereum:0xA0b86991C6218B36C1d19D4A2E9Eb0cE3606eB48",
+            {
+                "mode": "asset",
+                "canonical_asset_id": None,
+                "asset_symbol": None,
+                "chain_asset_id": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+            },
+        ),
+        (
+            "native:ethereum",
+            {"mode": "native", "canonical_asset_id": None, "asset_symbol": "ETH", "chain_asset_id": None},
+        ),
+    ],
+)
+def test_effective_asset_selector_preserves_single_legacy_prefixes(legacy_filter, expected):
+    selector = effective_asset_selector(
+        ExpandOptions(asset_filter=[legacy_filter]),
+        chain="ethereum",
+    )
+
+    assert selector.mode == expected["mode"]
+    assert selector.canonical_asset_id == expected["canonical_asset_id"]
+    assert selector.asset_symbol == expected["asset_symbol"]
+    assert selector.chain_asset_id == expected["chain_asset_id"]
 
 
 # ---------------------------------------------------------------------------
@@ -327,6 +362,51 @@ async def test_expand_next_native_asset_selector_keeps_native_rows():
     assert len(nodes) == 1
     assert len(edges) == 1
     assert edges[0].asset_symbol == "ETH"
+
+
+@pytest.mark.asyncio
+async def test_expand_next_native_asset_selector_skips_token_transfer_query():
+    native_row = _pg_row(
+        counterparty="0xnative",
+        tx_hash="0xnative",
+        value_native=3.0,
+        asset_symbol=None,
+        canonical_asset_id=None,
+        chain_asset_id=None,
+        timestamp=_TS,
+    )
+    queries: list[str] = []
+
+    async def _fetch(sql, *params):
+        queries.append(sql)
+        if "FROM raw_transactions" in sql:
+            return [native_row]
+        if "FROM raw_token_transfers" in sql:
+            raise AssertionError("Token transfer rows should not be queried for native-only expansion")
+        return []
+
+    conn = MagicMock()
+    conn.fetch = AsyncMock(side_effect=_fetch)
+    pg = MagicMock()
+    pg.acquire = MagicMock(return_value=_AsyncCtxMgr(conn))
+    compiler = _make_compiler(pg=pg)
+
+    nodes, edges = await compiler.expand_next(
+        session_id="s",
+        branch_id="b",
+        path_sequence=0,
+        depth=0,
+        seed_address="0xseed",
+        chain="ethereum",
+        options=ExpandOptions(
+            max_results=10,
+            asset_selector=AssetSelector(mode="native", chain="ethereum", asset_symbol="ETH"),
+        ),
+    )
+
+    assert len(nodes) == 1
+    assert len(edges) == 1
+    assert len([sql for sql in queries if "FROM raw_transactions" in sql]) == 1
 
 
 # ---------------------------------------------------------------------------

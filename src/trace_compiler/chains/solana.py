@@ -62,7 +62,7 @@ def _normalized_tx_hash_filter(options: ExpandOptions) -> Optional[List[str]]:
         return None
     normalized = sorted(
         {
-            tx_hash.strip().lower()
+            tx_hash.strip()
             for tx_hash in options.tx_hashes
             if isinstance(tx_hash, str) and tx_hash.strip()
         }
@@ -140,7 +140,7 @@ class SolanaChainCompiler(BaseChainCompiler):
                 build_asset_option(
                     mode="asset",
                     chain=chain,
-                    asset_symbol=record.get("asset_symbol") or "Token",
+                    asset_symbol=record.get("asset_symbol"),
                     chain_asset_id=record.get("chain_asset_id"),
                     canonical_asset_id=record.get("canonical_asset_id"),
                 )
@@ -285,8 +285,8 @@ class SolanaChainCompiler(BaseChainCompiler):
                 FROM raw_token_transfers rtt
                 WHERE rtt.blockchain = 'solana'
                   AND rtt.from_address = $1
-                  AND ($2::text[] IS NULL OR LOWER(rtt.tx_hash) = ANY($2))
-                  AND ($4::text IS NULL OR LOWER(rtt.asset_contract) = LOWER($4))
+                  AND ($2::text[] IS NULL OR rtt.tx_hash = ANY($2))
+                  AND ($4::text IS NULL OR rtt.asset_contract = $4)
                   AND ($5::timestamptz IS NULL OR rtt.timestamp >= $5)
                   AND ($6::timestamptz IS NULL OR rtt.timestamp <= $6)
                 ORDER BY timestamp DESC, tx_hash ASC
@@ -321,7 +321,7 @@ class SolanaChainCompiler(BaseChainCompiler):
                 FROM raw_transactions
                 WHERE blockchain = 'solana'
                   AND from_address = $1
-                  AND ($2::text[] IS NULL OR LOWER(tx_hash) = ANY($2))
+                  AND ($2::text[] IS NULL OR tx_hash = ANY($2))
                   AND to_address IS NOT NULL
                   AND value_native > 0
                   AND ($4::timestamptz IS NULL OR timestamp >= $4)
@@ -372,8 +372,8 @@ class SolanaChainCompiler(BaseChainCompiler):
                 FROM raw_token_transfers rtt
                 WHERE rtt.blockchain = 'solana'
                   AND rtt.to_address = $1
-                  AND ($2::text[] IS NULL OR LOWER(rtt.tx_hash) = ANY($2))
-                  AND ($4::text IS NULL OR LOWER(rtt.asset_contract) = LOWER($4))
+                  AND ($2::text[] IS NULL OR rtt.tx_hash = ANY($2))
+                  AND ($4::text IS NULL OR rtt.asset_contract = $4)
                   AND ($5::timestamptz IS NULL OR rtt.timestamp >= $5)
                   AND ($6::timestamptz IS NULL OR rtt.timestamp <= $6)
                 ORDER BY timestamp DESC, tx_hash ASC
@@ -407,7 +407,7 @@ class SolanaChainCompiler(BaseChainCompiler):
                 FROM raw_transactions
                 WHERE blockchain = 'solana'
                   AND to_address = $1
-                  AND ($2::text[] IS NULL OR LOWER(tx_hash) = ANY($2))
+                  AND ($2::text[] IS NULL OR tx_hash = ANY($2))
                   AND from_address IS NOT NULL
                   AND value_native > 0
                   AND ($4::timestamptz IS NULL OR timestamp >= $4)
@@ -619,7 +619,8 @@ class SolanaChainCompiler(BaseChainCompiler):
                     to_address,
                     amount_normalized,
                     asset_symbol,
-                    canonical_asset_id
+                    canonical_asset_id,
+                    asset_contract AS chain_asset_id
                 FROM raw_token_transfers
                 WHERE blockchain = 'solana'
                   AND tx_hash   = $1
@@ -773,9 +774,11 @@ class SolanaChainCompiler(BaseChainCompiler):
         outgoing_asset: Optional[str] = None
         outgoing_amount: float = 0.0
         outgoing_canonical_id: Optional[str] = None
+        outgoing_chain_asset_id: Optional[str] = None
         incoming_asset: Optional[str] = None
         incoming_amount: float = 0.0
         incoming_canonical_id: Optional[str] = None
+        incoming_chain_asset_id: Optional[str] = None
 
         for leg in spl_legs:
             raw_from = leg.get("from_address", "")
@@ -797,6 +800,7 @@ class SolanaChainCompiler(BaseChainCompiler):
                 logger.debug("Failed to convert amount to float: %s", conv_exc)
                 continue
             canonical_id = leg.get("canonical_asset_id")
+            chain_asset_id = normalize_chain_asset_id("solana", leg.get("chain_asset_id"))
             symbol = (leg.get("asset_symbol") or canonical_id or "").upper()
             if not symbol:
                 continue
@@ -818,12 +822,14 @@ class SolanaChainCompiler(BaseChainCompiler):
                     outgoing_asset = symbol
                     outgoing_amount = amount
                     outgoing_canonical_id = canonical_id
+                    outgoing_chain_asset_id = chain_asset_id
 
             if to_addr == seed_lc and amount > 0 and to_ata_ok:
                 if amount > incoming_amount:
                     incoming_asset = symbol
                     incoming_amount = amount
                     incoming_canonical_id = canonical_id
+                    incoming_chain_asset_id = chain_asset_id
 
         if outgoing_asset is None or incoming_asset is None:
             return None
@@ -897,6 +903,7 @@ class SolanaChainCompiler(BaseChainCompiler):
             value_fiat=None,
             asset_symbol=outgoing_asset,
             canonical_asset_id=outgoing_canonical_id,
+            chain_asset_id=outgoing_chain_asset_id,
             asset_chain="solana",
             tx_hash=tx_hash,
             tx_chain="solana",
@@ -914,6 +921,7 @@ class SolanaChainCompiler(BaseChainCompiler):
             value_fiat=None,
             asset_symbol=incoming_asset,
             canonical_asset_id=incoming_canonical_id,
+            chain_asset_id=incoming_chain_asset_id,
             asset_chain="solana",
             tx_hash=tx_hash,
             tx_chain="solana",

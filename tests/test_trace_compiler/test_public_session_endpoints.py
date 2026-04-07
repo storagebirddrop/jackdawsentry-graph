@@ -90,17 +90,15 @@ def test_get_session_is_public(client):
     session_store = MagicMock()
     session_store.normalize_workspace.return_value = (_workspace_snapshot(), "full", [])
 
-    with (
-        patch(
-            "src.api.routers.graph._get_owned_session_row",
-            new=AsyncMock(return_value=SESSION_ROW),
-        ),
-        patch(
+    with patch(
+        "src.api.routers.graph._get_owned_session_row",
+        new=AsyncMock(return_value=SESSION_ROW),
+    ):
+        with patch(
             "src.api.routers.graph._get_graph_session_store",
             return_value=session_store,
-        ),
-    ):
-        response = client.get(f"/api/v1/graph/sessions/{SESSION_ID}")
+        ):
+            response = client.get(f"/api/v1/graph/sessions/{SESSION_ID}")
 
     assert response.status_code == 200
     assert response.json()["session_id"] == SESSION_ID
@@ -120,23 +118,21 @@ def test_expand_session_is_public(client):
         "added_edges": [],
     }
 
-    with (
-        patch(
-            "src.api.routers.graph._get_owned_session_row",
-            new=AsyncMock(return_value=SESSION_ROW),
-        ),
-        patch(
+    with patch(
+        "src.api.routers.graph._get_owned_session_row",
+        new=AsyncMock(return_value=SESSION_ROW),
+    ):
+        with patch(
             "src.api.routers.graph._get_trace_compiler",
             new=AsyncMock(return_value=compiler),
-        ),
-    ):
-        response = client.post(
-            f"/api/v1/graph/sessions/{SESSION_ID}/expand",
-            json={
-                "operation_type": "expand_next",
-                "seed_node_id": ROOT_NODE["node_id"],
-            },
-        )
+        ):
+            response = client.post(
+                f"/api/v1/graph/sessions/{SESSION_ID}/expand",
+                json={
+                    "operation_type": "expand_next",
+                    "seed_node_id": ROOT_NODE["node_id"],
+                },
+            )
 
     assert response.status_code == 200
     assert response.json()["session_id"] == SESSION_ID
@@ -157,23 +153,21 @@ def test_asset_options_session_is_public(client):
         ],
     }
 
-    with (
-        patch(
-            "src.api.routers.graph._get_owned_session_row",
-            new=AsyncMock(return_value=SESSION_ROW),
-        ),
-        patch(
+    with patch(
+        "src.api.routers.graph._get_owned_session_row",
+        new=AsyncMock(return_value=SESSION_ROW),
+    ):
+        with patch(
             "src.api.routers.graph._get_trace_compiler",
             new=AsyncMock(return_value=compiler),
-        ),
-    ):
-        response = client.post(
-            f"/api/v1/graph/sessions/{SESSION_ID}/asset-options",
-            json={
-                "seed_node_id": ROOT_NODE["node_id"],
-                "seed_lineage_id": ROOT_NODE["lineage_id"],
-            },
-        )
+        ):
+            response = client.post(
+                f"/api/v1/graph/sessions/{SESSION_ID}/asset-options",
+                json={
+                    "seed_node_id": ROOT_NODE["node_id"],
+                    "seed_lineage_id": ROOT_NODE["lineage_id"],
+                },
+            )
 
     assert response.status_code == 200
     assert response.json()["session_id"] == SESSION_ID
@@ -193,19 +187,17 @@ def test_bridge_hop_status_is_public(client):
         "updated_at": NOW,
     }
 
-    with (
-        patch(
-            "src.api.routers.graph._get_owned_session_row",
-            new=AsyncMock(return_value=SESSION_ROW),
-        ),
-        patch(
+    with patch(
+        "src.api.routers.graph._get_owned_session_row",
+        new=AsyncMock(return_value=SESSION_ROW),
+    ):
+        with patch(
             "src.api.routers.graph._get_trace_compiler",
             new=AsyncMock(return_value=compiler),
-        ),
-    ):
-        response = client.get(
-            f"/api/v1/graph/sessions/{SESSION_ID}/hops/hop-1/status",
-        )
+        ):
+            response = client.get(
+                f"/api/v1/graph/sessions/{SESSION_ID}/hops/hop-1/status",
+            )
 
     assert response.status_code == 200
     assert response.json()["hop_id"] == "hop-1"
@@ -224,31 +216,29 @@ def test_save_snapshot_is_public(client):
     session_store.merge_node_states.return_value = merged_workspace
     session_store.save_workspace_snapshot = AsyncMock()
 
-    with (
-        patch(
-            "src.api.routers.graph._get_owned_session_row",
-            new=AsyncMock(return_value=SESSION_ROW),
-        ),
-        patch(
+    with patch(
+        "src.api.routers.graph._get_owned_session_row",
+        new=AsyncMock(return_value=SESSION_ROW),
+    ):
+        with patch(
             "src.api.routers.graph._get_graph_session_store",
             return_value=session_store,
-        ),
-    ):
-        response = client.post(
-            f"/api/v1/graph/sessions/{SESSION_ID}/snapshot",
-            json={
-                "node_states": [
-                    {
-                        "node_id": ROOT_NODE["node_id"],
-                        "lineage_id": ROOT_NODE["lineage_id"],
-                        "branch_id": ROOT_NODE["branch_id"],
-                        "is_pinned": False,
-                        "is_hidden": False,
-                        "position_hint": {"x": 10, "y": 20},
-                    }
-                ]
-            },
-        )
+        ):
+            response = client.post(
+                f"/api/v1/graph/sessions/{SESSION_ID}/snapshot",
+                json={
+                    "node_states": [
+                        {
+                            "node_id": ROOT_NODE["node_id"],
+                            "lineage_id": ROOT_NODE["lineage_id"],
+                            "branch_id": ROOT_NODE["branch_id"],
+                            "is_pinned": False,
+                            "is_hidden": False,
+                            "position_hint": {"x": 10, "y": 20},
+                        }
+                    ]
+                },
+            )
 
     assert response.status_code == 200
     assert "snapshot_id" in response.json()
