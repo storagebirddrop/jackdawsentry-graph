@@ -57,14 +57,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Trivy
-        uses: aquasecurity/setup-trivy@e07451d2e059ed86c2870430ea286b3a9e0bf241 # v0.2.6
-        with:
-          version: v0.63.0
-
       - name: Run Trivy filesystem scan
         run: |
-          trivy fs \
+          docker run --rm \
+            -v "${PWD}:/work" \
+            -w /work \
+            aquasec/trivy:0.63.0 \
+            fs \
             --ignore-unfixed \
             --severity HIGH,CRITICAL \
             --format sarif \
