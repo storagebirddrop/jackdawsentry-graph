@@ -3,9 +3,9 @@
 # =============================================================================
 
 # Web Framework
-fastapi>=0.105.0
+fastapi==0.125.0
 uvicorn[standard]==0.24.0
-python-multipart==0.0.6
+python-multipart==0.0.22
 
 # Database Drivers
 neo4j==5.14.1
@@ -15,13 +15,13 @@ sqlalchemy==2.0.23
 alembic==1.12.1
 
 # Authentication & Security
-python-jose[cryptography]==3.3.0
+python-jose[cryptography]==3.5.0
 passlib[bcrypt]==1.7.4
-python-multipart==0.0.6
+python-multipart==0.0.22
 cryptography>=41.0.0
 
 # Basic HTTP client
-requests==2.32.5
+requests==2.33.0
 pydantic==2.5.0
 
 # Graph Analysis (needed for Phase 4 routers)

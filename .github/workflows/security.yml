@@ -51,17 +51,25 @@ jobs:
   trivy:
     name: Filesystem Scan
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
     steps:
       - uses: actions/checkout@v4
 
       - name: Run Trivy filesystem scan
-        uses: aquasecurity/trivy-action@v0.35.0
-        with:
-          scan-type: fs
-          ignore-unfixed: true
-          severity: HIGH,CRITICAL
-          format: sarif
-          output: trivy-results.sarif
+        run: |
+          docker run --rm \
+            -v "${PWD}:/work" \
+            -w /work \
+            aquasec/trivy:0.63.0 \
+            fs \
+            --ignore-unfixed \
+            --severity HIGH,CRITICAL \
+            --exit-code 1 \
+            --format sarif \
+            --output trivy-results.sarif \
+            .
 
       - name: Upload Trivy SARIF
         uses: github/codeql-action/upload-sarif@v3
