@@ -66,7 +66,7 @@ This repository is intentionally narrower than the private Jackdaw Sentry platfo
 
 **Supported chains (expansion works):** Bitcoin, Lightning Network, Ethereum, BSC, Polygon, Arbitrum, Base, Avalanche, Optimism, Starknet, Injective, Solana, Tron.
 
-**Collector implemented, expansion not yet wired:** XRP, Cosmos, Sui — chain compilers exist and are tested, but are not registered in the TraceCompiler dispatch. Graph expansion for these chains returns empty results until registration is completed.
+**Collector implemented, expansion not yet wired:** XRP, Cosmos, Sui — collector implementations exist, but `expand_next`/`expand_prev` are not yet implemented and TraceCompiler dispatch registration is pending. Graph expansion for these chains returns empty results until both are completed.
 
 **Node types on the canvas:** `address`, `entity`, `utxo`, `swap_event`, `atomic_swap`, `bridge_hop`, `btc_sidechain_peg`, `lightning_channel_open`, `lightning_channel_close`, `solana_instruction`, `cluster_summary`, `service`.
 

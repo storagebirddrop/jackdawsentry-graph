@@ -79,17 +79,16 @@ async def _probe_redis() -> str | None:
 
 async def main() -> int:
     for attempt in range(1, MAX_ATTEMPTS + 1):
+        postgres_error, neo4j_error, redis_error = await asyncio.gather(
+            _probe_postgres(),
+            _probe_neo4j(),
+            _probe_redis(),
+        )
         errors: dict[str, str] = {}
-
-        postgres_error = await _probe_postgres()
         if postgres_error:
             errors["postgres"] = postgres_error
-
-        neo4j_error = await _probe_neo4j()
         if neo4j_error:
             errors["neo4j"] = neo4j_error
-
-        redis_error = await _probe_redis()
         if redis_error:
             errors["redis"] = redis_error
 

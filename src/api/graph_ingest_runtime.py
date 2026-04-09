@@ -126,8 +126,7 @@ async def run_graph_ingest_runtime(
                 exc = collector_task.exception()
                 if exc is not None:
                     raise exc
-                logger.warning("Graph ingest collector task exited unexpectedly")
-                break
+                raise RuntimeError("Graph ingest collector task exited unexpectedly")
 
         publish_state(
             status_value="stopping",
