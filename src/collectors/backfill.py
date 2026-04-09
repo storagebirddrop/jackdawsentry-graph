@@ -144,6 +144,22 @@ class EventStoreBackfillWorker:
         if latest_block <= 0:
             return None
 
+        first_available_block = 0
+        get_first_available_block = getattr(collector, "get_first_available_block_number", None)
+        if callable(get_first_available_block):
+            try:
+                first_available_block = int(await get_first_available_block() or 0)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to determine the first available block for %s: %s",
+                    blockchain,
+                    exc,
+                )
+
+        target_block = max(0, latest_block - self._window_for_chain(blockchain))
+        if first_available_block:
+            target_block = max(target_block, first_available_block)
+
         async with get_postgres_connection() as conn:
             row = await conn.fetchrow(
                 """
@@ -156,7 +172,6 @@ class EventStoreBackfillWorker:
             )
 
             if row is None:
-                target_block = max(0, latest_block - self._window_for_chain(blockchain))
                 await conn.execute(
                     """
                     INSERT INTO event_store_backfill_state (
@@ -180,22 +195,36 @@ class EventStoreBackfillWorker:
                     "last_error": None,
                 }
 
-            await conn.execute(
-                """
-                UPDATE event_store_backfill_state
-                SET latest_observed_block = GREATEST(COALESCE(latest_observed_block, 0), $2),
-                    updated_at = NOW()
-                WHERE blockchain = $1
-                """,
-                blockchain,
-                latest_block,
-            )
+            if first_available_block:
+                await conn.execute(
+                    """
+                    UPDATE event_store_backfill_state
+                    SET latest_observed_block = GREATEST(COALESCE(latest_observed_block, 0), $2),
+                        target_block = GREATEST(COALESCE(target_block, 0), $3),
+                        updated_at = NOW()
+                    WHERE blockchain = $1
+                    """,
+                    blockchain,
+                    latest_block,
+                    first_available_block,
+                )
+            else:
+                await conn.execute(
+                    """
+                    UPDATE event_store_backfill_state
+                    SET latest_observed_block = GREATEST(COALESCE(latest_observed_block, 0), $2),
+                        updated_at = NOW()
+                    WHERE blockchain = $1
+                    """,
+                    blockchain,
+                    latest_block,
+                )
 
         return {
             "blockchain": row["blockchain"],
             "status": row["status"],
             "latest_observed_block": max(row["latest_observed_block"] or 0, latest_block),
-            "target_block": row["target_block"],
+            "target_block": max(row["target_block"] or 0, first_available_block),
             "next_block": row["next_block"],
             "attempted_blocks": row["attempted_blocks"],
             "attempted_transactions": row["attempted_transactions"],

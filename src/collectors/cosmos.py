@@ -6,7 +6,9 @@ Shared collector for Cosmos-family chains exposed through LCD/REST endpoints.
 import asyncio
 import base64
 import hashlib
+import json
 import logging
+import re
 from datetime import datetime
 from datetime import timezone
 from typing import Any
@@ -30,6 +32,8 @@ from .base import Transaction
 
 logger = logging.getLogger(__name__)
 
+_FIRST_AVAILABLE_BLOCK_RE = re.compile(r"lowest height is (\d+)")
+
 
 class CosmosCollector(BaseCollector):
     """Collector for Cosmos-SDK chains via REST/LCD endpoints."""
@@ -40,6 +44,7 @@ class CosmosCollector(BaseCollector):
         self.network = config.get("network", "mainnet")
         self.native_denom = config.get("native_denom", "")
         self.session = None
+        self._first_available_block = 0
 
     async def connect(self) -> bool:
         if not AIOHTTP_AVAILABLE:
@@ -62,18 +67,124 @@ class CosmosCollector(BaseCollector):
         if self.session:
             await self.session.close()
 
-    async def _get_json(self, path: str) -> Optional[Dict[str, Any]]:
+    def _extract_first_available_block(
+        self, payload: Optional[Dict[str, Any]], response_text: str
+    ) -> int:
+        """Extract the node retention floor from a Cosmos REST error."""
+        message = ""
+        if isinstance(payload, dict):
+            message = str(payload.get("message", ""))
+        if not message:
+            message = response_text
+
+        match = _FIRST_AVAILABLE_BLOCK_RE.search(message)
+        return int(match.group(1)) if match else 0
+
+    def _remember_first_available_block(self, block_number: int) -> None:
+        """Persist the highest observed retention floor for the current node."""
+        if block_number > self._first_available_block:
+            self._first_available_block = block_number
+
+    def _advance_checkpoint_to_first_available_block(self, block_number: int) -> None:
+        """Fast-forward the live checkpoint when a requested block is pruned."""
+        if not self._first_available_block or block_number >= self._first_available_block:
+            return
+
+        new_checkpoint = self._first_available_block - 1
+        if new_checkpoint > self.last_block_processed:
+            logger.info(
+                "Fast-forwarding %s checkpoint from %s to %s because block %s is pruned",
+                self.blockchain,
+                self.last_block_processed,
+                new_checkpoint,
+                block_number,
+            )
+            self.last_block_processed = new_checkpoint
+
+    async def _get_json(self, path: str, *, log_errors: bool = True) -> Optional[Dict[str, Any]]:
         if not self.session or not self.rest_url:
             return None
         url = f"{self.rest_url}{path}"
         try:
             async with self.session.get(url) as response:
+                response_text = await response.text()
+                payload = None
+                if response_text:
+                    try:
+                        parsed = json.loads(response_text)
+                        if isinstance(parsed, dict):
+                            payload = parsed
+                    except json.JSONDecodeError:
+                        payload = None
+
                 if response.status == 200:
-                    return await response.json()
-                logger.error("%s REST error %s for %s", self.blockchain, response.status, path)
+                    return payload
+
+                first_available_block = self._extract_first_available_block(
+                    payload, response_text
+                )
+                if first_available_block:
+                    previous_first_available = self._first_available_block
+                    self._remember_first_available_block(first_available_block)
+                    if self._first_available_block != previous_first_available:
+                        logger.info(
+                            "%s REST node retention floor is block %s",
+                            self.blockchain,
+                            self._first_available_block,
+                        )
+                    return None
+
+                if log_errors:
+                    logger.error(
+                        "%s REST error %s for %s: %s",
+                        self.blockchain,
+                        response.status,
+                        path,
+                        response_text[:200].strip() or "<empty response>",
+                    )
         except Exception as exc:
             logger.error("%s REST request failed for %s: %s", self.blockchain, path, exc)
         return None
+
+    async def get_first_available_block_number(self) -> int:
+        """Return the earliest block height still retained by the REST node."""
+        if self._first_available_block:
+            return self._first_available_block
+
+        payload = await self._get_json(
+            "/cosmos/base/tendermint/v1beta1/blocks/1",
+            log_errors=False,
+        )
+        if payload and payload.get("block"):
+            self._remember_first_available_block(1)
+
+        return self._first_available_block
+
+    async def load_last_processed_block(self):
+        """Load and clamp the Redis checkpoint to the REST node retention floor."""
+        from src.api.database import get_redis_connection
+
+        cache_key = f"last_block:{self.blockchain}"
+        latest_block = await self.get_latest_block_number()
+        first_available_block = await self.get_first_available_block_number()
+
+        async with get_redis_connection() as redis:
+            last_block = await redis.get(cache_key)
+            if last_block:
+                checkpoint = int(last_block)
+            else:
+                checkpoint = max(latest_block - 100, 0)
+
+            if first_available_block and checkpoint < first_available_block - 1:
+                logger.info(
+                    "Clamping %s checkpoint from %s to first available block %s",
+                    self.blockchain,
+                    checkpoint,
+                    first_available_block,
+                )
+                checkpoint = first_available_block - 1
+
+            self.last_block_processed = checkpoint
 
     def _tx_hash_from_base64(self, tx_b64: str) -> str:
         raw = base64.b64decode(tx_b64)
@@ -151,6 +262,7 @@ class CosmosCollector(BaseCollector):
     async def get_block(self, block_number: int) -> Optional[Block]:
         payload = await self._get_json(f"/cosmos/base/tendermint/v1beta1/blocks/{block_number}")
         if not payload:
+            self._advance_checkpoint_to_first_available_block(block_number)
             return None
 
         block = payload.get("block") or {}
@@ -173,6 +285,7 @@ class CosmosCollector(BaseCollector):
     async def get_block_transactions(self, block_number: int) -> List[str]:
         payload = await self._get_json(f"/cosmos/base/tendermint/v1beta1/blocks/{block_number}")
         if not payload:
+            self._advance_checkpoint_to_first_available_block(block_number)
             return []
         txs = ((payload.get("block") or {}).get("data") or {}).get("txs") or []
         return [self._tx_hash_from_base64(tx_b64) for tx_b64 in txs]

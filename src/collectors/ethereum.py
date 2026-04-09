@@ -7,6 +7,7 @@ import asyncio
 import json
 import logging
 import re
+from collections.abc import Mapping
 from datetime import datetime
 from datetime import timezone
 from typing import Any
@@ -80,9 +81,61 @@ class EthereumCollector(BaseCollector):
         self._token_symbol_cache: Dict[str, str] = {}
         self._token_name_cache: Dict[str, str] = {}
         self._token_decimals_cache: Dict[str, int] = {}
-        # Block timestamp cache: avoids re-fetching the same block for every
-        # transaction in that block during backfill (bounded to 32 entries).
+        # Block caches: avoid re-fetching the same block and transaction payloads
+        # while processing live blocks or backfill batches.
         self._block_ts_cache: Dict[int, Optional[datetime]] = {}
+        self._block_transaction_hash_cache: Dict[int, List[str]] = {}
+        self._transaction_payload_cache: Dict[str, Dict[str, Any]] = {}
+
+    def _function_selector(self, signature: str) -> str:
+        """Return the 4-byte hex selector for a contract function signature."""
+        if not self.w3:
+            raise RuntimeError("Web3 client is not initialized")
+
+        selector = self.w3.keccak(text=signature).hex()
+        if not selector.startswith("0x"):
+            selector = f"0x{selector}"
+        return selector[:10]
+
+    def _normalize_tx_hash(self, tx_hash: Union[str, bytes]) -> str:
+        """Normalize transaction hashes to 0x-prefixed hex strings."""
+        normalized = tx_hash.hex() if isinstance(tx_hash, bytes) else str(tx_hash)
+        if not normalized.startswith("0x"):
+            normalized = f"0x{normalized}"
+        return normalized
+
+    def _remember_block_timestamp(
+        self, block_number: int, block_timestamp: Optional[datetime]
+    ) -> None:
+        """Cache block timestamps for repeated transaction processing."""
+        if len(self._block_ts_cache) >= 32:
+            self._block_ts_cache.pop(next(iter(self._block_ts_cache)))
+        self._block_ts_cache[block_number] = block_timestamp
+
+    def _remember_transaction_payload(self, tx_hash: str, tx_data: Dict[str, Any]) -> None:
+        """Cache transaction payloads from block responses for providers with weak hash lookups."""
+        if len(self._transaction_payload_cache) >= 2048:
+            self._transaction_payload_cache.pop(next(iter(self._transaction_payload_cache)))
+        self._transaction_payload_cache[tx_hash] = dict(tx_data)
+
+    def _remember_block_payload(self, block_data: Dict[str, Any]) -> None:
+        """Cache block timestamps and any embedded transaction payloads."""
+        block_number = block_data["number"]
+        block_timestamp = datetime.fromtimestamp(block_data["timestamp"], timezone.utc)
+        self._remember_block_timestamp(block_number, block_timestamp)
+
+        tx_hashes: List[str] = []
+        for tx in block_data.get("transactions", []):
+            if isinstance(tx, Mapping):
+                tx_hash = self._normalize_tx_hash(tx["hash"])
+                self._remember_transaction_payload(tx_hash, tx)
+            else:
+                tx_hash = self._normalize_tx_hash(tx)
+            tx_hashes.append(tx_hash)
+
+        if len(self._block_transaction_hash_cache) >= 32:
+            self._block_transaction_hash_cache.pop(next(iter(self._block_transaction_hash_cache)))
+        self._block_transaction_hash_cache[block_number] = tx_hashes
 
     def get_stablecoin_contracts(self) -> Dict[str, str]:
         """Get stablecoin contracts for this blockchain"""
@@ -183,6 +236,8 @@ class EthereumCollector(BaseCollector):
             if not block_data:
                 return None
 
+            self._remember_block_payload(block_data)
+
             def _to_hex(val: object) -> str:
                 return val.hex() if isinstance(val, bytes) else str(val)
 
@@ -209,13 +264,16 @@ class EthereumCollector(BaseCollector):
             if not self.w3:
                 return None
 
-            if not tx_hash.startswith("0x"):
-                tx_hash = "0x" + tx_hash
+            tx_hash = self._normalize_tx_hash(tx_hash)
 
             loop = asyncio.get_running_loop()
-            tx_data = await loop.run_in_executor(
-                None, self.w3.eth.get_transaction, tx_hash
-            )
+            tx_data = self._transaction_payload_cache.get(tx_hash)
+            if tx_data is None:
+                tx_data = await loop.run_in_executor(
+                    None, self.w3.eth.get_transaction, tx_hash
+                )
+                if tx_data:
+                    self._remember_transaction_payload(tx_hash, tx_data)
             if not tx_data:
                 return None
 
@@ -237,10 +295,7 @@ class EthereumCollector(BaseCollector):
                     )
                     if block_data:
                         block_timestamp = datetime.fromtimestamp(block_data["timestamp"], timezone.utc)
-                    # Bound cache to 32 entries — evict oldest when full.
-                    if len(self._block_ts_cache) >= 32:
-                        self._block_ts_cache.pop(next(iter(self._block_ts_cache)))
-                    self._block_ts_cache[block_number] = block_timestamp
+                    self._remember_block_timestamp(block_number, block_timestamp)
 
             # Determine addresses
             from_address = tx_data["from"]
@@ -701,17 +756,16 @@ class EthereumCollector(BaseCollector):
             if not self.w3:
                 return []
 
-            block = self.w3.eth.get_block(block_number)
+            cached_hashes = self._block_transaction_hash_cache.get(block_number)
+            if cached_hashes is not None:
+                return cached_hashes
+
+            block = self.w3.eth.get_block(block_number, full_transactions=True)
             if not block:
                 return []
 
-            # web3.py v7: transactions are HexBytes when full_transactions=False;
-            # v6: they are dicts with a "hash" key.  Handle both.
-            return [
-                tx.hex() if isinstance(tx, bytes)
-                else (tx["hash"].hex() if isinstance(tx["hash"], bytes) else tx["hash"])
-                for tx in block["transactions"]
-            ]
+            self._remember_block_payload(block)
+            return self._block_transaction_hash_cache.get(block_number, [])
 
         except Exception as e:
             logger.error(
@@ -745,10 +799,9 @@ class EthereumCollector(BaseCollector):
                 return []
 
             block_timestamp = datetime.fromtimestamp(block["timestamp"], timezone.utc)
-            # Pre-populate block cache so get_transaction skips the block fetch.
-            if len(self._block_ts_cache) >= 32:
-                self._block_ts_cache.pop(next(iter(self._block_ts_cache)))
-            self._block_ts_cache[block_number] = block_timestamp
+            # Pre-populate block caches so live and backfill processing can
+            # reuse the same payloads even when eth_getTransactionByHash is weak.
+            self._remember_block_payload(block)
 
             raw_txs = block.get("transactions", [])
 
@@ -1098,7 +1151,7 @@ class EthereumCollector(BaseCollector):
                 return 18  # Default to 18
 
             # ERC20 decimals function signature
-            decimals_function = self.w3.sha3(text="decimals()").hex()[:10]
+            decimals_function = self._function_selector("decimals()")
 
             result = self.w3.eth.call(
                 {"to": contract_address, "data": decimals_function}
@@ -1114,6 +1167,20 @@ class EthereumCollector(BaseCollector):
 
         self._token_decimals_cache[contract_key] = 18
         return 18  # Default to 18
+
+    def _pending_filter_unavailable(self, error: Exception) -> bool:
+        """Return True when the upstream RPC does not support pending filters."""
+        message = str(error).lower()
+        return any(
+            marker in message
+            for marker in (
+                "filter not found",
+                "method not found",
+                "does not exist/is not available",
+                "404 client error",
+                "unsupported",
+            )
+        )
 
     async def monitor_pending_transactions(self):
         """Monitor pending transactions"""
@@ -1131,10 +1198,22 @@ class EthereumCollector(BaseCollector):
                     await asyncio.sleep(5)  # Check every 5 seconds
 
                 except Exception as e:
+                    if self._pending_filter_unavailable(e):
+                        logger.info(
+                            "Pending transaction monitoring unavailable for %s; stopping background monitor",
+                            self.blockchain,
+                        )
+                        return
                     logger.error(f"Error in pending transaction monitoring: {e}")
                     await asyncio.sleep(10)
 
         except Exception as e:
+            if self._pending_filter_unavailable(e):
+                logger.info(
+                    "Pending transaction filters unavailable for %s RPC; skipping background monitor",
+                    self.blockchain,
+                )
+                return
             logger.error(f"Error setting up pending transaction filter: {e}")
 
     async def process_pending_transaction(self, tx_hash: str):
@@ -1205,7 +1284,7 @@ class EthereumCollector(BaseCollector):
             # Try to get ERC20 token info
             try:
                 # name() function
-                name_function = self.w3.sha3(text="name()").hex()[:10]
+                name_function = self._function_selector("name()")
                 name_result = self.w3.eth.call(
                     {"to": checksum_address, "data": name_function}
                 )
@@ -1217,7 +1296,7 @@ class EthereumCollector(BaseCollector):
                     )
 
                 # symbol() function
-                symbol_function = self.w3.sha3(text="symbol()").hex()[:10]
+                symbol_function = self._function_selector("symbol()")
                 symbol_result = self.w3.eth.call(
                     {"to": checksum_address, "data": symbol_function}
                 )
@@ -1229,7 +1308,7 @@ class EthereumCollector(BaseCollector):
                     )
 
                 # totalSupply() function
-                supply_function = self.w3.sha3(text="totalSupply()").hex()[:10]
+                supply_function = self._function_selector("totalSupply()")
                 supply_result = self.w3.eth.call(
                     {"to": checksum_address, "data": supply_function}
                 )
@@ -1252,11 +1331,33 @@ class EthereumCollector(BaseCollector):
 
     async def start(self):
         """Start Ethereum collector with additional monitoring"""
-        await super().start()
+        logger.info(f"Starting {self.blockchain} collector...")
 
-        # Start pending transaction monitoring
-        if self.erc20_tracking:
-            asyncio.create_task(self.monitor_pending_transactions())
+        if not await self.connect():
+            logger.error(f"Failed to connect to {self.blockchain}")
+            return
+
+        self.is_running = True
+        pending_task = None
+
+        try:
+            await self.load_last_processed_block()
+
+            if self.erc20_tracking:
+                pending_task = asyncio.create_task(self.monitor_pending_transactions())
+
+            await self.collection_loop()
+
+        except Exception as e:
+            logger.error(f"Error in {self.blockchain} collector: {e}")
+        finally:
+            if pending_task is not None:
+                pending_task.cancel()
+                try:
+                    await pending_task
+                except asyncio.CancelledError:
+                    pass
+            await self.stop()
 
     async def get_network_stats(self) -> Dict[str, Any]:
         """Get Ethereum network statistics"""

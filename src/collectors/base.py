@@ -1056,7 +1056,7 @@ class BaseCollector(ABC):
                 )
                 
                 # Check if relationship was created
-                summary = result.consume()
+                summary = await result.consume()
                 if summary.relationships_created == 0:
                     logger.debug(
                         f"Failed to create STABLECOIN_TRANSFER relationship for tx {tx.hash} "
