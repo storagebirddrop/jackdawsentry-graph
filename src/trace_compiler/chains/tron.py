@@ -88,6 +88,7 @@ class TronChainCompiler(_GenericTransferChainCompiler):
         if self._pg is None:
             return []
 
+        seed_address = self._normalize_address(seed_address)
         try:
             async with self._pg.acquire() as conn:
                 native_exists = await conn.fetchval(

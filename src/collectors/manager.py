@@ -46,6 +46,8 @@ class CollectorManager:
         self.backfill_worker: Optional[EventStoreBackfillWorker] = None
         self.address_ingest_worker: Optional[AddressIngestWorker] = None
         self.token_metadata_backfill_worker: Optional[TokenMetadataBackfillWorker] = None
+        self.health_check_interval = 300
+        self.health_startup_grace_period = 30
         self.metrics = {
             "total_collectors": 0,
             "running_collectors": 0,
@@ -440,6 +442,9 @@ class CollectorManager:
 
     async def monitor_health(self):
         """Monitor health of all collectors"""
+        if self.health_startup_grace_period > 0:
+            await asyncio.sleep(self.health_startup_grace_period)
+
         while self.is_running:
             try:
                 # Monitor health of unique collectors only
@@ -454,7 +459,7 @@ class CollectorManager:
                             )
                             asyncio.create_task(self.restart_collector(canonical_blockchain))
 
-                await asyncio.sleep(300)  # Check every 5 minutes
+                await asyncio.sleep(self.health_check_interval)
 
             except Exception as e:
                 logger.error(f"Error in health monitoring: {e}")

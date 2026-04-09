@@ -143,8 +143,11 @@ class SolanaCollector(BaseCollector):
 
     async def disconnect(self):
         """Disconnect from Solana RPC"""
-        if self.client:
-            await self.client.close()
+        client = self.client
+        self.client = None
+
+        if client:
+            await client.close()
 
     async def get_latest_block_number(self) -> int:
         """Get latest slot number"""
