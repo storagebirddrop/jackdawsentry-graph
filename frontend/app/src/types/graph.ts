@@ -27,17 +27,13 @@ export type NodeType =
 
 export type EdgeType =
   | 'transfer'
-  | 'bridge_hop'
   | 'bridge_source'
   | 'bridge_dest'
-  | 'swap_edge'
   | 'swap_input'
   | 'swap_output'
-  | 'entity_membership'
   | 'cluster_member'
   | 'service_deposit'
-  | 'service_receipt'
-  | 'annotation';
+  | 'service_receipt';
 
 export type ActivityType =
   | 'bridge'
@@ -69,6 +65,9 @@ export interface AddressNodeData {
   is_coinjoin_halt?: boolean;
   label?: string;
   fiat_value_usd?: number;
+  tx_count?: number;
+  first_seen?: string;
+  last_seen?: string;
 }
 
 export interface EntityNodeData {
@@ -272,12 +271,19 @@ export interface InvestigationNode {
   chain?: string;
   display_label?: string;
   display_sublabel?: string;
+  display_group?: string;
   entity_name?: string;
+  entity_id?: string;
   entity_type?: string;
   entity_category?: string;
+  attribution_conf?: number;
   risk_score?: number;
+  risk_factors?: string[];
   sanctioned?: boolean;
+  sanctions_list?: string;
+  balance_native?: number;
   balance_fiat?: number;
+  fiat_currency?: string;
   address_data?: AddressNodeData;  // shorthand alias used by some compilers
   entity_data?: EntityNodeData;
   service_data?: ServiceNodeData;
@@ -296,10 +302,12 @@ export interface InvestigationNode {
   depth: number;
   expandable_directions: Array<'next' | 'prev' | 'neighbors'>;
   is_expanded?: boolean;
+  child_count_hint?: number;
   is_pinned?: boolean;
   is_hidden?: boolean;
   is_highlighted?: boolean;
   is_seed?: boolean;
+  investigator_label?: string;
   activity_summary?: ActivitySummary;
   /** Branch color index (0-7) assigned from branch_id hash */
   branch_color_index?: number;
@@ -410,13 +418,19 @@ export interface InvestigationEdge {
   asset_symbol?: string;
   canonical_asset_id?: string;
   chain_asset_id?: string;
+  asset_address?: string;
+  asset_chain?: string;
   value_native?: number;
-  fiat_value_usd?: number;
   value_fiat?: number;
+  /** Legacy alias kept for compatibility with older fixtures/UI helpers. */
+  fiat_value_usd?: number;
   tx_hash?: string;
   tx_chain?: string;
+  block_number?: number;
   timestamp?: string;
+  is_highlighted?: boolean;
   is_suspected_change?: boolean;
+  taint_percentage?: number;
   activity_summary?: ActivitySummary;
   branch_id: string;
   /** Same branch_color_index as the source node */
@@ -426,8 +440,14 @@ export interface InvestigationEdge {
 export function normalizeInvestigationEdge(edge: InvestigationEdge): InvestigationEdge {
   const sourceNodeId = canonicalizeNodeId(edge.source_node_id);
   const targetNodeId = canonicalizeNodeId(edge.target_node_id);
+  const valueFiat = edge.value_fiat ?? edge.fiat_value_usd;
 
-  if (sourceNodeId === edge.source_node_id && targetNodeId === edge.target_node_id) {
+  if (
+    sourceNodeId === edge.source_node_id
+    && targetNodeId === edge.target_node_id
+    && valueFiat === edge.value_fiat
+    && valueFiat === edge.fiat_value_usd
+  ) {
     return edge;
   }
 
@@ -435,6 +455,12 @@ export function normalizeInvestigationEdge(edge: InvestigationEdge): Investigati
     ...edge,
     source_node_id: sourceNodeId,
     target_node_id: targetNodeId,
+    ...(valueFiat !== undefined
+      ? {
+          value_fiat: valueFiat,
+          fiat_value_usd: valueFiat,
+        }
+      : {}),
   };
 }
 
@@ -443,9 +469,7 @@ export function normalizeInvestigationEdge(edge: InvestigationEdge): Investigati
 // ---------------------------------------------------------------------------
 
 export interface LayoutHints {
-  suggested_layout: 'layered' | 'force_directed' | 'force' | 'hierarchical';
-  direction?: 'LR' | 'TB';
-  spacing?: number;
+  suggested_layout: 'layered' | 'force' | 'hierarchical';
   anchor_node_ids?: string[];
   new_branch_root_id?: string | null;
   collapse_candidates?: string[];
@@ -457,9 +481,10 @@ export interface ChainContext {
 }
 
 export interface PaginationMeta {
+  page_size?: number;
+  max_results?: number;
   has_more: boolean;
-  next_cursor?: string;
-  total_available?: number;
+  next_token?: string | null;
 }
 
 export interface AssetContext {
@@ -491,25 +516,46 @@ export interface ExpansionEmptyState {
   known_tx_count?: number;
 }
 
+export type ExpansionOperationType =
+  | 'expand_next'
+  | 'expand_prev'
+  | 'expand_neighbors'
+  | 'expand_bridge'
+  | 'expand_utxo'
+  | 'expand_solana_tx'
+  | 'collapse_branch'
+  | 'hide_node'
+  | 'search';
+
+export type ExpansionDataSource =
+  | 'event_store'
+  | 'neo4j_fallback'
+  | 'live_history';
+
 export interface ExpansionResponseV2 {
   session_id: string;
   branch_id: string;
   parent_branch_id?: string | null;
-  expansion_depth?: number;
+  expansion_depth: number;
   operation_id: string;
-  operation_type: 'expand_next' | 'expand_prev' | 'expand_neighbors' | 'create_session';
-  seed_node_id?: string;
+  operation_type: ExpansionOperationType;
+  seed_node_id: string;
   seed_lineage_id?: string | null;
-  nodes: InvestigationNode[];
-  edges: InvestigationEdge[];
-  added_nodes?: InvestigationNode[];
-  added_edges?: InvestigationEdge[];
-  updated_nodes?: InvestigationNode[];
-  removed_node_ids?: string[];
+  added_nodes: InvestigationNode[];
+  added_edges: InvestigationEdge[];
+  removed_node_ids: string[];
+  updated_nodes: InvestigationNode[];
+  has_more: boolean;
+  continuation_token?: string | null;
+  /** Frontend-normalized aliases populated by the API client. */
+  nodes?: InvestigationNode[];
+  /** Frontend-normalized aliases populated by the API client. */
+  edges?: InvestigationEdge[];
   layout_hints: LayoutHints;
   chain_context: ChainContext;
-  pagination?: PaginationMeta;
+  pagination: PaginationMeta;
   asset_context?: AssetContext;
+  data_sources?: ExpansionDataSource[];
   empty_state?: ExpansionEmptyState;
   integrity_warning?: string;
   ingest_pending?: boolean;

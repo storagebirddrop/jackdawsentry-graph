@@ -35,7 +35,7 @@ export default function InvestigationEdgeComponent(props: EdgeProps) {
 
   const valueLabel = appearance.showValues
     ? appearance.amountsInFiat
-      ? formatUsd(data.fiat_value_usd)
+      ? formatUsd(data.value_fiat ?? data.fiat_value_usd)
       : formatNative(data.value_native, data.asset_symbol)
     : null;
   const dateLabel = appearance.showTxDate

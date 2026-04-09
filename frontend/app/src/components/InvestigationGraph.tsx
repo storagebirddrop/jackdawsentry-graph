@@ -203,7 +203,8 @@ function applyFilters(
   const minFiat = filters.minFiatValue;
   if (minFiat !== null && minFiat > 0) {
     visibleEdges = visibleEdges.filter((e) => {
-      const val = (e.data as Record<string, unknown>)?.fiat_value_usd as number | undefined;
+      const edgeData = (e.data as Record<string, unknown>) ?? {};
+      const val = (edgeData.value_fiat ?? edgeData.fiat_value_usd) as number | undefined;
       return val === undefined || val >= minFiat;
     });
   }
@@ -700,8 +701,8 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
         const nodeParts = node.node_id.split(':');
         const nodeChain = nodeParts[0]?.toUpperCase() ?? 'this';
         const response = await expandNode(sessionId, buildExpandRequest(invocation));
-        const deltaNodes = response.nodes ?? response.added_nodes ?? [];
-        const deltaEdges = response.edges ?? response.added_edges ?? [];
+        const deltaNodes = response.added_nodes ?? response.nodes ?? [];
+        const deltaEdges = response.added_edges ?? response.edges ?? [];
         const updatedNodes = response.updated_nodes ?? [];
         const removedNodeIds = response.removed_node_ids ?? [];
 

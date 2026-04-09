@@ -1378,7 +1378,7 @@ function EdgeInspectorContent({
       <Section title="Value and asset">
         <KeyValue label="Asset">{edge.asset_symbol ?? 'Unknown'}</KeyValue>
         <KeyValue label="Native value">{formatNative(edge.value_native, edge.asset_symbol) ?? 'Not available'}</KeyValue>
-        <KeyValue label="Fiat value">{formatUsd(edge.fiat_value_usd) ?? 'Not available'}</KeyValue>
+        <KeyValue label="Fiat value">{formatUsd(edge.value_fiat ?? edge.fiat_value_usd) ?? 'Not available'}</KeyValue>
         <KeyValue label="Timestamp">{formatTimestamp(edge.timestamp, true) ?? 'Unknown'}</KeyValue>
       </Section>
 
