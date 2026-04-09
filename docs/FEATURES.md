@@ -40,6 +40,10 @@
 - Empty-state honesty explanations
 - Bridge hop expansion with status polling
 - On-demand address ingest trigger
+- Direct-expand session workflow as the active shipped path
+- Inspector-based single-asset selection for non-Bitcoin address nodes
+- Stored per-node asset scope reused by quick `Prev` / `Next`
+- Edge selective trace narrowed by `tx_hash` first, with asset scope only when safe chain-local identity exists
 
 **Multi-chain Tracing**
 - Cross-chain bridge detection and correlation
@@ -107,6 +111,16 @@
 - Bridge intelligence cards with protocol classification
 - Pinned path stories for narrative tracking
 - Node inspector with detailed lineage information
+- Asset-specific filtering for EVM, Solana, and Tron only when chain-local identity exists
+- No asset-selector path for Bitcoin address nodes
+- Canonical active-path edge fiat field: `value_fiat`
+- Bridge edge animation keyed off backend `bridge_source` / `bridge_dest`
+
+### Not In The Current Shipped Path
+
+- Preview/apply graph workflows
+- Date-filtered expansion controls
+- Candidate-selection architecture
 
 ## Limitations
 
