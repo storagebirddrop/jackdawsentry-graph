@@ -192,6 +192,43 @@ def format_asset_option_label(option: AssetOption) -> str:
     return "Asset"
 
 
+def _asset_option_identity(option: AssetOption) -> tuple[str, ...]:
+    chain = (option.chain or "").strip().lower()
+
+    if option.mode in {"all", "native"}:
+        return (option.mode, chain)
+
+    normalized_chain_asset_id = normalize_chain_asset_id(chain, option.chain_asset_id)
+    if normalized_chain_asset_id:
+        return (option.mode, chain, "chain_asset_id", normalized_chain_asset_id)
+
+    canonical_asset_id = (option.canonical_asset_id or "").strip().lower()
+    if canonical_asset_id:
+        return (option.mode, chain, "canonical_asset_id", canonical_asset_id)
+
+    asset_symbol = (option.asset_symbol or "").strip().upper()
+    return (option.mode, chain, "asset_symbol", asset_symbol)
+
+
+def dedupe_asset_options(options: Iterable[AssetOption]) -> list[AssetOption]:
+    """Return asset options with stable first-seen ordering and normalized dedup.
+
+    The frontend selector contract should not surface duplicate choices even if
+    upstream rows vary only by casing or repeated joins. Preserve the first
+    occurrence so chain compilers keep their newest-first ordering.
+    """
+
+    deduped: list[AssetOption] = []
+    seen: set[tuple[str, ...]] = set()
+    for option in options:
+        identity = _asset_option_identity(option)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        deduped.append(option)
+    return deduped
+
+
 def build_asset_option(
     *,
     mode: AssetSelectorMode,
