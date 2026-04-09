@@ -64,9 +64,9 @@ This repository is intentionally narrower than the private Jackdaw Sentry platfo
 - React investigation graph UI
 - graph-focused backend/runtime, contracts, and tests
 
-**Supported chains:** Bitcoin, Lightning Network, Ethereum, BSC, Polygon, Arbitrum, Base, Avalanche, Optimism, Starknet, Injective, Solana, Tron, Cosmos, Sui.
+**Supported chains (expansion works):** Bitcoin, Lightning Network, Ethereum, BSC, Polygon, Arbitrum, Base, Avalanche, Optimism, Starknet, Injective, Solana, Tron.
 
-**Note:** XRP is not currently supported despite having a collector implementation.
+**Collector implemented, expansion not yet wired:** XRP, Cosmos, Sui — chain compilers exist and are tested, but are not registered in the TraceCompiler dispatch. Graph expansion for these chains returns empty results until registration is completed.
 
 **Node types on the canvas:** `address`, `entity`, `utxo`, `swap_event`, `atomic_swap`, `bridge_hop`, `btc_sidechain_peg`, `lightning_channel_open`, `lightning_channel_close`, `solana_instruction`, `cluster_summary`, `service`.
 

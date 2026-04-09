@@ -40,8 +40,8 @@ COPY --chown=jackdaw:jackdaw . .
 RUN mkdir -p /app/logs /app/data /app/uploads /app/exports && \
     chown -R jackdaw:jackdaw /app/logs /app/data /app/uploads /app/exports
 
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"
+HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)"
 
 EXPOSE 8000
 
