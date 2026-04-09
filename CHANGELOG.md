@@ -17,86 +17,69 @@ All notable changes to Jackdaw Sentry Graph will be documented in this file.
 - Explicitly noted that preview/apply, date-filter, and candidate-selection
   flows are not part of the current shipped path
 
-## [2024-03-22] - Major Code Quality & Performance Improvements
+## [2026-03-31] - Graph expansion stability, layout, and restore UX
 
-### 🔒 Security & Authentication
-- **Fixed authentication bypass vulnerability** - Added proper safeguards to auth bypass mechanism
-  - Restricted bypass to non-production environments only
-  - Added comprehensive audit logging for bypass events
-  - Changed `GRAPH_AUTH_DISABLED` default from `true` to `false`
-- **Enhanced boolean flag normalization** - Added `GRAPH_AUTH_DISABLED` to proper validation pipeline
+### Frontend
+- Incremental node placement and ELK `fixedPositions` keep existing graph nodes pinned during targeted re-layouts.
+- Inspector filter state resets when the selected node changes, preventing stale preview inputs and counterpart display glitches.
+- Graph store and layout metadata track stable node placement through delta application and restore flows.
 
-### 🚀 Performance & Reliability
-- **Optimized database queries** - Replaced inefficient `COUNT(*)` with `EXISTS` for better performance
-- **Improved HTTP client usage** - Eliminated redundant client creation in price oracle and bridge tracer
-- **Enhanced async lock initialization** - Implemented lazy initialization pattern to prevent event loop issues
-- **Optimized enrichment process** - Added timing metrics and limited enrichment to address nodes only
-- **Fixed stale row reclamation** - Added automatic cleanup of stuck address ingest queue entries (5-minute timeout)
+### Backend
+- Backfill is enabled by default in `.env.example`, with RPC coverage documented for the graph runtime's supported chains.
+- Backfill block timeout increased from 30 seconds to 120 seconds to reduce false failures on slow RPC nodes.
+- Time-window filtering is wired through the generic transfer, EVM, Solana, and Bitcoin compilers, with targeted Neo4j time-filter coverage.
+- `GET /api/v1/graph/sessions/recent` and monotonic autosave conflict protection support backend-owned restore discovery.
+- The default graph compose setup binds nginx to `127.0.0.1`.
 
-### 🐛 Bug Fixes
-- **Ethereum collector improvements**:
-  - Fixed address padding to preserve leading zeros in 32-byte topics
-  - Added proper transaction status determination from receipts
-  - Fixed gas and timestamp parsing with robust error handling
-  - Replaced hardcoded chain IDs with dynamic mapping for multi-chain support
-  - Added missing block-scan fallback to transaction lookup cascade
+## [2026-03-28] - Release hardening and investigator-facing safeguards
 
-- **Data processing fixes**:
-  - Added validation for malformed DEX logs to prevent KeyError crashes
-  - Fixed native token detection using dynamic `_native_symbol()` instead of hardcoded lists
-  - Corrected 128-bit integer handling in EVM log decoder
-  - Fixed timing calculation precision in bridge tracer
+### Security and runtime
+- Auth remains enabled by default; bypass now requires development-mode configuration plus explicit runtime confirmation.
+- Public graph surface hardening removed legacy exposure paths, tightened session ownership invariants, and documented operator guidance for local-only deployment.
+- Expansion responses now include integrity-warning metadata when fallback graph reads are used.
 
-- **Error handling improvements**:
-  - Upgraded debug-level logging to warning for better visibility of failures
-  - Added proper exception re-raising in address ingest worker
-  - Enhanced clipboard error handling with fallback for unsupported browsers
+### Frontend
+- Investigator-facing truthfulness states and recovery flows were tightened so fallback behavior is visible instead of silent.
 
-- **Frontend UX improvements**:
-  - Fixed subtitle duplication when no entity name exists
-  - Improved address shortening logic with better edge case handling
-  - Added comprehensive clipboard error handling with fallback
+## [2026-03-26] - Solana live ingest and retry coverage
 
-### 🧪 Testing & Quality
-- **Fixed test data issues**:
-  - Corrected Sui address format to proper 64-character hex
-  - Updated TRON address format comments for accuracy
-  - Renamed test functions for better clarity
-- **Pinned workflow versions** - Fixed semgrep workflow to use specific version instead of floating `@main`
+### Ingest
+- Solana live fetch uses serial `getTransaction` retrieval with HTTP 429 and JSON-RPC 429 backoff handling.
+- Raw Solana instruction storage was rebuilt to match ingest writes and downstream compiler reads.
+- On-demand ingest retry flows now track pending address fetches through `address_ingest_queue`.
 
-### 🏗️ Architecture Improvements
-- **Eliminated duplicate collector registrations** - Implemented alias system with deduplication
-- **Enhanced import error handling** - Graceful degradation when optional dependencies unavailable
-- **Improved client session management** - Better resource reuse and cleanup patterns
+### Frontend
+- `IngestPendingContext`, `useIngestPoller`, and canvas banners surface pending fetch state while background ingest completes.
 
-### 📊 Monitoring & Observability
-- **Added comprehensive timing metrics** for enrichment operations
-- **Enhanced logging** throughout the system for better debugging
-- **Improved error visibility** with appropriate log levels and context
+## [2026-03-23 to 2026-03-24] - Bridge correlation, attribution, and deeper semantics
 
----
+### Tracing and enrichment
+- Bridge deposit log decode and tracer follow-up logic correlate Across, Celer, Stargate, and Chainflip hops from on-chain data.
+- Sanctions screening, entity attribution seeds, and contract metadata enrichment were added across the supported graph chains.
+- Address nodes now surface sanctions, entity category, deployer, and risk metadata in the investigation graph.
 
-## Technical Details
+### Semantics
+- DEX detection expanded with XRP AMM, Cosmos DEX, Balancer V2, Curve, and Solidly coverage.
+- Mixer taint propagation and sanctioned-service semantics are carried through graph expansion results.
 
-### Security Fixes
-- Authentication bypass now requires `DEBUG=true` and `ALLOW_AUTH_BYPASS=true`
-- All bypass attempts are logged with full context for security auditing
-- Default authentication is now enabled by default
+## [2026-03-21] - Multi-chain compilers, swap semantics, and on-demand ingest
 
-### Performance Gains
-- Database queries now use `EXISTS` instead of `COUNT(*)` for existence checks
-- HTTP clients are reused instead of created per request
-- Enrichment only processes address nodes, reducing unnecessary API calls
+### Chains
+- Added Tron graph expansion support and implemented chain compilers for XRP, Cosmos, and Sui.
+- XRP, Cosmos, and Sui compilers are present in the repo but are not yet registered in `TraceCompiler`, so expansion still returns empty results for those chains.
+- `_GenericTransferChainCompiler` centralizes shared transfer-expansion behavior across Tron, XRP, Cosmos, and Sui.
 
-### Reliability Improvements
-- Stale queue entries are automatically reclaimed after 5 minutes
-- Malformed log entries are skipped with warnings instead of crashing
-- Better error propagation ensures issues are visible to operators
+### Semantics and runtime
+- EVM log decoding and Solana instruction decoding promote swap activity to first-class `swap_event` nodes.
+- Tron DEX swap detection now flows from ingest through graph expansion.
+- Empty-frontier expansion can trigger background address ingest for supported live-fetch paths.
 
-### Code Quality
-- Removed hardcoded values throughout the codebase
-- Added comprehensive error handling and logging
-- Improved type safety and validation
-- Enhanced test coverage and data accuracy
+## [2026-03-20] - Standalone graph runtime release and investigation workflow
 
-This represents a significant improvement in code quality, security, and reliability while maintaining full backward compatibility.
+### Security and session model
+- The standalone graph runtime shipped with owner-bound sessions, expansion guardrails, and backend-controlled restore contracts.
+- Auth defaults were hardened for the public graph runtime, and production defaults removed unnecessary docs and flat-route exposure.
+
+### Investigation workflow
+- The graph UI gained branch compare, focus workflows, pinned-path storytelling, semantic legends, bridge intelligence, and session briefing support.
+- Deterministic graph fixtures and bridge-focused coverage improved release readiness and regression testing.
