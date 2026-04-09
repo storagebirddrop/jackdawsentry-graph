@@ -29,6 +29,7 @@ from typing import Optional
 from typing import Tuple
 
 from src.trace_compiler.asset_selection import build_asset_option
+from src.trace_compiler.asset_selection import dedupe_asset_options
 from src.trace_compiler.asset_selection import selector_requires_event_store_only
 from src.trace_compiler.chains._transfer_base import _GenericTransferChainCompiler
 from src.trace_compiler.chains._transfer_base import _SwapLeg
@@ -184,7 +185,7 @@ class EVMChainCompiler(_GenericTransferChainCompiler):
                     canonical_asset_id=record.get("canonical_asset_id"),
                 )
             )
-        return options
+        return dedupe_asset_options(options)
 
     async def _try_swap_promotion(
         self,

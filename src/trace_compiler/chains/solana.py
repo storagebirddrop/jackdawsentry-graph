@@ -34,6 +34,7 @@ from typing import Set
 from typing import Tuple
 
 from src.trace_compiler.asset_selection import build_asset_option
+from src.trace_compiler.asset_selection import dedupe_asset_options
 from src.trace_compiler.asset_selection import effective_asset_selector
 from src.trace_compiler.asset_selection import normalize_chain_asset_id
 from src.trace_compiler.asset_selection import selector_requires_event_store_only
@@ -145,7 +146,7 @@ class SolanaChainCompiler(BaseChainCompiler):
                     canonical_asset_id=record.get("canonical_asset_id"),
                 )
             )
-        return options
+        return dedupe_asset_options(options)
 
     async def expand_next(
         self,
