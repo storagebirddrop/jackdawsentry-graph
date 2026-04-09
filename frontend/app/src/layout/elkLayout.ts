@@ -12,13 +12,15 @@
  * graph: layered algorithm, wide spacing to accommodate node cards.
  */
 
-import ELK from 'elkjs/lib/main.js';
+import ELK from 'elkjs/lib/elk-api.js';
 import ElkWorker from 'elkjs/lib/elk-worker.min.js?worker';
 import type { Node, Edge } from '@xyflow/react';
 
 // ELK layout runs in a Web Worker — never blocks the main thread.
-// workerFactory is called by elkjs/lib/main.js; we use Vite's pre-bundled
-// worker class so the worker URL is content-hashed at build time.
+// We provide workerFactory explicitly and use Vite's pre-bundled worker class
+// so the worker URL is content-hashed at build time. Import elk-api.js
+// directly to avoid bundling elkjs's fake-worker fallback, which otherwise
+// duplicates the full worker payload inside the main app chunk.
 const elk = new ELK({
   workerFactory: () => new ElkWorker(),
 });
