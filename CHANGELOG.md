@@ -2,6 +2,21 @@
 
 All notable changes to Jackdaw Sentry Graph will be documented in this file.
 
+## [2026-04-09] - Active Graph Contract Docs Alignment
+
+### 📘 Documentation
+- Documented direct expand as the active shipped session graph path
+- Clarified asset-aware expand behavior for non-Bitcoin address nodes:
+  inspector asset selection, stored per-node `Prev` / `Next` reuse, and
+  Bitcoin exclusion from the selector path
+- Clarified that edge selective trace is `tx_hash`-first and only asset-scoped
+  when safe chain-local identity exists for EVM, Solana, and Tron
+- Declared `value_fiat` as the canonical active-path edge fiat field
+- Declared bridge animation alignment with backend `bridge_source` /
+  `bridge_dest`
+- Explicitly noted that preview/apply, date-filter, and candidate-selection
+  flows are not part of the current shipped path
+
 ## [2024-03-22] - Major Code Quality & Performance Improvements
 
 ### 🔒 Security & Authentication

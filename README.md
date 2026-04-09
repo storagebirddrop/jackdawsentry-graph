@@ -70,6 +70,22 @@ This repository is intentionally narrower than the private Jackdaw Sentry platfo
 
 **Node types on the canvas:** `address`, `entity`, `utxo`, `swap_event`, `atomic_swap`, `bridge_hop`, `btc_sidechain_peg`, `lightning_channel_open`, `lightning_channel_close`, `solana_instruction`, `cluster_summary`, `service`.
 
+## Active Graph Contract
+
+The currently shipped session graph path is direct expand.
+
+- non-Bitcoin address nodes can load inspector-based single-asset choices
+- inspector expand uses the currently selected asset scope
+- quick `Prev` / `Next` reuses the stored asset scope for that node
+- edge selective trace is `tx_hash`-first and only adds `asset_selector` when safe chain-local asset identity exists
+- EVM, Solana, and Tron asset-specific filtering requires chain-local identity and does not guess by symbol
+- Bitcoin does not participate in the asset-selector path
+- `value_fiat` is the canonical active-path edge fiat field; `fiat_value_usd` is compatibility-backed only
+- animated bridge edges follow backend `bridge_source` / `bridge_dest`
+
+Preview/apply, date-filter, and candidate-selection workflows are not part of
+the current shipped graph path.
+
 ## Codebase Map
 
 - `src/api/graph_app.py` — standalone FastAPI graph runtime entry point
