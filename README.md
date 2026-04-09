@@ -290,7 +290,7 @@ What is active today:
 Backend verification:
 
 ```bash
-pytest tests/test_trace_compiler -q
+uv run pytest tests/test_trace_compiler -q
 ```
 
 Frontend verification:

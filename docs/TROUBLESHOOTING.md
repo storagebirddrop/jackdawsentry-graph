@@ -204,15 +204,15 @@ docker compose -f docker-compose.graph.yml up --force-recreate
 **Test Failures**
 **Problem**: Tests failing with import errors
 **Solutions**:
-1. Install test dependencies:
+1. Use the repo-local uv bootstrap from the repo root:
 ```bash
-pip install -r requirements-test.txt
+uv run pytest -q tests/test_api/test_graph_app.py tests/test_trace_compiler/test_public_session_endpoints.py
 ```
 
 2. Run specific test modules:
 ```bash
-pytest tests/test_trace_compiler -v
-pytest tests/test_api -v
+uv run pytest tests/test_trace_compiler -v
+uv run pytest tests/test_api -v
 ```
 
 ### Debugging Tools
