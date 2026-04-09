@@ -86,10 +86,28 @@ async function handleResponse<T>(res: Response): Promise<T> {
 function normalizeExpansionResponse(
   payload: ExpansionResponseV2,
 ): ExpansionResponseV2 {
+  const addedNodes = payload.added_nodes ?? payload.nodes ?? [];
+  const addedEdges = payload.added_edges ?? payload.edges ?? [];
+  const hasMore = payload.has_more ?? payload.pagination?.has_more ?? false;
+  const continuationToken = payload.continuation_token ?? payload.pagination?.next_token;
+
   return {
     ...payload,
-    nodes: payload.nodes ?? payload.added_nodes ?? [],
-    edges: payload.edges ?? payload.added_edges ?? [],
+    added_nodes: addedNodes,
+    added_edges: addedEdges,
+    updated_nodes: payload.updated_nodes ?? [],
+    removed_node_ids: payload.removed_node_ids ?? [],
+    has_more: hasMore,
+    continuation_token: continuationToken,
+    pagination: payload.pagination ?? {
+      page_size: 25,
+      max_results: 100,
+      has_more: hasMore,
+      next_token: continuationToken,
+    },
+    data_sources: payload.data_sources ?? [],
+    nodes: payload.nodes ?? addedNodes,
+    edges: payload.edges ?? addedEdges,
   };
 }
 

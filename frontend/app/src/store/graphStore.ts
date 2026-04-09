@@ -100,6 +100,7 @@ export function toRfNode(inv: InvestigationNode): Node {
 
 export function toRfEdge(inv: InvestigationEdge): Edge {
   const colorIdx = branchColorIndex(inv.branch_id);
+  const isBridgeEdge = inv.edge_type === 'bridge_source' || inv.edge_type === 'bridge_dest';
   return {
     id: inv.edge_id,
     source: inv.source_node_id,
@@ -111,7 +112,7 @@ export function toRfEdge(inv: InvestigationEdge): Edge {
       branch_color: BRANCH_COLORS[colorIdx],
     },
     style: { stroke: BRANCH_COLORS[colorIdx], strokeWidth: 2 },
-    animated: inv.edge_type === 'bridge_hop',
+    animated: isBridgeEdge,
     markerEnd: {
       type: MarkerType.ArrowClosed,
       color: BRANCH_COLORS[colorIdx],
@@ -263,9 +264,9 @@ export const useGraphStore = create<GraphState>((set, get) => ({
 
   applyExpansionDelta(response, options) {
     const { nodeMap, edgeMap, branchMap, layoutMetaMap } = get();
-    const deltaNodes = (response.nodes ?? response.added_nodes ?? []).map(normalizeNode);
+    const deltaNodes = (response.added_nodes ?? response.nodes ?? []).map(normalizeNode);
     const updatedNodes = (response.updated_nodes ?? []).map(normalizeNode);
-    const deltaEdges = (response.edges ?? response.added_edges ?? []).map(normalizeEdge);
+    const deltaEdges = (response.added_edges ?? response.edges ?? []).map(normalizeEdge);
     const removedNodeIds = new Set(response.removed_node_ids ?? []);
     const placementMap = options?.newNodePlacements ?? new Map<string, NodePlacementDescriptor>();
 
