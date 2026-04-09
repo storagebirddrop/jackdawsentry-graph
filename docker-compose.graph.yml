@@ -59,16 +59,11 @@ services:
     # Repo-owned mode flags stay in env_file so caller-shell values do not
     # silently change recovery, rollback, or public-posture behavior.
     command:
-      - uvicorn
-      - src.api.graph_app:app
-      - --host
-      - 0.0.0.0
-      - --port
-      - "8000"
-      - --workers
-      - "2"
-      - --log-level
-      - info
+      - /bin/sh
+      - -lc
+      - >-
+          python -m src.api.wait_for_graph_dependencies
+          && exec uvicorn src.api.graph_app:app --host 0.0.0.0 --port 8000 --workers 2 --log-level info
     environment:
       API_HOST: 0.0.0.0
       API_PORT: 8000
@@ -110,7 +105,8 @@ services:
     ports:
       - "127.0.0.1:8081:80"
     depends_on:
-      - graph-api
+      graph-api:
+        condition: service_healthy
     networks:
       - jackdawsentry_graph_network
 
