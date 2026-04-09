@@ -28,5 +28,7 @@ frontend/app/playwright-report/
 /docs/drills/DRILL_FRAMEWORK.md
 /docs/drills/GRAPH_TRUTHFULNESS_AND_INVESTIGATOR_MISINTERPRETATION_DRILL.md
 
-# Internal working notes
-/tasks/
+# Internal working notes — track memory and lessons, ignore everything else
+/tasks/*
+!/tasks/memory.md
+!/tasks/lessons.md

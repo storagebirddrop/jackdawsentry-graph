@@ -27,6 +27,8 @@ ALLOWED_TRACKED_PATHS = {
     "docs/drills/README.md",
     "docs/drills/runs/.gitkeep",
     "docs/drills/templates/DRILL_RUN_TEMPLATE.md",
+    "tasks/memory.md",
+    "tasks/lessons.md",
 }
 
 
