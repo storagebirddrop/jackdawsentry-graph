@@ -12,7 +12,7 @@ Read this file before touching graph schema, graph API, trace compiler semantics
 
 ## Current Shipped State
 
-As of 2026-04-09, current main is the source of truth. Compare all new
+As of 2026-04-10, current main is the source of truth. Compare all new
 work against main, not older recovery branches.
 
 Active shipped graph path on main:
@@ -21,6 +21,15 @@ Active shipped graph path on main:
   (inspector-based single-asset selection, stored per-node Prev/Next reuse)
 - edge selective trace: tx_hash-first, asset-scoped only when safe
   chain-local identity exists
+- preview/apply: inspector "Filter & Preview" panel previews an expansion
+  without applying it; `handlePreviewExpand` / `handleApplyPreview` wired
+  in `InvestigationGraph`; candidate edge list rendered in `GraphInspectorPanel`
+- date-filtered expansion: `time_from` / `time_to` accepted by the expand
+  API and applied as Neo4j time predicates in Bitcoin, EVM, and Solana
+  chain compilers; covered by `test_neo4j_time_filter.py`
+- candidate selection / subset apply: per-edge checkboxes in the preview
+  panel; "Apply selected" prunes both edges and reachable nodes before
+  committing the delta via `applyExpansionDelta`
 
 Current shipped behavior:
 - EVM / Solana / TRON asset-specific token filtering requires chain-local identity
@@ -30,16 +39,19 @@ Current shipped behavior:
 - layout/manual-placement safeguards intact
 
 Not part of the current shipped path:
-- preview/apply
-- date filtering
-- candidate-selection/subset apply
-- multi-asset selection
+- multi-asset selection (single-asset scoping only; each expand request
+  accepts at most one `AssetSelector`)
 
 Cleanup status (2026-04-09):
 - full follow-up merge queue complete
 - recovery worktrees/stashes cleaned up
 - `feat/asset-scoped-expansion-clean` audited as fully superseded;
   docs-only mining pass merged as PR #15; branch deleted
+
+Note (2026-04-10): code audit confirmed preview/apply, date-filtered
+expansion, and candidate selection were already fully implemented on main.
+The prior "not shipped" designation was inaccurate documentation, not a
+code reality.
 
 ## Active Decisions
 

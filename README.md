@@ -72,8 +72,6 @@ This repository is intentionally narrower than the private Jackdaw Sentry platfo
 
 ## Active Graph Contract
 
-The currently shipped session graph path is direct expand.
-
 - non-Bitcoin address nodes can load inspector-based single-asset choices
 - inspector expand uses the currently selected asset scope
 - quick `Prev` / `Next` reuses the stored asset scope for that node
@@ -82,9 +80,11 @@ The currently shipped session graph path is direct expand.
 - Bitcoin does not participate in the asset-selector path
 - `value_fiat` is the canonical active-path edge fiat field; `fiat_value_usd` is compatibility-backed only
 - animated bridge edges follow backend `bridge_source` / `bridge_dest`
+- the inspector **Filter & Preview** panel previews an expansion without applying it; investigators review and select candidate edges before committing
+- `time_from` / `time_to` date bounds are accepted by the expand API and applied in Bitcoin, EVM, and Solana chain compilers
+- candidate selection applies only the checked edges and their reachable nodes to the canvas
 
-Preview/apply, date-filter, and candidate-selection workflows are not part of
-the current shipped graph path.
+Multi-asset selection is not implemented; each expansion is scoped to a single asset selector.
 
 ## Codebase Map
 

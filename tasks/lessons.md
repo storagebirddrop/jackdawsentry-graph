@@ -2,6 +2,23 @@
 
 Record concrete mistakes and the follow-up rule that prevents them from recurring.
 
+## 2026-04-10 — "Not shipped" in docs does not mean "not in the codebase"
+
+**What went wrong:** AGENTS.md, tasks/memory.md, and README.md all stated
+that preview/apply, date-filtered expansion, and candidate selection were
+not part of the shipped path. A code audit found all three were fully
+implemented on main — wired end-to-end in `InvestigationGraph.tsx`,
+`GraphInspectorPanel.tsx`, the expand API router, and chain compilers —
+and had been there since before the recovery merge queue completed.
+
+**Rule:** "Not shipped" is an ambiguous term. It can mean "not in the
+codebase" or "in the codebase but not formally documented / tested /
+announced." When writing memory or agent instructions, be explicit:
+say "not implemented" for absent code and "implemented but not formally
+documented" for code that exists but lacks coverage or announcement.
+Verify against the working tree with targeted grep before writing a
+"not shipped" instruction that a future agent or contributor will act on.
+
 ## 2026-03-26 — `raw_transactions` conflict when co-storing instruction bytes
 
 **What went wrong:** Tried to store Solana instruction bytes in `raw_transactions.input_data`

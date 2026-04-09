@@ -11,13 +11,16 @@ Compare all new work against `main`, not stale recovery branches, older task mem
 
 ## Active Shipped Graph Path
 
-The currently shipped session graph path is **direct expand**.
+The currently shipped session graph path includes **direct expand**, **preview/apply**, **date-filtered expansion**, and **candidate selection / subset apply**.
 
 Shipped behavior:
 - **asset-aware expand** for supported non-Bitcoin address flows
   - inspector-based single-asset selection
   - stored per-node asset scope reused by Prev/Next
 - **edge selective trace** is `tx_hash`-first and only adds asset scope when safe chain-local identity exists (EVM, Solana, TRON)
+- **preview/apply**: inspector "Filter & Preview" panel runs an expansion without committing it to the canvas; investigators review candidate edges before applying
+- **date-filtered expansion**: `time_from` / `time_to` bounds accepted by the expand API and applied as time predicates in Bitcoin, EVM, and Solana chain compilers
+- **candidate selection / subset apply**: per-edge checkboxes in the preview panel; "Apply selected" prunes both edges and reachable nodes before committing the delta
 - Bitcoin is excluded from the asset-selector path
 - `value_fiat` is the canonical active-path edge fiat field
 - bridge animation follows backend `bridge_source` / `bridge_dest`
@@ -25,12 +28,9 @@ Shipped behavior:
 
 ## Not Part of the Current Active Shipped Path
 
-- preview/apply
-- date filtering
-- candidate selection / subset apply
-- multi-asset selection
+- **multi-asset selection** — single-asset scoping only per expansion; each expand request accepts at most one `AssetSelector`
 
-Do not build on top of these as if they are already shipped.
+Do not treat multi-asset selection as implemented.
 Do not remove the README **Active Graph Contract** section that documents this boundary.
 
 ## Required Reading Before Graph Work
