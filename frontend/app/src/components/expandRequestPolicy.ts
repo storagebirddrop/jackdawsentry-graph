@@ -17,6 +17,16 @@ export interface ExpandInvocation {
   assetSelector?: AssetSelector | null;
 }
 
+function toRequestAssetSelector(selector: AssetSelector): AssetSelector {
+  return {
+    mode: selector.mode,
+    chain: selector.chain,
+    chain_asset_id: selector.chain_asset_id,
+    asset_symbol: selector.asset_symbol,
+    canonical_asset_id: selector.canonical_asset_id,
+  };
+}
+
 type TraceEndpointNode = Pick<
   InvestigationNode,
   'node_id' | 'lineage_id' | 'node_type' | 'chain' | 'address_data'
@@ -34,7 +44,7 @@ export function buildExpandRequest(invocation: ExpandInvocation): ExpandRequest 
     requestOptions.tx_hashes = invocation.txHashes;
   }
   if (invocation.assetSelector && invocation.assetSelector.mode !== 'all') {
-    requestOptions.asset_selector = invocation.assetSelector;
+    requestOptions.asset_selector = toRequestAssetSelector(invocation.assetSelector);
   }
 
   return {
