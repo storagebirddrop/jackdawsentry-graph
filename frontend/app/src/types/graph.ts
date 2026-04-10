@@ -325,7 +325,7 @@ const EVM_CHAINS = new Set([
   'injective',
 ]);
 
-function canonicalizeNodeId(nodeId: string): string {
+export function normalizeInvestigationNodeId(nodeId: string): string {
   const parts = nodeId.split(':');
   if (parts.length < 3) {
     return nodeId;
@@ -375,7 +375,7 @@ export function getInvestigationNodeData(node: InvestigationNode): NodeData | un
 
 export function normalizeInvestigationNode(node: InvestigationNode): InvestigationNode {
   const nodeData = getInvestigationNodeData(node);
-  const canonicalNodeId = canonicalizeNodeId(node.node_id);
+  const canonicalNodeId = normalizeInvestigationNodeId(node.node_id);
 
   if ((!nodeData || node.node_data === nodeData) && canonicalNodeId === node.node_id) {
     return node;
@@ -438,8 +438,8 @@ export interface InvestigationEdge {
 }
 
 export function normalizeInvestigationEdge(edge: InvestigationEdge): InvestigationEdge {
-  const sourceNodeId = canonicalizeNodeId(edge.source_node_id);
-  const targetNodeId = canonicalizeNodeId(edge.target_node_id);
+  const sourceNodeId = normalizeInvestigationNodeId(edge.source_node_id);
+  const targetNodeId = normalizeInvestigationNodeId(edge.target_node_id);
   const valueFiat = edge.value_fiat ?? edge.fiat_value_usd;
 
   if (
@@ -630,6 +630,7 @@ export interface WorkspaceSnapshotV1 {
   edges: InvestigationEdge[];
   positions: Record<string, WorkspacePosition>;
   branches?: WorkspaceBranchSnapshot[] | null;
+  nodeAssetScopes?: Record<string, AssetSelector[]> | null;
   workspacePreferences?: WorkspacePreferencesSnapshot | null;
 }
 

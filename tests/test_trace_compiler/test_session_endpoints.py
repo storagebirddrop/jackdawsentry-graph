@@ -83,6 +83,16 @@ def _workspace_snapshot_payload(session_id: str = VALID_SESSION_ID) -> dict:
                 "nodeCount": 1,
             }
         ],
+        "nodeAssetScopes": {
+            "ethereum:address:0xabc": [
+                {
+                    "mode": "asset",
+                    "chain": "ethereum",
+                    "chain_asset_id": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+                    "asset_symbol": "USDC",
+                }
+            ]
+        },
         "workspacePreferences": {
             "selectedAssets": [],
             "pinnedAssetKeys": [],
@@ -232,6 +242,7 @@ class TestGetSession:
         assert payload["restore_state"] == "full"
         assert payload["workspace"]["sessionId"] == VALID_SESSION_ID
         assert payload["workspace"]["nodes"][0]["node_id"] == "ethereum:address:0xabc"
+        assert payload["workspace"]["nodeAssetScopes"]["ethereum:address:0xabc"][0]["asset_symbol"] == "USDC"
         assert payload["nodes"] == payload["workspace"]["nodes"]
         assert payload["edges"] == payload["workspace"]["edges"]
         assert payload["branch_map"]["branch-1"]["seedNodeId"] == "ethereum:address:0xabc"
@@ -325,6 +336,7 @@ class TestSaveSnapshot:
         assert '"revision": 1' in persisted_snapshot
         assert f'"sessionId": "{VALID_SESSION_ID}"' in persisted_snapshot
         assert '"positions": {"ethereum:address:0xabc": {"x": 12.5, "y": 34.0}}' in persisted_snapshot
+        assert '"nodeAssetScopes": {"ethereum:address:0xabc": [{"mode": "asset", "chain": "ethereum", "chain_asset_id": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", "asset_symbol": "USDC", "canonical_asset_id": null}]}' in persisted_snapshot
 
     def test_rejects_mismatched_workspace_session_id(self, client):
         session_row = _session_row([])

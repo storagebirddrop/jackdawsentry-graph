@@ -714,6 +714,7 @@ class WorkspaceSnapshotV1(BaseModel):
     edges: List[InvestigationEdge] = Field(default_factory=list)
     positions: Dict[str, WorkspacePosition] = Field(default_factory=dict)
     branches: Optional[List[WorkspaceBranchSnapshot]] = None
+    nodeAssetScopes: Optional[Dict[str, List[AssetSelector]]] = None
     workspacePreferences: Optional[WorkspacePreferencesSnapshot] = None
 
 
@@ -739,6 +740,7 @@ class SessionSnapshotRequest(BaseModel):
     edges: Optional[List[InvestigationEdge]] = None
     positions: Dict[str, WorkspacePosition] = Field(default_factory=dict)
     branches: Optional[List[WorkspaceBranchSnapshot]] = None
+    nodeAssetScopes: Optional[Dict[str, List[AssetSelector]]] = None
     workspacePreferences: Optional[WorkspacePreferencesSnapshot] = None
 
     def has_workspace_payload(self) -> bool:
@@ -749,6 +751,7 @@ class SessionSnapshotRequest(BaseModel):
                 self.edges is not None,
                 bool(self.positions),
                 self.branches is not None,
+                self.nodeAssetScopes is not None,
                 self.workspacePreferences is not None,
             )
         )
@@ -765,6 +768,7 @@ class SessionSnapshotRequest(BaseModel):
             edges=self.edges or [],
             positions=self.positions,
             branches=self.branches,
+            nodeAssetScopes=self.nodeAssetScopes,
             workspacePreferences=self.workspacePreferences,
         )
 

@@ -12,6 +12,7 @@
 import { create } from 'zustand';
 import { MarkerType, type Node, type Edge } from '@xyflow/react';
 import type {
+  AssetSelector,
   InvestigationNode,
   InvestigationEdge,
   ExpansionResponseV2,
@@ -21,6 +22,7 @@ import {
   normalizeInvestigationEdge as normalizeEdge,
   normalizeInvestigationNode as normalizeNode,
 } from '../types/graph';
+import { sanitizeNodeAssetScopes } from '../components/assetExpansionPolicy';
 
 // ---------------------------------------------------------------------------
 // Branch color palette (8 colors, cycling by branch_id hash)
@@ -177,6 +179,9 @@ export interface GraphState {
   /** Frontend-only node layout metadata keyed by node_id */
   layoutMetaMap: Map<string, NodeLayoutMetadata>;
 
+  /** Persisted per-node asset scope keyed by node_id. */
+  nodeAssetScopes: Map<string, AssetSelector[]>;
+
   /** Nodes that are currently being expanded (to show loading state) */
   expandingNodeIds: Set<string>;
 
@@ -209,6 +214,7 @@ export interface GraphState {
   ) => void;
   setNodeHidden: (nodeId: string, hidden: boolean) => void;
   restoreAllHiddenNodes: () => void;
+  setNodeAssetScope: (nodeId: string, selectors: AssetSelector[] | null) => void;
   setExpandingNode: (nodeId: string, expanding: boolean) => void;
   reset: () => void;
 
@@ -229,6 +235,7 @@ export const useGraphStore = create<GraphState>((set, get) => ({
   rfNodes: [],
   rfEdges: [],
   layoutMetaMap: new Map(),
+  nodeAssetScopes: new Map(),
   expandingNodeIds: new Set(),
   branchMap: new Map(),
   maxNodes: 500,
@@ -257,13 +264,14 @@ export const useGraphStore = create<GraphState>((set, get) => ({
           ensureLayoutMetadata({ placementSource: 'session_seed' }),
         ],
       ]),
+      nodeAssetScopes: new Map(),
       expandingNodeIds: new Set(),
       branchMap: new Map([[normalizedRoot.branch_id, seedBranch]]),
     });
   },
 
   applyExpansionDelta(response, options) {
-    const { nodeMap, edgeMap, branchMap, layoutMetaMap } = get();
+    const { nodeMap, edgeMap, branchMap, layoutMetaMap, nodeAssetScopes } = get();
     const deltaNodes = (response.added_nodes ?? response.nodes ?? []).map(normalizeNode);
     const updatedNodes = (response.updated_nodes ?? []).map(normalizeNode);
     const deltaEdges = (response.added_edges ?? response.edges ?? []).map(normalizeEdge);
@@ -382,12 +390,17 @@ export const useGraphStore = create<GraphState>((set, get) => ({
     for (const node of get().rfNodes) {
       existingPositions.set(node.id, node.position);
     }
+    const sanitizedNodeAssetScopes = sanitizeNodeAssetScopes(
+      Object.fromEntries(nodeAssetScopes),
+      newNodeMap.values(),
+    );
 
     set({
       nodeMap: newNodeMap,
       edgeMap: newEdgeMap,
       branchMap: newBranchMap,
       layoutMetaMap: nextLayoutMetaMap,
+      nodeAssetScopes: new Map(Object.entries(sanitizedNodeAssetScopes)),
       rfNodes: Array.from(newNodeMap.values()).map((inv) => {
         const rf = toRfNode(inv);
         const placement = placementMap.get(rf.id);
@@ -496,6 +509,27 @@ export const useGraphStore = create<GraphState>((set, get) => ({
     });
   },
 
+  setNodeAssetScope(nodeId, selectors) {
+    set((state) => {
+      const nextNodeAssetScopes = new Map(state.nodeAssetScopes);
+      if (selectors === null) {
+        nextNodeAssetScopes.delete(nodeId);
+        return { nodeAssetScopes: nextNodeAssetScopes };
+      }
+
+      const sanitized = sanitizeNodeAssetScopes(
+        { [nodeId]: selectors },
+        state.nodeMap.values(),
+      );
+      if (Object.prototype.hasOwnProperty.call(sanitized, nodeId)) {
+        nextNodeAssetScopes.set(nodeId, sanitized[nodeId] ?? []);
+      } else {
+        nextNodeAssetScopes.delete(nodeId);
+      }
+      return { nodeAssetScopes: nextNodeAssetScopes };
+    });
+  },
+
   setExpandingNode(nodeId, expanding) {
     set((state) => {
       const next = new Set(state.expandingNodeIds);
@@ -513,17 +547,22 @@ export const useGraphStore = create<GraphState>((set, get) => ({
       rfNodes: [],
       rfEdges: [],
       layoutMetaMap: new Map(),
+      nodeAssetScopes: new Map(),
       expandingNodeIds: new Set(),
       branchMap: new Map(),
     });
   },
 
   exportSnapshot() {
-    const { sessionId, nodeMap, edgeMap, rfNodes, branchMap, layoutMetaMap } = get();
+    const { sessionId, nodeMap, edgeMap, rfNodes, branchMap, layoutMetaMap, nodeAssetScopes } = get();
     const positions: Record<string, { x: number; y: number }> = {};
     const layoutMeta: Record<string, NodeLayoutMetadata> = {};
     for (const node of rfNodes) positions[node.id] = node.position;
     for (const [nodeId, meta] of layoutMetaMap) layoutMeta[nodeId] = meta;
+    const sanitizedNodeAssetScopes = sanitizeNodeAssetScopes(
+      Object.fromEntries(nodeAssetScopes),
+      nodeMap.values(),
+    );
 
     return JSON.stringify({
       sessionId,
@@ -532,6 +571,9 @@ export const useGraphStore = create<GraphState>((set, get) => ({
       positions,
       branches: Array.from(branchMap.values()),
       layoutMeta,
+      ...(Object.keys(sanitizedNodeAssetScopes).length > 0
+        ? { nodeAssetScopes: sanitizedNodeAssetScopes }
+        : {}),
     });
   },
 
@@ -544,6 +586,7 @@ export const useGraphStore = create<GraphState>((set, get) => ({
         positions: Record<string, { x: number; y: number }>;
         branches?: BranchMeta[];
         layoutMeta?: Record<string, Partial<NodeLayoutMetadata>>;
+        nodeAssetScopes?: Record<string, AssetSelector[]>;
       };
       const normalizedNodes = data.nodes.map(normalizeNode);
       const normalizedEdges = data.edges.map(normalizeEdge);
@@ -600,6 +643,10 @@ export const useGraphStore = create<GraphState>((set, get) => ({
 
             return derivedBranchMap;
           })();
+      const sanitizedNodeAssetScopes = sanitizeNodeAssetScopes(
+        data.nodeAssetScopes,
+        normalizedNodes,
+      );
       set({
         sessionId: data.sessionId,
         nodeMap,
@@ -608,6 +655,7 @@ export const useGraphStore = create<GraphState>((set, get) => ({
         rfEdges,
         branchMap,
         layoutMetaMap: restoredLayoutMetaMap,
+        nodeAssetScopes: new Map(Object.entries(sanitizedNodeAssetScopes)),
       });
       return true;
     } catch (err) {
