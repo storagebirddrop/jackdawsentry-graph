@@ -24,6 +24,7 @@ from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
 from pydantic import computed_field
+from pydantic import model_validator
 
 
 # ---------------------------------------------------------------------------
@@ -850,6 +851,7 @@ class ExpandOptions(BaseModel):
     depth: int = Field(default=1, ge=1, le=3)
     asset_filter: List[str] = []
     asset_selector: Optional[AssetSelector] = None
+    asset_selectors: List[AssetSelector] = Field(default_factory=list)
     chain_filter: List[str] = []
     tx_hashes: List[str] = []
     min_value_fiat: Optional[float] = None
@@ -860,6 +862,25 @@ class ExpandOptions(BaseModel):
     page_size: int = Field(default=25, ge=1, le=50)
     time_from: Optional[datetime] = None  # ISO 8601 UTC, inclusive lower bound
     time_to: Optional[datetime] = None    # ISO 8601 UTC, inclusive upper bound
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_singular_asset_selector(cls, values: object) -> object:
+        """Coerce legacy ``asset_selector`` (singular) into ``asset_selectors``.
+
+        When a caller sends only the old singular field, lift it into the list
+        so the rest of the filtering stack can use the plural contract.  Reject
+        requests that send both fields so clients do not get ambiguous scope.
+        """
+        if not isinstance(values, dict):
+            return values
+        if "asset_selector" in values and "asset_selectors" in values:
+            raise ValueError("asset_selector and asset_selectors are mutually exclusive")
+        singular = values.get("asset_selector")
+        if singular is not None:
+            values = dict(values)
+            values["asset_selectors"] = [singular]
+        return values
 
 
 class ExpandRequest(BaseModel):

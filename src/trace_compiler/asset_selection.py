@@ -128,26 +128,118 @@ def _selector_from_single_legacy_filter(value: str, *, chain: str) -> AssetSelec
     return AssetSelector(mode="asset", chain=normalized_chain, asset_symbol=value)
 
 
-def effective_asset_selector(options: ExpandOptions, *, chain: str) -> AssetSelector:
+def _asset_selector_identity(selector: AssetSelector) -> tuple[str, ...]:
+    """Return the dedupe/sort identity for a normalized selector."""
+    chain = (selector.chain or "").strip().lower()
+
+    if selector.mode == "native":
+        return ("native", chain)
+
+    if selector.mode == "asset":
+        chain_asset_id = normalize_chain_asset_id(chain, selector.chain_asset_id)
+        if chain_asset_id:
+            return ("asset", chain, "chain_asset_id", chain_asset_id)
+
+        canonical_asset_id = (selector.canonical_asset_id or "").strip().lower()
+        if canonical_asset_id:
+            return ("asset", chain, "canonical_asset_id", canonical_asset_id)
+
+        asset_symbol = (selector.asset_symbol or "").strip().upper()
+        if asset_symbol:
+            return ("asset", chain, "asset_symbol", asset_symbol)
+
+        return ("asset", chain, "empty")
+
+    return ("all", chain)
+
+
+def _asset_selector_sort_key(selector: AssetSelector) -> tuple[str, ...]:
+    return (
+        *_asset_selector_identity(selector),
+        (selector.asset_symbol or "").strip().upper(),
+        (selector.asset_symbol or "").strip(),
+        selector.canonical_asset_id or "",
+        selector.chain_asset_id or "",
+    )
+
+
+def normalize_asset_selectors(
+    selectors: Iterable[AssetSelector],
+    *,
+    chain: Optional[str] = None,
+) -> list[AssetSelector]:
+    """Normalize, dedupe, and deterministically sort plural asset selectors.
+
+    The empty list represents unfiltered/all-assets expansion.  A single
+    ``mode='all'`` selector collapses the whole request to that unfiltered state.
+    """
+    normalized: list[AssetSelector] = []
+    for selector in selectors:
+        normalized_selector = normalize_asset_selector(selector, chain=chain)
+        if normalized_selector is None:
+            continue
+        if normalized_selector.mode == "all":
+            return []
+        normalized.append(normalized_selector)
+
+    deduped: list[AssetSelector] = []
+    seen: set[tuple[str, ...]] = set()
+    for selector in sorted(normalized, key=_asset_selector_sort_key):
+        identity = _asset_selector_identity(selector)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        deduped.append(selector)
+    return deduped
+
+
+def effective_asset_selectors(options: ExpandOptions, *, chain: str) -> list[AssetSelector]:
+    """Return the normalized, deduplicated list of active asset selectors.
+
+    Semantics:
+    - Empty list  → no filter (all assets).
+    - Non-empty   → return only rows matching any selector in the list.
+    - If any selector has ``mode='all'``, the whole list collapses to [] (no filter).
+
+    When ``options.asset_selectors`` is non-empty it is used as the source of
+    truth.  When it is empty the function falls back to legacy behaviour so that
+    callers that still build ``ExpandOptions(asset_filter=[...])`` without the
+    new field continue to work unchanged.
+    """
+    if options.asset_selectors:
+        return normalize_asset_selectors(options.asset_selectors, chain=chain)
+
     selector = normalize_asset_selector(options.asset_selector, chain=chain)
     if selector is not None:
-        return selector
+        return normalize_asset_selectors([selector], chain=chain)
 
-    native_symbol = native_symbol_for_chain(chain)
     legacy_filters = normalize_legacy_asset_filter(options.asset_filter)
     if not legacy_filters:
-        return AssetSelector(mode="all", chain=chain, asset_symbol=native_symbol)
+        return []
 
+    native_symbol = native_symbol_for_chain(chain)
     upper_filters = {asset.upper() for asset in legacy_filters}
     if native_symbol and upper_filters == {native_symbol.upper()}:
-        return AssetSelector(mode="native", chain=chain, asset_symbol=native_symbol)
-
-    if len(legacy_filters) == 1:
-        return normalize_asset_selector(
-            _selector_from_single_legacy_filter(legacy_filters[0], chain=chain),
+        return normalize_asset_selectors(
+            [AssetSelector(mode="native", chain=chain, asset_symbol=native_symbol)],
             chain=chain,
         )
 
+    if len(legacy_filters) == 1:
+        return normalize_asset_selectors(
+            [_selector_from_single_legacy_filter(legacy_filters[0], chain=chain)],
+            chain=chain,
+        )
+
+    return []
+
+
+def effective_asset_selector(options: ExpandOptions, *, chain: str) -> AssetSelector:
+    selectors = effective_asset_selectors(options, chain=chain)
+    if len(selectors) == 1:
+        return selectors[0]
+
+    native_symbol = native_symbol_for_chain(chain)
     return AssetSelector(mode="all", chain=chain, asset_symbol=native_symbol)
 
 
@@ -162,7 +254,8 @@ def selector_is_native_only(selector: Optional[AssetSelector]) -> bool:
 def selector_requires_event_store_only(options: ExpandOptions, *, chain: str) -> bool:
     if options.tx_hashes:
         return True
-    return selector_is_specific_asset(effective_asset_selector(options, chain=chain))
+    selectors = effective_asset_selectors(options, chain=chain)
+    return bool(selectors) and any(s.mode == "asset" for s in selectors)
 
 
 def shorten_chain_asset_id(

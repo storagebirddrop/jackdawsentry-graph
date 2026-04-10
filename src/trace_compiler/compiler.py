@@ -26,7 +26,7 @@ from typing import Optional
 
 from src.collectors.rpc.factory import get_rpc_client
 from src.trace_compiler.asset_selection import build_asset_option
-from src.trace_compiler.asset_selection import normalize_asset_selector
+from src.trace_compiler.asset_selection import effective_asset_selectors
 from src.trace_compiler.asset_selection import selector_requires_event_store_only
 from src.trace_compiler.chains.bitcoin import UTXOChainCompiler
 from src.trace_compiler.chains.evm import EVM_CHAINS
@@ -232,10 +232,10 @@ def _expansion_cache_key(
         }
     )
     selector_chain = request.seed_node_id.split(":", 1)[0] if ":" in request.seed_node_id else ""
-    normalized_asset_selector = normalize_asset_selector(
-        request.options.asset_selector,
-        chain=selector_chain,
-    )
+    normalized_asset_selectors = [
+        selector.model_dump(mode="json")
+        for selector in effective_asset_selectors(request.options, chain=selector_chain)
+    ]
     normalized_tx_hashes = sorted(
         {
             tx_hash.strip().lower()
@@ -244,7 +244,7 @@ def _expansion_cache_key(
         }
     )
     fingerprint = {
-        "version": 4,
+        "version": 5,
         "session_id": session_id,
         "seed_node_id": _canonical_node_id(request.seed_node_id),
         "operation_type": request.operation_type,
@@ -252,11 +252,7 @@ def _expansion_cache_key(
         "page_size": request.options.page_size,
         "max_results": request.options.max_results,
         "asset_filter": normalized_asset_filter,
-        "asset_selector": (
-            normalized_asset_selector.model_dump(mode="json")
-            if normalized_asset_selector is not None
-            else None
-        ),
+        "asset_selectors": normalized_asset_selectors,
         "tx_hashes": normalized_tx_hashes,
         "min_value_fiat": request.options.min_value_fiat,
         "include_services": request.options.include_services,
