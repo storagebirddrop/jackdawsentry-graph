@@ -123,12 +123,7 @@ vi.mock('@xyflow/react', async () => {
               {
                 key: `quick-prev-${String(node.id)}`,
                 type: 'button',
-                disabled: Boolean(data.isQuickExpandDisabled),
-                onClick: () => {
-                  if (!data.isQuickExpandDisabled) {
-                    data.onExpandPrev?.();
-                  }
-                },
+                onClick: () => data.onExpandPrev?.(),
               },
               `Quick prev ${String(node.id)}`,
             ),
@@ -142,9 +137,9 @@ vi.mock('@xyflow/react', async () => {
               {
                 key: `quick-next-${String(node.id)}`,
                 type: 'button',
-                disabled: Boolean(data.isQuickExpandDisabled),
+                disabled: Boolean(data.isExpanding),
                 onClick: () => {
-                  if (!data.isQuickExpandDisabled) {
+                  if (!data.isExpanding) {
                     data.onExpandNext?.();
                   }
                 },
@@ -584,7 +579,7 @@ describe('InvestigationGraph asset-aware expand contract', () => {
     expect(document.body.textContent).not.toContain('0 transfers found');
   });
 
-  it('keeps specific-assets mode explicit when nothing is checked and disables expand actions', async () => {
+  it('keeps specific-assets mode explicit, disables inspector actions, and blocks quick expand with a notice', async () => {
     await clickButton(`Select node ${ETH_NODE.node_id}`);
     await flushAsyncWork();
 
@@ -598,7 +593,12 @@ describe('InvestigationGraph asset-aware expand contract', () => {
 
     await clickButtonContaining('Filter & Preview');
     expect(getButtonByText('Preview next').disabled).toBe(true);
-    expect(getButtonByText(`Quick next ${ETH_NODE.node_id}`).disabled).toBe(true);
+
+    const quickNextButton = getButtonByText(`Quick next ${ETH_NODE.node_id}`);
+    expect(quickNextButton.disabled).toBe(false);
+    await clickButton(`Quick next ${ETH_NODE.node_id}`);
+
+    expect(document.body.textContent).toContain('Investigation note');
     expect(expandNodeMock).not.toHaveBeenCalled();
   });
 });

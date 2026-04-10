@@ -249,7 +249,6 @@ export default function AddressNode({ data, selected }: NodeProps) {
                 <button
                   type="button"
                   onClick={(e) => { e.stopPropagation(); d.onExpandPrev?.(); }}
-                  disabled={d.isQuickExpandDisabled}
                   title={d.isQuickExpandDisabled ? d.quickExpandDisabledReason : undefined}
                   onMouseEnter={() => setHoverPrev(true)}
                   onMouseLeave={() => setHoverPrev(false)}
@@ -262,6 +261,7 @@ export default function AddressNode({ data, selected }: NodeProps) {
                       ? '#94a3b8'
                       : hoverPrev ? '#0f172a' : '#475569',
                     opacity: d.isQuickExpandDisabled ? 0.7 : 1,
+                    cursor: d.isQuickExpandDisabled ? 'not-allowed' : 'pointer',
                   }}
                 >
                   ← Prev
@@ -270,10 +270,14 @@ export default function AddressNode({ data, selected }: NodeProps) {
               {d.onExpandNext && d.expandable_directions.includes('next') && (
                 <button
                   type="button"
-                  onClick={(e) => { e.stopPropagation(); d.onExpandNext?.(); }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (d.isExpanding) return;
+                    d.onExpandNext?.();
+                  }}
                   onMouseEnter={() => setHoverNext(true)}
                   onMouseLeave={() => setHoverNext(false)}
-                  disabled={d.isExpanding || d.isQuickExpandDisabled}
+                  disabled={d.isExpanding}
                   title={d.isQuickExpandDisabled ? d.quickExpandDisabledReason : undefined}
                   style={{
                     ...actionButtonBase,
@@ -289,6 +293,7 @@ export default function AddressNode({ data, selected }: NodeProps) {
                       : hoverNext ? '#ffffff' : accent,
                     borderColor: `${accent}55`,
                     opacity: d.isExpanding || d.isQuickExpandDisabled ? 0.8 : 1,
+                    cursor: d.isQuickExpandDisabled ? 'not-allowed' : (d.isExpanding ? 'wait' : 'pointer'),
                   }}
                 >
                   {d.isExpanding

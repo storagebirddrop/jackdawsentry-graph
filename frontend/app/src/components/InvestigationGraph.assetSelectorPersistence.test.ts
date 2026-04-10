@@ -453,8 +453,8 @@ describe('InvestigationGraph asset selector persistence', () => {
     await clickInput(getAssetModeRadio(container, 'Specific assets'));
 
     await waitFor(() => {
-      expect(container.textContent).toContain('USDC · 0xa0b869...eb48');
-      expect(container.textContent).toContain('USDC · 0x123456...5678');
+      expect(queryLabeledInput(container, 'USDC · 0xa0b869...eb48', 'checkbox')).not.toBeNull();
+      expect(queryLabeledInput(container, 'USDC · 0x123456...5678', 'checkbox')).not.toBeNull();
     });
   });
 });
