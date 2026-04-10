@@ -28,6 +28,8 @@ interface AddressNodeComponentData extends InvestigationNode {
   appearance?: GraphAppearanceState;
   onExpandNext?: () => void;
   onExpandPrev?: () => void;
+  isQuickExpandDisabled?: boolean;
+  quickExpandDisabledReason?: string;
   isExpanding?: boolean;
   /** True while a background ingest job is running for this address. */
   isIngestPending?: boolean;
@@ -247,12 +249,19 @@ export default function AddressNode({ data, selected }: NodeProps) {
                 <button
                   type="button"
                   onClick={(e) => { e.stopPropagation(); d.onExpandPrev?.(); }}
+                  disabled={d.isQuickExpandDisabled}
+                  title={d.isQuickExpandDisabled ? d.quickExpandDisabledReason : undefined}
                   onMouseEnter={() => setHoverPrev(true)}
                   onMouseLeave={() => setHoverPrev(false)}
                   style={{
                     ...actionButtonBase,
-                    background: hoverPrev ? '#f1f5f9' : '#ffffff',
-                    color: hoverPrev ? '#0f172a' : '#475569',
+                    background: d.isQuickExpandDisabled
+                      ? '#f8fafc'
+                      : hoverPrev ? '#f1f5f9' : '#ffffff',
+                    color: d.isQuickExpandDisabled
+                      ? '#94a3b8'
+                      : hoverPrev ? '#0f172a' : '#475569',
+                    opacity: d.isQuickExpandDisabled ? 0.7 : 1,
                   }}
                 >
                   ← Prev
@@ -264,21 +273,28 @@ export default function AddressNode({ data, selected }: NodeProps) {
                   onClick={(e) => { e.stopPropagation(); d.onExpandNext?.(); }}
                   onMouseEnter={() => setHoverNext(true)}
                   onMouseLeave={() => setHoverNext(false)}
-                  disabled={d.isExpanding}
+                  disabled={d.isExpanding || d.isQuickExpandDisabled}
+                  title={d.isQuickExpandDisabled ? d.quickExpandDisabledReason : undefined}
                   style={{
                     ...actionButtonBase,
-                    background: d.isExpanding
+                    background: d.isQuickExpandDisabled
+                      ? '#f8fafc'
+                      : d.isExpanding
                       ? '#dbeafe'
                       : hoverNext ? accent : `${accent}18`,
-                    color: d.isExpanding
+                    color: d.isQuickExpandDisabled
+                      ? '#94a3b8'
+                      : d.isExpanding
                       ? '#3b82f6'
                       : hoverNext ? '#ffffff' : accent,
                     borderColor: `${accent}55`,
-                    opacity: d.isExpanding ? 0.8 : 1,
+                    opacity: d.isExpanding || d.isQuickExpandDisabled ? 0.8 : 1,
                   }}
                 >
                   {d.isExpanding
                     ? <span style={pulseStyle}>●</span>
+                    : d.isQuickExpandDisabled
+                      ? 'Next →'
                     : 'Next →'}
                 </button>
               )}

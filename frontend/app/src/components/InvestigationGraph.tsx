@@ -143,6 +143,8 @@ interface SessionBriefing {
   markdown: string;
 }
 
+type NodeAssetScopeMode = 'all' | 'specific';
+
 function normalizeSelectedAssetOptionKeys(keys: readonly string[]): string[] {
   return Array.from(new Set(keys.filter((key) => !key.startsWith('all:')))).sort();
 }
@@ -317,8 +319,10 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
   const [pinnedPathIds, setPinnedPathIds] = useState<string[]>([]);
   const [activeSemanticKey, setActiveSemanticKey] = useState<string | null>(null);
   const [assetOptionsByNodeId, setAssetOptionsByNodeId] = useState<Map<string, AssetOption[]>>(new Map());
+  const [assetScopeModeByNodeId, setAssetScopeModeByNodeId] = useState<Map<string, NodeAssetScopeMode>>(new Map());
   // Stores per-node multi-selection as sorted arrays of assetOptionKey strings.
-  // Empty array = "all assets" (no filter). Specific keys = filter to those assets.
+  // Empty array means either "all assets" or an explicit empty specific-assets mode;
+  // assetScopeModeByNodeId carries that distinction.
   const [assetSelectorKeysByNodeId, setAssetSelectorKeysByNodeId] = useState<Map<string, string[]>>(new Map());
   const [loadingAssetOptionNodeIds, setLoadingAssetOptionNodeIds] = useState<Set<string>>(new Set());
   const assetOptionsByNodeIdRef = useRef(assetOptionsByNodeId);
@@ -338,6 +342,7 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
     assetOptionsByNodeIdRef.current = emptyOptions;
     loadingAssetOptionNodeIdsRef.current = emptyLoading;
     setAssetOptionsByNodeId(emptyOptions);
+    setAssetScopeModeByNodeId(new Map());
     setAssetSelectorKeysByNodeId(new Map());
     setLoadingAssetOptionNodeIds(emptyLoading);
   }, [sessionId]);
@@ -777,6 +782,22 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
     [sessionId, rfNodes, rfEdges, expandingNodeIds, setExpandingNode, applyExpansionDelta, showNotice],
   );
 
+  const nodeAssetScopeRequiresSelection = useCallback((nodeId: string) => {
+    const mode = assetScopeModeByNodeId.get(nodeId) ?? 'all';
+    if (mode !== 'specific') {
+      return false;
+    }
+    return getStoredNodeAssetSelectors(
+      nodeId,
+      assetSelectorKeysByNodeId,
+      assetOptionsByNodeId,
+    ).length === 0;
+  }, [assetOptionsByNodeId, assetScopeModeByNodeId, assetSelectorKeysByNodeId]);
+
+  const showAssetSelectionRequiredNotice = useCallback(() => {
+    showNotice('Select at least one asset', 'info');
+  }, [showNotice]);
+
   const handlePreviewExpand = useCallback(
     async (
       operation: 'expand_prev' | 'expand_next' | 'expand_neighbors',
@@ -788,6 +809,10 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
           : undefined
       ) ?? null;
       if (!nodeData || !sessionId) return;
+      if (nodeAssetScopeRequiresSelection(nodeData.node_id)) {
+        showAssetSelectionRequiredNotice();
+        return;
+      }
       setIsPreviewLoading(true);
       try {
         const selectedAssetSelectors = getStoredNodeAssetSelectors(
@@ -815,7 +840,16 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
         setIsPreviewLoading(false);
       }
     },
-    [assetOptionsByNodeId, assetSelectorKeysByNodeId, nodes, selectedNodeId, sessionId, showNotice],
+    [
+      assetOptionsByNodeId,
+      assetSelectorKeysByNodeId,
+      nodeAssetScopeRequiresSelection,
+      nodes,
+      selectedNodeId,
+      sessionId,
+      showAssetSelectionRequiredNotice,
+      showNotice,
+    ],
   );
 
   const handleApplyPreview = useCallback(
@@ -960,6 +994,7 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
     const pinned = pinnedPathSet.has(invNode.path_id);
     const semanticMatch = !activeSemanticKey || semanticMeta?.key === activeSemanticKey;
     const dimmed = (pinnedPathIds.length > 0 && !pinned) || !semanticMatch;
+    const quickExpandDisabled = nodeAssetScopeRequiresSelection(invNode.node_id);
     return {
       ...n,
       style: {
@@ -977,22 +1012,36 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
       },
       data: {
         ...n.data,
-        onExpandNext: () => handleExpand(
-          createQuickExpandInvocation(
-            invNode,
-            'expand_next',
-            assetSelectorKeysByNodeId,
-            assetOptionsByNodeId,
-          ),
-        ),
-        onExpandPrev: () => handleExpand(
-          createQuickExpandInvocation(
-            invNode,
-            'expand_prev',
-            assetSelectorKeysByNodeId,
-            assetOptionsByNodeId,
-          ),
-        ),
+        onExpandNext: () => {
+          if (quickExpandDisabled) {
+            showAssetSelectionRequiredNotice();
+            return;
+          }
+          handleExpand(
+            createQuickExpandInvocation(
+              invNode,
+              'expand_next',
+              assetSelectorKeysByNodeId,
+              assetOptionsByNodeId,
+            ),
+          );
+        },
+        onExpandPrev: () => {
+          if (quickExpandDisabled) {
+            showAssetSelectionRequiredNotice();
+            return;
+          }
+          handleExpand(
+            createQuickExpandInvocation(
+              invNode,
+              'expand_prev',
+              assetSelectorKeysByNodeId,
+              assetOptionsByNodeId,
+            ),
+          );
+        },
+        isQuickExpandDisabled: quickExpandDisabled,
+        quickExpandDisabledReason: quickExpandDisabled ? 'Select at least one asset' : undefined,
         isExpanding: expandingNodeIds.has(n.id),
         isIngestPending: ingestPendingNodeIds.has(n.id),
         appearance,
@@ -1103,7 +1152,10 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
     () => (selectedNodeData ? assetOptionsByNodeId.get(selectedNodeData.node_id) ?? [] : []),
     [assetOptionsByNodeId, selectedNodeData],
   );
-  // Selected option keys for the currently focused node (empty = all assets).
+  const selectedNodeAssetScopeMode = useMemo(
+    () => (selectedNodeData ? assetScopeModeByNodeId.get(selectedNodeData.node_id) ?? 'all' : 'all'),
+    [assetScopeModeByNodeId, selectedNodeData],
+  );
   const selectedNodeAssetOptionKeys = useMemo(
     () => (selectedNodeData ? assetSelectorKeysByNodeId.get(selectedNodeData.node_id) ?? [] : []),
     [assetSelectorKeysByNodeId, selectedNodeData],
@@ -1111,6 +1163,18 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
   const selectedNodeAssetOptionsLoading = useMemo(
     () => (selectedNodeData ? loadingAssetOptionNodeIds.has(selectedNodeData.node_id) : false),
     [loadingAssetOptionNodeIds, selectedNodeData],
+  );
+  const selectedNodeHasSpecificAssetSelection = useMemo(
+    () => (
+      selectedNodeData
+        ? getStoredNodeAssetSelectors(
+          selectedNodeData.node_id,
+          assetSelectorKeysByNodeId,
+          assetOptionsByNodeId,
+        ).length > 0
+        : false
+    ),
+    [assetOptionsByNodeId, assetSelectorKeysByNodeId, selectedNodeData],
   );
 
   useEffect(() => {
@@ -1187,25 +1251,61 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
     showNotice,
   ]);
 
+  const handleNodeAssetScopeModeChange = useCallback((mode: NodeAssetScopeMode) => {
+    if (!selectedNodeData) return;
+    const nodeId = selectedNodeData.node_id;
+    setPreviewResult(null);
+    setAssetScopeModeByNodeId((prev) => {
+      const next = new Map(prev);
+      if (mode === 'all') {
+        next.delete(nodeId);
+      } else {
+        next.set(nodeId, 'specific');
+      }
+      return next;
+    });
+    if (mode === 'all') {
+      setAssetSelectorKeysByNodeId((prev) => {
+        const next = new Map(prev);
+        next.delete(nodeId);
+        return next;
+      });
+    }
+  }, [selectedNodeData]);
+
+  const handleClearNodeAssetSelection = useCallback(() => {
+    if (!selectedNodeData) return;
+    const nodeId = selectedNodeData.node_id;
+    setPreviewResult(null);
+    setAssetScopeModeByNodeId((prev) => {
+      const next = new Map(prev);
+      next.set(nodeId, 'specific');
+      return next;
+    });
+    setAssetSelectorKeysByNodeId((prev) => {
+      const next = new Map(prev);
+      next.delete(nodeId);
+      return next;
+    });
+  }, [selectedNodeData]);
+
   const handleNodeAssetToggle = useCallback((optionKey: string) => {
     if (!selectedNodeData) return;
     const option = selectedNodeAssetOptions.find((candidate) => assetOptionKey(candidate) === optionKey);
-    if (!option) return;
+    if (!option || option.mode === 'all') return;
     const nodeId = selectedNodeData.node_id;
     setPreviewResult(null);
+    setAssetScopeModeByNodeId((prev) => {
+      const next = new Map(prev);
+      next.set(nodeId, 'specific');
+      return next;
+    });
     setAssetSelectorKeysByNodeId((prev) => {
       const current = prev.get(nodeId) ?? [];
       const currentSet = new Set(current);
-      let next: string[];
-      if (option.mode === 'all') {
-        // "All assets" clears individual selections.
-        next = [];
-      } else if (currentSet.has(optionKey)) {
-        // Deselect: remove this key. If nothing remains, implicitly back to "all".
-        next = normalizeSelectedAssetOptionKeys(current.filter((k) => k !== optionKey));
-      } else {
-        next = normalizeSelectedAssetOptionKeys([...current, optionKey]);
-      }
+      const next = currentSet.has(optionKey)
+        ? normalizeSelectedAssetOptionKeys(current.filter((key) => key !== optionKey))
+        : normalizeSelectedAssetOptionKeys([...current, optionKey]);
       const map = new Map(prev);
       if (next.length === 0) {
         map.delete(nodeId);
@@ -2597,11 +2697,19 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
         onTraceEdgeForward={() => handleTraceSelectedEdge('forward')}
         assetOptions={selectedNodeData?.node_type === 'address' ? selectedNodeAssetOptions : []}
         assetOptionsLoading={selectedNodeData?.node_type === 'address' ? selectedNodeAssetOptionsLoading : false}
+        assetScopeMode={selectedNodeAssetScopeMode}
         selectedAssetOptionKeys={selectedNodeAssetOptionKeys}
+        hasSpecificAssetSelection={selectedNodeHasSpecificAssetSelection}
+        onChangeAssetScopeMode={handleNodeAssetScopeModeChange}
         onToggleAssetOption={handleNodeAssetToggle}
+        onClearAssetSelection={handleClearNodeAssetSelection}
         onExpandNode={(operation) => {
           const nodeData = (selectedNode?.data as InvestigationNode | undefined) ?? null;
           if (!nodeData) return;
+          if (nodeAssetScopeRequiresSelection(nodeData.node_id)) {
+            showAssetSelectionRequiredNotice();
+            return;
+          }
           void handleExpand(
             createInspectorExpandInvocation(
               nodeData,

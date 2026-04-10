@@ -123,7 +123,12 @@ vi.mock('@xyflow/react', async () => {
               {
                 key: `quick-prev-${String(node.id)}`,
                 type: 'button',
-                onClick: () => data.onExpandPrev?.(),
+                disabled: Boolean(data.isQuickExpandDisabled),
+                onClick: () => {
+                  if (!data.isQuickExpandDisabled) {
+                    data.onExpandPrev?.();
+                  }
+                },
               },
               `Quick prev ${String(node.id)}`,
             ),
@@ -137,7 +142,12 @@ vi.mock('@xyflow/react', async () => {
               {
                 key: `quick-next-${String(node.id)}`,
                 type: 'button',
-                onClick: () => data.onExpandNext?.(),
+                disabled: Boolean(data.isQuickExpandDisabled),
+                onClick: () => {
+                  if (!data.isQuickExpandDisabled) {
+                    data.onExpandNext?.();
+                  }
+                },
               },
               `Quick next ${String(node.id)}`,
             ),
@@ -353,17 +363,34 @@ async function clickButtonContaining(text: string): Promise<void> {
   });
 }
 
-function queryAssetCheckbox(optionText: string): HTMLInputElement | null {
+function queryLabeledInput(optionText: string, inputType: 'radio' | 'checkbox'): HTMLInputElement | null {
   const label = Array.from(document.querySelectorAll('label')).find(
     (candidate) => candidate.textContent?.trim() === optionText,
   );
-  return (label?.querySelector('input[type="checkbox"]') as HTMLInputElement | null) ?? null;
+  return (label?.querySelector(`input[type="${inputType}"]`) as HTMLInputElement | null) ?? null;
+}
+
+function queryAssetCheckbox(optionText: string): HTMLInputElement | null {
+  return queryLabeledInput(optionText, 'checkbox');
 }
 
 function getAssetCheckbox(optionText: string): HTMLInputElement {
   const checkbox = queryAssetCheckbox(optionText);
   expect(checkbox, `Expected checkbox labeled "${optionText}" to exist.`).not.toBeNull();
   return checkbox as HTMLInputElement;
+}
+
+function getAssetRadio(optionText: string): HTMLInputElement {
+  const radio = queryLabeledInput(optionText, 'radio');
+  expect(radio, `Expected radio labeled "${optionText}" to exist.`).not.toBeNull();
+  return radio as HTMLInputElement;
+}
+
+async function chooseAssetScopeMode(optionText: 'All assets' | 'Specific assets'): Promise<void> {
+  const radio = getAssetRadio(optionText);
+  await act(async () => {
+    radio.click();
+  });
 }
 
 async function toggleAssetOption(optionText: string): Promise<void> {
@@ -461,7 +488,8 @@ describe('InvestigationGraph asset-aware expand contract', () => {
       seed_lineage_id: ETH_NODE.lineage_id,
     });
 
-    expect(getAssetCheckbox('All assets').checked).toBe(true);
+    expect(getAssetRadio('All assets').checked).toBe(true);
+    await chooseAssetScopeMode('Specific assets');
     await toggleAssetOption('USDC');
     await toggleAssetOption('ETH');
     await flushAsyncWork();
@@ -530,6 +558,7 @@ describe('InvestigationGraph asset-aware expand contract', () => {
     await clickButton(`Select node ${ETH_NODE.node_id}`);
     await flushAsyncWork();
 
+    await chooseAssetScopeMode('Specific assets');
     await toggleAssetOption('USDC');
     await toggleAssetOption('ETH');
     await flushAsyncWork();
@@ -553,5 +582,23 @@ describe('InvestigationGraph asset-aware expand contract', () => {
     await flushAsyncWork();
 
     expect(document.body.textContent).not.toContain('0 transfers found');
+  });
+
+  it('keeps specific-assets mode explicit when nothing is checked and disables expand actions', async () => {
+    await clickButton(`Select node ${ETH_NODE.node_id}`);
+    await flushAsyncWork();
+
+    await chooseAssetScopeMode('Specific assets');
+    await flushAsyncWork();
+
+    expect(getAssetRadio('Specific assets').checked).toBe(true);
+    expect(document.body.textContent).toContain('0 selected');
+    expect(document.body.textContent).toContain('Select at least one asset');
+    expect(getButtonByText('Expand next').disabled).toBe(true);
+
+    await clickButtonContaining('Filter & Preview');
+    expect(getButtonByText('Preview next').disabled).toBe(true);
+    expect(getButtonByText(`Quick next ${ETH_NODE.node_id}`).disabled).toBe(true);
+    expect(expandNodeMock).not.toHaveBeenCalled();
   });
 });

@@ -200,21 +200,37 @@ function findByTestId(container: HTMLElement, testId: string): HTMLElement {
   return element as HTMLElement;
 }
 
-function getAssetScopeSelect(container: HTMLElement): HTMLSelectElement | null {
-  return container.querySelector('select');
+function queryLabeledInput(
+  container: HTMLElement,
+  label: string,
+  inputType: 'radio' | 'checkbox',
+): HTMLInputElement | null {
+  const matchingLabel = Array.from(container.querySelectorAll('label')).find(
+    (candidate) => candidate.textContent?.trim() === label,
+  );
+  return (matchingLabel?.querySelector(`input[type="${inputType}"]`) as HTMLInputElement | null) ?? null;
 }
 
-function selectOptionByLabel(select: HTMLSelectElement, label: string): void {
-  const option = Array.from(select.options).find((candidate) => candidate.textContent === label);
-  if (!option) {
-    throw new Error(`Unable to find option with label ${label}`);
+function getAssetModeRadio(container: HTMLElement, label: 'All assets' | 'Specific assets'): HTMLInputElement {
+  const radio = queryLabeledInput(container, label, 'radio');
+  if (!radio) {
+    throw new Error(`Unable to find asset-scope radio "${label}"`);
   }
-  select.value = option.value;
-  select.dispatchEvent(new Event('change', { bubbles: true }));
+  return radio;
 }
 
-function selectedOptionLabel(select: HTMLSelectElement): string {
-  return select.options[select.selectedIndex]?.textContent ?? '';
+function getAssetCheckbox(container: HTMLElement, label: string): HTMLInputElement {
+  const checkbox = queryLabeledInput(container, label, 'checkbox');
+  if (!checkbox) {
+    throw new Error(`Unable to find asset checkbox "${label}"`);
+  }
+  return checkbox;
+}
+
+async function clickInput(input: HTMLInputElement): Promise<void> {
+  await act(async () => {
+    input.click();
+  });
 }
 
 describe('InvestigationGraph asset selector persistence', () => {
@@ -320,21 +336,16 @@ describe('InvestigationGraph asset selector persistence', () => {
     });
 
     await waitFor(() => {
-      const select = getAssetScopeSelect(container);
-      expect(select).not.toBeNull();
-      expect(Array.from(select?.options ?? []).map((option) => option.textContent)).toEqual([
-        'All assets',
-        'USDC · Ethereum',
-      ]);
-      expect(selectedOptionLabel(select as HTMLSelectElement)).toBe('All assets');
-      return select as HTMLSelectElement;
+      expect(getAssetModeRadio(container, 'All assets').checked).toBe(true);
+      expect(getAssetModeRadio(container, 'Specific assets').checked).toBe(false);
+      expect(queryLabeledInput(container, 'USDC · Ethereum', 'checkbox')).toBeNull();
     });
 
-    await act(async () => {
-      selectOptionByLabel(getAssetScopeSelect(container) as HTMLSelectElement, 'USDC · Ethereum');
-    });
+    await clickInput(getAssetModeRadio(container, 'Specific assets'));
+    await clickInput(getAssetCheckbox(container, 'USDC · Ethereum'));
 
-    expect(selectedOptionLabel(getAssetScopeSelect(container) as HTMLSelectElement)).toBe('USDC · Ethereum');
+    expect(getAssetModeRadio(container, 'Specific assets').checked).toBe(true);
+    expect(getAssetCheckbox(container, 'USDC · Ethereum').checked).toBe(true);
 
     await act(async () => {
       findByTestId(container, 'rf-node-solana:address:So11111111111111111111111111111111111111112').click();
@@ -348,32 +359,25 @@ describe('InvestigationGraph asset selector persistence', () => {
     });
 
     await waitFor(() => {
-      const select = getAssetScopeSelect(container);
-      expect(select).not.toBeNull();
-      expect(Array.from(select?.options ?? []).map((option) => option.textContent)).toEqual([
-        'All assets',
-        'USDC · Solana',
-        'Native SOL',
-      ]);
-      expect(selectedOptionLabel(select as HTMLSelectElement)).toBe('All assets');
-      return select as HTMLSelectElement;
+      expect(getAssetModeRadio(container, 'All assets').checked).toBe(true);
+      expect(getAssetModeRadio(container, 'Specific assets').checked).toBe(false);
+      expect(queryLabeledInput(container, 'USDC · Solana', 'checkbox')).toBeNull();
+      expect(queryLabeledInput(container, 'Native SOL', 'checkbox')).toBeNull();
     });
 
-    await act(async () => {
-      selectOptionByLabel(getAssetScopeSelect(container) as HTMLSelectElement, 'Native SOL');
-    });
+    await clickInput(getAssetModeRadio(container, 'Specific assets'));
+    await clickInput(getAssetCheckbox(container, 'Native SOL'));
 
-    expect(selectedOptionLabel(getAssetScopeSelect(container) as HTMLSelectElement)).toBe('Native SOL');
+    expect(getAssetModeRadio(container, 'Specific assets').checked).toBe(true);
+    expect(getAssetCheckbox(container, 'Native SOL').checked).toBe(true);
 
     await act(async () => {
       findByTestId(container, 'rf-node-ethereum:address:0xaaa').click();
     });
 
     await waitFor(() => {
-      const select = getAssetScopeSelect(container);
-      expect(select).not.toBeNull();
-      expect(selectedOptionLabel(select as HTMLSelectElement)).toBe('USDC · Ethereum');
-      return select as HTMLSelectElement;
+      expect(getAssetModeRadio(container, 'Specific assets').checked).toBe(true);
+      expect(getAssetCheckbox(container, 'USDC · Ethereum').checked).toBe(true);
     });
 
     await act(async () => {
@@ -381,10 +385,8 @@ describe('InvestigationGraph asset selector persistence', () => {
     });
 
     await waitFor(() => {
-      const select = getAssetScopeSelect(container);
-      expect(select).not.toBeNull();
-      expect(selectedOptionLabel(select as HTMLSelectElement)).toBe('Native SOL');
-      return select as HTMLSelectElement;
+      expect(getAssetModeRadio(container, 'Specific assets').checked).toBe(true);
+      expect(getAssetCheckbox(container, 'Native SOL').checked).toBe(true);
     });
 
     await act(async () => {
@@ -392,7 +394,7 @@ describe('InvestigationGraph asset selector persistence', () => {
     });
 
     await waitFor(() => {
-      expect(getAssetScopeSelect(container)).toBeNull();
+      expect(queryLabeledInput(container, 'All assets', 'radio')).toBeNull();
     });
 
     expect(getAssetOptionsMock).toHaveBeenCalledTimes(2);
@@ -400,5 +402,59 @@ describe('InvestigationGraph asset selector persistence', () => {
       'ethereum:address:0xaaa',
       'solana:address:So11111111111111111111111111111111111111112',
     ]);
+  });
+
+  it('disambiguates repeated asset labels with shortened chain-local identity', async () => {
+    getAssetOptionsMock.mockImplementation(async (_sessionId: string, request: { seed_node_id: string }) => {
+      if (request.seed_node_id !== 'ethereum:address:0xaaa') {
+        throw new Error(`Unexpected asset-options request for ${request.seed_node_id}`);
+      }
+      return {
+        session_id: 'sess-selector',
+        seed_node_id: request.seed_node_id,
+        seed_lineage_id: 'lineage-ethereum:address:0xaaa',
+        options: [
+          { mode: 'all', chain: 'ethereum', display_label: 'All assets' },
+          {
+            mode: 'asset',
+            chain: 'ethereum',
+            chain_asset_id: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48',
+            asset_symbol: 'USDC',
+            display_label: 'USDC',
+          },
+          {
+            mode: 'asset',
+            chain: 'ethereum',
+            chain_asset_id: '0x1234567890abcdef1234567890abcdef12345678',
+            asset_symbol: 'USDC',
+            display_label: 'USDC',
+          },
+        ] satisfies AssetOption[],
+      };
+    });
+
+    await act(async () => {
+      root.render(
+        React.createElement(InvestigationGraph, {
+          sessionId: 'sess-selector',
+          onStartNewInvestigation: () => undefined,
+        }),
+      );
+    });
+
+    await act(async () => {
+      findByTestId(container, 'rf-node-ethereum:address:0xaaa').click();
+    });
+
+    await waitFor(() => {
+      expect(getAssetModeRadio(container, 'All assets').checked).toBe(true);
+    });
+
+    await clickInput(getAssetModeRadio(container, 'Specific assets'));
+
+    await waitFor(() => {
+      expect(container.textContent).toContain('USDC · 0xa0b869...eb48');
+      expect(container.textContent).toContain('USDC · 0x123456...5678');
+    });
   });
 });
