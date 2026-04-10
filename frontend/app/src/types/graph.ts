@@ -676,6 +676,7 @@ export interface ExpandRequest {
     depth?: number;
     asset_filter?: string[];
     asset_selector?: AssetSelector;
+    asset_selectors?: AssetSelector[];
     chain_filter?: string[];
     tx_hashes?: string[];
     min_value_fiat?: number;

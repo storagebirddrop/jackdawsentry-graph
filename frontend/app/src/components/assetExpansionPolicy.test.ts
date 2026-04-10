@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import type { AssetSelector, InvestigationEdge } from '../types/graph';
+import type { AssetOption, InvestigationEdge } from '../types/graph';
 import {
+  assetOptionKey,
   describeEdgeSelectiveTraceScope,
   deriveEdgeTraceAssetSelector,
-  getStoredNodeAssetSelector,
+  getStoredNodeAssetSelectors,
 } from './assetExpansionPolicy';
 
 function makeEdge(overrides: Partial<InvestigationEdge> = {}): InvestigationEdge {
@@ -19,29 +20,57 @@ function makeEdge(overrides: Partial<InvestigationEdge> = {}): InvestigationEdge
   };
 }
 
-describe('getStoredNodeAssetSelector', () => {
-  it('returns null when no selector was stored', () => {
-    expect(getStoredNodeAssetSelector('node-1', new Map())).toBeNull();
+describe('getStoredNodeAssetSelectors', () => {
+  const usdcOption: AssetOption = {
+    mode: 'asset',
+    chain: 'ethereum',
+    chain_asset_id: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48',
+    asset_symbol: 'USDC',
+    display_label: 'USDC',
+  };
+  const nativeOption: AssetOption = {
+    mode: 'native',
+    chain: 'ethereum',
+    asset_symbol: 'ETH',
+    display_label: 'ETH',
+  };
+
+  it('returns an empty selector list when no keys are stored', () => {
+    expect(getStoredNodeAssetSelectors('node-1', new Map(), new Map())).toEqual([]);
   });
 
-  it('treats the all-assets option as unscoped', () => {
-    const selectors = new Map<string, AssetSelector>([
-      ['node-1', { mode: 'all', chain: 'ethereum' }],
+  it('treats empty selection and all-assets keys as unscoped', () => {
+    const selectedKeys = new Map<string, readonly string[]>([
+      ['node-1', ['all:ethereum']],
+    ]);
+    const options = new Map<string, AssetOption[]>([
+      ['node-1', [{ mode: 'all', chain: 'ethereum', display_label: 'All assets' }, usdcOption]],
     ]);
 
-    expect(getStoredNodeAssetSelector('node-1', selectors)).toBeNull();
+    expect(getStoredNodeAssetSelectors('node-1', selectedKeys, options)).toEqual([]);
   });
 
-  it('returns the stored asset-specific selector for quick expand reuse', () => {
-    const selector: AssetSelector = {
-      mode: 'asset',
-      chain: 'ethereum',
-      chain_asset_id: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48',
-      asset_symbol: 'USDC',
-    };
-    const selectors = new Map<string, AssetSelector>([['node-1', selector]]);
+  it('resolves stored sorted option keys into display-label-free selectors', () => {
+    const selectedKeys = new Map<string, readonly string[]>([
+      ['node-1', [assetOptionKey(usdcOption), assetOptionKey(nativeOption), assetOptionKey(usdcOption)]],
+    ]);
+    const options = new Map<string, AssetOption[]>([
+      ['node-1', [usdcOption, nativeOption]],
+    ]);
 
-    expect(getStoredNodeAssetSelector('node-1', selectors)).toEqual(selector);
+    expect(getStoredNodeAssetSelectors('node-1', selectedKeys, options)).toEqual([
+      {
+        mode: 'asset',
+        chain: 'ethereum',
+        chain_asset_id: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48',
+        asset_symbol: 'USDC',
+      },
+      {
+        mode: 'native',
+        chain: 'ethereum',
+        asset_symbol: 'ETH',
+      },
+    ]);
   });
 });
 
