@@ -5,7 +5,6 @@ import type {
   ActivitySummary,
   AddressNodeData,
   AssetOption,
-  AssetSelector,
   BtcSidechainPegData,
   BridgeHopData,
   EntityNodeData,
@@ -21,6 +20,7 @@ import type {
 import type { BranchMeta } from '../store/graphStore';
 import type { BridgeStatusRefreshState } from '../hooks/useBridgeHopPoller';
 import {
+  assetOptionKey,
   deriveEdgeTraceAssetSelector,
   describeEdgeSelectiveTraceScope,
 } from './assetExpansionPolicy';
@@ -57,22 +57,6 @@ import {
   `;
   document.head.appendChild(style);
 })();
-
-function assetOptionKey(option: Pick<AssetSelector, 'mode' | 'chain' | 'chain_asset_id' | 'asset_symbol' | 'canonical_asset_id'>): string {
-  if (option.mode === 'all') {
-    return `all:${option.chain}`;
-  }
-  if (option.mode === 'native') {
-    return `native:${option.chain}`;
-  }
-  return [
-    'asset',
-    option.chain,
-    option.chain_asset_id ?? '',
-    option.asset_symbol ?? '',
-    option.canonical_asset_id ?? '',
-  ].join(':');
-}
 
 export interface PathStory {
   pathId: string;
@@ -119,11 +103,10 @@ interface Props {
   onTraceEdgeBackward?: () => void;
   assetOptions?: AssetOption[];
   assetOptionsLoading?: boolean;
-  selectedAssetOptionKey?: string | null;
-  onSelectAssetOption?: (optionKey: string) => void;
+  selectedAssetOptionKeys?: readonly string[];
+  onToggleAssetOption?: (optionKey: string) => void;
   onExpandNode?: (
     operation: 'expand_prev' | 'expand_next' | 'expand_neighbors',
-    assetSelector?: AssetSelector | null,
   ) => void;
   onPreviewExpand?: (
     operation: 'expand_prev' | 'expand_next' | 'expand_neighbors',
@@ -169,8 +152,8 @@ export default function GraphInspectorPanel({
   onTraceEdgeBackward,
   assetOptions = [],
   assetOptionsLoading = false,
-  selectedAssetOptionKey = null,
-  onSelectAssetOption,
+  selectedAssetOptionKeys = [],
+  onToggleAssetOption,
   onExpandNode,
   onPreviewExpand,
   previewResult = null,
@@ -259,8 +242,8 @@ export default function GraphInspectorPanel({
           onClearSemanticFocus={onClearSemanticFocus}
           assetOptions={assetOptions}
           assetOptionsLoading={assetOptionsLoading}
-          selectedAssetOptionKey={selectedAssetOptionKey}
-          onSelectAssetOption={onSelectAssetOption}
+          selectedAssetOptionKeys={selectedAssetOptionKeys}
+          onToggleAssetOption={onToggleAssetOption}
           onExpandNode={onExpandNode}
           onPreviewExpand={onPreviewExpand}
           previewResult={previewResult}
@@ -328,8 +311,8 @@ function NodeInspectorContent({
   onClearSemanticFocus,
   assetOptions,
   assetOptionsLoading,
-  selectedAssetOptionKey,
-  onSelectAssetOption,
+  selectedAssetOptionKeys,
+  onToggleAssetOption,
   onExpandNode,
   onPreviewExpand,
   previewResult,
@@ -362,11 +345,10 @@ function NodeInspectorContent({
   onClearSemanticFocus?: () => void;
   assetOptions: AssetOption[];
   assetOptionsLoading: boolean;
-  selectedAssetOptionKey: string | null;
-  onSelectAssetOption?: (optionKey: string) => void;
+  selectedAssetOptionKeys: readonly string[];
+  onToggleAssetOption?: (optionKey: string) => void;
   onExpandNode?: (
     operation: 'expand_prev' | 'expand_next' | 'expand_neighbors',
-    assetSelector?: AssetSelector | null,
   ) => void;
   onPreviewExpand?: (
     operation: 'expand_prev' | 'expand_next' | 'expand_neighbors',
@@ -385,14 +367,12 @@ function NodeInspectorContent({
   const subtitle = nodeSubtitle(node);
   const activity = node.activity_summary;
   const nodeSemantic = semanticMeta ?? semanticMetaForNode(node);
-  const selectedAssetOption = useMemo(
-    () =>
-      assetOptions.find((option) => assetOptionKey(option) === selectedAssetOptionKey)
-      ?? assetOptions.find((option) => option.mode === 'all')
-      ?? assetOptions[0]
-      ?? null,
-    [assetOptions, selectedAssetOptionKey],
+  const selectedKeySet = useMemo(
+    () => new Set(selectedAssetOptionKeys),
+    [selectedAssetOptionKeys],
   );
+  // "All assets" is active when no specific keys are selected.
+  const allAssetsActive = selectedAssetOptionKeys.length === 0;
   const showAssetSelector = node.node_type === 'address' && (assetOptionsLoading || assetOptions.length > 1);
 
   // Filter & Preview local state
@@ -506,39 +486,63 @@ function NodeInspectorContent({
 
       <Section title="Workspace actions">
         {showAssetSelector && (
-          <label style={{ display: 'grid', gap: 6, color: '#475569', fontSize: 12 }}>
-            Asset scope
-            <select
-              value={selectedAssetOption ? assetOptionKey(selectedAssetOption) : ''}
-              onChange={(event) => onSelectAssetOption?.(event.target.value)}
-              disabled={assetOptionsLoading || assetOptions.length === 0}
-              style={selectStyle}
-            >
-              {assetOptionsLoading && assetOptions.length === 0 ? (
-                <option value="">Loading asset choices…</option>
-              ) : (
-                assetOptions.map((option) => (
-                  <option key={assetOptionKey(option)} value={assetOptionKey(option)}>
-                    {option.display_label}
-                  </option>
-                ))
-              )}
-            </select>
-          </label>
+          <div style={{ display: 'grid', gap: 6, color: '#475569', fontSize: 12 }}>
+            <span style={{ fontWeight: 600 }}>Asset scope</span>
+            {assetOptionsLoading && assetOptions.length === 0 ? (
+              <span style={{ color: '#94a3b8', fontSize: 11 }}>Loading asset choices...</span>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 160, overflowY: 'auto' }}>
+                {/* "All assets" is checked when no specific assets are selected. */}
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={allAssetsActive}
+                    disabled={assetOptionsLoading}
+                    onChange={() => {
+                      // Clicking "All assets" when already active is a no-op;
+                      // clicking it when something is selected clears the selection.
+                      if (!allAssetsActive) {
+                        const allOption = assetOptions.find((o) => o.mode === 'all');
+                        if (allOption) onToggleAssetOption?.(assetOptionKey(allOption));
+                      }
+                    }}
+                  />
+                  <span>All assets</span>
+                </label>
+                {/* Individual asset rows skip the synthetic "all" option. */}
+                {assetOptions
+                  .filter((o) => o.mode !== 'all')
+                  .map((option) => {
+                    const key = assetOptionKey(option);
+                    return (
+                      <label key={key} style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+                        <input
+                          type="checkbox"
+                          checked={selectedKeySet.has(key)}
+                          disabled={assetOptionsLoading}
+                          onChange={() => onToggleAssetOption?.(key)}
+                        />
+                        <span>{option.display_label}</span>
+                      </label>
+                    );
+                  })}
+              </div>
+            )}
+          </div>
         )}
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           {node.expandable_directions.includes('prev') && onExpandNode && (
-            <button type="button" onClick={() => onExpandNode('expand_prev', selectedAssetOption)} style={actionButtonStyle}>
+            <button type="button" onClick={() => onExpandNode('expand_prev')} style={actionButtonStyle}>
               Expand previous
             </button>
           )}
           {node.expandable_directions.includes('next') && onExpandNode && (
-            <button type="button" onClick={() => onExpandNode('expand_next', selectedAssetOption)} style={actionButtonStyle}>
+            <button type="button" onClick={() => onExpandNode('expand_next')} style={actionButtonStyle}>
               Expand next
             </button>
           )}
           {node.expandable_directions.includes('neighbors') && onExpandNode && (
-            <button type="button" onClick={() => onExpandNode('expand_neighbors', selectedAssetOption)} style={actionButtonStyle}>
+            <button type="button" onClick={() => onExpandNode('expand_neighbors')} style={actionButtonStyle}>
               Expand around
             </button>
           )}
@@ -1775,12 +1779,6 @@ const filterInputStyle: React.CSSProperties = {
   background: 'rgba(255,255,255,0.95)',
   fontSize: 12,
   color: '#1e293b',
-};
-
-const selectStyle: React.CSSProperties = {
-  ...filterInputStyle,
-  width: '100%',
-  minHeight: 36,
 };
 
 const previewResultStyle: React.CSSProperties = {

@@ -1,4 +1,4 @@
-import type { AssetSelector, InvestigationEdge } from '../types/graph';
+import type { AssetOption, AssetSelector, InvestigationEdge } from '../types/graph';
 
 const NATIVE_ASSET_SYMBOLS: Record<string, string> = {
   bitcoin: 'BTC',
@@ -19,15 +19,45 @@ function normalizeChain(chain?: string | null): string {
   return (chain ?? '').trim().toLowerCase();
 }
 
-export function getStoredNodeAssetSelector(
-  nodeId: string,
-  selectorsByNodeId: ReadonlyMap<string, AssetSelector>,
-): AssetSelector | null {
-  const selector = selectorsByNodeId.get(nodeId) ?? null;
-  if (!selector || selector.mode === 'all') {
-    return null;
+export function assetOptionKey(
+  option: Pick<AssetSelector, 'mode' | 'chain' | 'chain_asset_id' | 'asset_symbol' | 'canonical_asset_id'>,
+): string {
+  if (option.mode === 'all') {
+    return `all:${option.chain}`;
   }
-  return selector;
+  if (option.mode === 'native') {
+    return `native:${option.chain}`;
+  }
+  return [
+    'asset',
+    option.chain,
+    option.chain_asset_id ?? '',
+    option.asset_symbol ?? '',
+    option.canonical_asset_id ?? '',
+  ].join(':');
+}
+
+export function getStoredNodeAssetSelectors(
+  nodeId: string,
+  selectedKeysByNodeId: ReadonlyMap<string, readonly string[]>,
+  optionsByNodeId: ReadonlyMap<string, AssetOption[]>,
+): AssetSelector[] {
+  const keys = selectedKeysByNodeId.get(nodeId);
+  if (!keys || keys.length === 0) {
+    return [];
+  }
+  const options = optionsByNodeId.get(nodeId) ?? [];
+  const optionByKey = new Map(options.map((option) => [assetOptionKey(option), option]));
+  return Array.from(new Set(keys.filter((key) => !key.startsWith('all:'))))
+    .sort()
+    .flatMap((key) => {
+      const option = optionByKey.get(key);
+      if (!option) {
+        return [];
+      }
+      const { display_label: _label, ...selector } = option;
+      return [selector];
+    });
 }
 
 export function deriveEdgeTraceAssetSelector(

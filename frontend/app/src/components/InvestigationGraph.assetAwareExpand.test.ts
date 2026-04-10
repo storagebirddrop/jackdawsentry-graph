@@ -262,6 +262,12 @@ const ETH_USDC_SELECTOR: AssetSelector = {
   canonical_asset_id: 'usdc',
 };
 
+const ETH_NATIVE_SELECTOR: AssetSelector = {
+  mode: 'native',
+  chain: 'ethereum',
+  asset_symbol: 'ETH',
+};
+
 function makeEmptyExpansion(request: ExpandRequest): ExpansionResponseV2 {
   return {
     session_id: SESSION_ID,
@@ -325,6 +331,14 @@ function getButtonByText(text: string): HTMLButtonElement {
   return button as HTMLButtonElement;
 }
 
+function getButtonContaining(text: string): HTMLButtonElement {
+  const button = Array.from(document.querySelectorAll('button')).find(
+    (candidate) => candidate.textContent?.includes(text),
+  );
+  expect(button, `Expected button containing "${text}" to exist.`).not.toBeNull();
+  return button as HTMLButtonElement;
+}
+
 async function clickButton(text: string): Promise<void> {
   const button = getButtonByText(text);
   await act(async () => {
@@ -332,29 +346,30 @@ async function clickButton(text: string): Promise<void> {
   });
 }
 
-function querySelectByLabel(labelText: string): HTMLSelectElement | null {
+async function clickButtonContaining(text: string): Promise<void> {
+  const button = getButtonContaining(text);
+  await act(async () => {
+    button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  });
+}
+
+function queryAssetCheckbox(optionText: string): HTMLInputElement | null {
   const label = Array.from(document.querySelectorAll('label')).find(
-    (candidate) => candidate.textContent?.includes(labelText),
-  );
-  return (label?.querySelector('select') as HTMLSelectElement | null) ?? null;
-}
-
-function getSelectByLabel(labelText: string): HTMLSelectElement {
-  const select = querySelectByLabel(labelText);
-  expect(select, `Expected select labeled "${labelText}" to exist.`).not.toBeNull();
-  return select as HTMLSelectElement;
-}
-
-async function selectOption(labelText: string, optionText: string): Promise<void> {
-  const select = getSelectByLabel(labelText);
-  const option = Array.from(select.options).find(
     (candidate) => candidate.textContent?.trim() === optionText,
   );
-  expect(option, `Expected option "${optionText}" to exist.`).not.toBeNull();
+  return (label?.querySelector('input[type="checkbox"]') as HTMLInputElement | null) ?? null;
+}
 
+function getAssetCheckbox(optionText: string): HTMLInputElement {
+  const checkbox = queryAssetCheckbox(optionText);
+  expect(checkbox, `Expected checkbox labeled "${optionText}" to exist.`).not.toBeNull();
+  return checkbox as HTMLInputElement;
+}
+
+async function toggleAssetOption(optionText: string): Promise<void> {
+  const checkbox = getAssetCheckbox(optionText);
   await act(async () => {
-    select.value = (option as HTMLOptionElement).value;
-    select.dispatchEvent(new Event('change', { bubbles: true }));
+    checkbox.click();
   });
 }
 
@@ -401,6 +416,10 @@ describe('InvestigationGraph asset-aware expand contract', () => {
             ...ETH_USDC_SELECTOR,
             display_label: 'USDC',
           },
+          {
+            ...ETH_NATIVE_SELECTOR,
+            display_label: 'ETH',
+          },
         ],
       };
       return response;
@@ -442,8 +461,9 @@ describe('InvestigationGraph asset-aware expand contract', () => {
       seed_lineage_id: ETH_NODE.lineage_id,
     });
 
-    expect(getSelectByLabel('Asset scope').options).toHaveLength(2);
-    await selectOption('Asset scope', 'USDC');
+    expect(getAssetCheckbox('All assets').checked).toBe(true);
+    await toggleAssetOption('USDC');
+    await toggleAssetOption('ETH');
     await flushAsyncWork();
 
     await clickButton('Expand around');
@@ -452,7 +472,7 @@ describe('InvestigationGraph asset-aware expand contract', () => {
       seed_lineage_id: ETH_NODE.lineage_id,
       operation_type: 'expand_neighbors',
       options: {
-        asset_selector: ETH_USDC_SELECTOR,
+        asset_selectors: [ETH_USDC_SELECTOR, ETH_NATIVE_SELECTOR],
       },
     });
 
@@ -462,7 +482,7 @@ describe('InvestigationGraph asset-aware expand contract', () => {
       seed_lineage_id: ETH_NODE.lineage_id,
       operation_type: 'expand_next',
       options: {
-        asset_selector: ETH_USDC_SELECTOR,
+        asset_selectors: [ETH_USDC_SELECTOR, ETH_NATIVE_SELECTOR],
       },
     });
 
@@ -475,7 +495,7 @@ describe('InvestigationGraph asset-aware expand contract', () => {
       operation_type: 'expand_next',
       options: {
         tx_hashes: [SAFE_EDGE.tx_hash as string],
-        asset_selector: ETH_USDC_SELECTOR,
+        asset_selectors: [ETH_USDC_SELECTOR],
       },
     });
 
@@ -494,7 +514,7 @@ describe('InvestigationGraph asset-aware expand contract', () => {
     await clickButton(`Select node ${BTC_NODE.node_id}`);
     await flushAsyncWork();
 
-    expect(querySelectByLabel('Asset scope')).toBeNull();
+    expect(queryAssetCheckbox('USDC')).toBeNull();
     expect(getAssetOptionsMock).toHaveBeenCalledTimes(1);
 
     await clickButton('Expand next');
@@ -504,5 +524,34 @@ describe('InvestigationGraph asset-aware expand contract', () => {
       operation_type: 'expand_next',
       options: undefined,
     });
+  });
+
+  it('clears stale preview results when the selected asset scope changes', async () => {
+    await clickButton(`Select node ${ETH_NODE.node_id}`);
+    await flushAsyncWork();
+
+    await toggleAssetOption('USDC');
+    await toggleAssetOption('ETH');
+    await flushAsyncWork();
+
+    await clickButtonContaining('Filter & Preview');
+    await clickButton('Preview next');
+    await flushAsyncWork();
+
+    expect(nthExpandRequest(0)).toEqual(expect.objectContaining({
+      seed_node_id: ETH_NODE.node_id,
+      seed_lineage_id: ETH_NODE.lineage_id,
+      operation_type: 'expand_next',
+      options: expect.objectContaining({
+        asset_selectors: [ETH_USDC_SELECTOR, ETH_NATIVE_SELECTOR],
+        max_results: 25,
+      }),
+    }));
+    expect(document.body.textContent).toContain('0 transfers found');
+
+    await toggleAssetOption('ETH');
+    await flushAsyncWork();
+
+    expect(document.body.textContent).not.toContain('0 transfers found');
   });
 });

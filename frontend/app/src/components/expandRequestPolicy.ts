@@ -1,5 +1,6 @@
 import type {
   AddressNodeData,
+  AssetOption,
   AssetSelector,
   ExpandRequest,
   InvestigationEdge,
@@ -7,14 +8,15 @@ import type {
 } from '../types/graph';
 import {
   deriveEdgeTraceAssetSelector,
-  getStoredNodeAssetSelector,
+  getStoredNodeAssetSelectors,
 } from './assetExpansionPolicy';
 
 export interface ExpandInvocation {
   node: Pick<InvestigationNode, 'node_id' | 'lineage_id'>;
   operation: ExpandRequest['operation_type'];
   txHashes?: string[];
-  assetSelector?: AssetSelector | null;
+  /** Multi-asset selectors for this expansion. Empty array means "all assets". */
+  assetSelectors?: AssetSelector[];
 }
 
 function toRequestAssetSelector(selector: AssetSelector): AssetSelector {
@@ -43,8 +45,12 @@ export function buildExpandRequest(invocation: ExpandInvocation): ExpandRequest 
   if (invocation.txHashes && invocation.txHashes.length > 0) {
     requestOptions.tx_hashes = invocation.txHashes;
   }
-  if (invocation.assetSelector && invocation.assetSelector.mode !== 'all') {
-    requestOptions.asset_selector = toRequestAssetSelector(invocation.assetSelector);
+
+  const selectors = invocation.assetSelectors ?? [];
+  // Filter out any "all" mode entries; empty list means no filter on the backend.
+  const specificSelectors = selectors.filter((s) => s.mode !== 'all');
+  if (specificSelectors.length > 0) {
+    requestOptions.asset_selectors = specificSelectors.map(toRequestAssetSelector);
   }
 
   return {
@@ -58,24 +64,25 @@ export function buildExpandRequest(invocation: ExpandInvocation): ExpandRequest 
 export function createInspectorExpandInvocation(
   node: Pick<InvestigationNode, 'node_id' | 'lineage_id'>,
   operation: ExpandRequest['operation_type'],
-  assetSelector?: AssetSelector | null,
+  assetSelectors?: AssetSelector[],
 ): ExpandInvocation {
   return {
     node,
     operation,
-    assetSelector,
+    assetSelectors,
   };
 }
 
 export function createQuickExpandInvocation(
   node: Pick<InvestigationNode, 'node_id' | 'lineage_id'>,
   operation: Extract<ExpandRequest['operation_type'], 'expand_prev' | 'expand_next'>,
-  selectorsByNodeId: ReadonlyMap<string, AssetSelector>,
+  selectedKeysByNodeId: ReadonlyMap<string, readonly string[]>,
+  optionsByNodeId: ReadonlyMap<string, AssetOption[]>,
 ): ExpandInvocation {
   return {
     node,
     operation,
-    assetSelector: getStoredNodeAssetSelector(node.node_id, selectorsByNodeId),
+    assetSelectors: getStoredNodeAssetSelectors(node.node_id, selectedKeysByNodeId, optionsByNodeId),
   };
 }
 
@@ -89,14 +96,17 @@ export function createEdgeTraceInvocation(
   }
 
   const endpointAddressData = endpoint.address_data as AddressNodeData | undefined;
+  const edgeSelector = deriveEdgeTraceAssetSelector(
+    edge,
+    endpoint.chain ?? endpointAddressData?.chain,
+  );
 
   return {
     node: endpoint,
     operation: direction === 'forward' ? 'expand_next' : 'expand_prev',
     txHashes: [edge.tx_hash],
-    assetSelector: deriveEdgeTraceAssetSelector(
-      edge,
-      endpoint.chain ?? endpointAddressData?.chain,
-    ),
+    // Edge selective trace stays single-asset: derive from the edge itself,
+    // not from the user's node-level multi-selection.
+    assetSelectors: edgeSelector ? [edgeSelector] : [],
   };
 }

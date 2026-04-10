@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import type { AssetSelector, InvestigationEdge, InvestigationNode } from '../types/graph';
+import type { AssetOption, AssetSelector, InvestigationEdge, InvestigationNode } from '../types/graph';
+import { assetOptionKey } from './assetExpansionPolicy';
 import {
   buildExpandRequest,
   createEdgeTraceInvocation,
@@ -43,36 +44,47 @@ function makeEdge(overrides: Partial<InvestigationEdge> = {}): InvestigationEdge
 }
 
 describe('expand request policy', () => {
-  it('builds the inspector expand request with the selected asset scope', () => {
+  it('builds the inspector expand request with plural selected asset scope', () => {
     const node = makeAddressNode();
-    const selector: AssetSelector = {
+    const selectors: AssetSelector[] = [{
       mode: 'asset',
       chain: 'ethereum',
       chain_asset_id: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48',
       asset_symbol: 'USDC',
-    };
+    }, {
+      mode: 'native',
+      chain: 'ethereum',
+      asset_symbol: 'ETH',
+    }];
 
     expect(
       buildExpandRequest(
-        createInspectorExpandInvocation(node, 'expand_neighbors', selector),
+        createInspectorExpandInvocation(node, 'expand_neighbors', selectors),
       ),
     ).toEqual({
       seed_node_id: node.node_id,
       seed_lineage_id: node.lineage_id,
       operation_type: 'expand_neighbors',
       options: {
-        asset_selector: selector,
+        asset_selectors: selectors,
       },
     });
   });
 
-  it('builds the quick expand request from the stored per-node asset scope', () => {
+  it('builds the quick expand request from stored per-node multi-selection keys', () => {
     const node = makeAddressNode();
-    const selector: AssetSelector = {
+    const usdcOption: AssetOption = {
       mode: 'asset',
       chain: 'ethereum',
       chain_asset_id: '0xa0b8',
       asset_symbol: 'USDC',
+      display_label: 'USDC',
+    };
+    const nativeOption: AssetOption = {
+      mode: 'native',
+      chain: 'ethereum',
+      asset_symbol: 'ETH',
+      display_label: 'ETH',
     };
 
     expect(
@@ -80,7 +92,8 @@ describe('expand request policy', () => {
         createQuickExpandInvocation(
           node,
           'expand_prev',
-          new Map([[node.node_id, selector]]),
+          new Map([[node.node_id, [assetOptionKey(nativeOption), assetOptionKey(usdcOption)]]]),
+          new Map([[node.node_id, [usdcOption, nativeOption]]]),
         ),
       ),
     ).toEqual({
@@ -88,8 +101,36 @@ describe('expand request policy', () => {
       seed_lineage_id: node.lineage_id,
       operation_type: 'expand_prev',
       options: {
-        asset_selector: selector,
+        asset_selectors: [{
+          mode: 'asset',
+          chain: 'ethereum',
+          chain_asset_id: '0xa0b8',
+          asset_symbol: 'USDC',
+        }, {
+          mode: 'native',
+          chain: 'ethereum',
+          asset_symbol: 'ETH',
+        }],
       },
+    });
+  });
+
+  it('omits asset scope when the stored per-node selection is empty', () => {
+    const node = makeAddressNode();
+
+    expect(
+      buildExpandRequest(
+        createQuickExpandInvocation(
+          node,
+          'expand_next',
+          new Map([[node.node_id, []]]),
+          new Map(),
+        ),
+      ),
+    ).toEqual({
+      seed_node_id: node.node_id,
+      seed_lineage_id: node.lineage_id,
+      operation_type: 'expand_next',
     });
   });
 
@@ -116,13 +157,13 @@ describe('expand request policy', () => {
       operation_type: 'expand_next',
       options: {
         tx_hashes: ['0xtx'],
-        asset_selector: {
+        asset_selectors: [{
           mode: 'asset',
           chain: 'ethereum',
           chain_asset_id: '0xa0b8',
           asset_symbol: 'USDC',
           canonical_asset_id: 'usdc',
-        },
+        }],
       },
     });
   });

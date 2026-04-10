@@ -233,6 +233,17 @@ function findButtonByText(scope: ParentNode, text: string): HTMLButtonElement {
   return button as HTMLButtonElement;
 }
 
+function findCheckboxByLabel(scope: ParentNode, text: string): HTMLInputElement {
+  const label = Array.from(scope.querySelectorAll('label')).find(
+    (candidate) => candidate.textContent?.includes(text),
+  );
+  const checkbox = label?.querySelector('input[type="checkbox"]');
+  if (!checkbox) {
+    throw new Error(`Unable to find checkbox containing text: ${text}`);
+  }
+  return checkbox as HTMLInputElement;
+}
+
 describe('InvestigationGraph manual placement persistence', () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -329,23 +340,13 @@ describe('InvestigationGraph manual placement persistence', () => {
     });
 
     await waitFor(() => {
-      const select = container.querySelector('select');
-      expect(select).not.toBeNull();
-      expect(Array.from(select?.querySelectorAll('option') ?? []).some(
-        (option) => option.textContent === 'USDC · 0xa0b8',
-      )).toBe(true);
-      return select as HTMLSelectElement;
+      expect(findCheckboxByLabel(container, 'USDC · 0xa0b8')).not.toBeNull();
     });
 
-    const select = container.querySelector('select') as HTMLSelectElement;
-    const usdcOption = Array.from(select.options).find(
-      (option) => option.textContent === 'USDC · 0xa0b8',
-    );
-    expect(usdcOption).toBeDefined();
+    const usdcOption = findCheckboxByLabel(container, 'USDC · 0xa0b8');
 
     await act(async () => {
-      select.value = usdcOption?.value ?? '';
-      select.dispatchEvent(new Event('change', { bubbles: true }));
+      usdcOption.click();
     });
 
     await act(async () => {
@@ -361,12 +362,12 @@ describe('InvestigationGraph manual placement persistence', () => {
           seed_lineage_id: 'lineage-seed',
           operation_type: 'expand_next',
           options: expect.objectContaining({
-            asset_selector: expect.objectContaining({
+            asset_selectors: [expect.objectContaining({
               mode: 'asset',
               chain: 'ethereum',
               chain_asset_id: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48',
               asset_symbol: 'USDC',
-            }),
+            })],
           }),
         }),
       );
