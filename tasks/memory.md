@@ -18,9 +18,11 @@ work against main, not older recovery branches.
 Active shipped graph path on main:
 - direct expand
 - asset-aware expand for supported non-Bitcoin address flows
-  (inspector-based single-asset selection, stored per-node Prev/Next reuse)
+  (explicit `All assets` / `Specific assets` modes, specific-assets multi-select,
+  stored per-node scope reused by Prev/Next)
 - edge selective trace: tx_hash-first, asset-scoped only when safe
-  chain-local identity exists
+  chain-local identity exists; derives at most one safe selector and does not
+  inherit inspector multi-selection
 - preview/apply: inspector "Filter & Preview" panel previews an expansion
   without applying it; `handlePreviewExpand` / `handleApplyPreview` wired
   in `InvestigationGraph`; candidate edge list rendered in `GraphInspectorPanel`
@@ -33,14 +35,19 @@ Active shipped graph path on main:
 
 Current shipped behavior:
 - EVM / Solana / TRON asset-specific token filtering requires chain-local identity
+- `All assets` emits no `asset_selectors`; `Specific assets` emits deterministic
+  plural `asset_selectors`
+- empty `Specific assets` disables expand/preview actions until at least one
+  asset is checked
 - Bitcoin excluded from the asset-selector path
 - `value_fiat` canonical for active-path edge fiat handling
 - bridge animation follows `bridge_source` / `bridge_dest`
 - layout/manual-placement safeguards intact
 
-Not part of the current shipped path:
-- multi-asset selection (single-asset scoping only; each expand request
-  accepts at most one `AssetSelector`)
+Current multi-asset boundary:
+- multi-asset selection v1 is shipped for inspector expand/preview and node
+  quick Prev/Next on supported non-Bitcoin address flows
+- edge selective trace remains single-asset scoped
 
 Cleanup status (2026-04-09):
 - full follow-up merge queue complete

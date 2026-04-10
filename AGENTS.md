@@ -15,9 +15,11 @@ The currently shipped session graph path includes **direct expand**, **preview/a
 
 Shipped behavior:
 - **asset-aware expand** for supported non-Bitcoin address flows
-  - inspector-based single-asset selection
-  - stored per-node asset scope reused by Prev/Next
-- **edge selective trace** is `tx_hash`-first and only adds asset scope when safe chain-local identity exists (EVM, Solana, TRON)
+  - inspector-based `All assets` / `Specific assets` selection
+  - specific-assets mode supports multi-select with stored per-node scope reused by Prev/Next
+  - empty `Specific assets` disables expand/preview actions until at least one asset is checked
+- **edge selective trace** is `tx_hash`-first and only adds at most one safe asset scope when chain-local identity exists (EVM, Solana, TRON)
+  - edge trace does not inherit inspector multi-selection
 - **preview/apply**: inspector "Filter & Preview" panel runs an expansion without committing it to the canvas; investigators review candidate edges before applying
 - **date-filtered expansion**: `time_from` / `time_to` bounds accepted by the expand API and applied as time predicates in Bitcoin, EVM, and Solana chain compilers
 - **candidate selection / subset apply**: per-edge checkboxes in the preview panel; "Apply selected" prunes both edges and reachable nodes before committing the delta
@@ -26,12 +28,14 @@ Shipped behavior:
 - bridge animation follows backend `bridge_source` / `bridge_dest`
 - layout/manual-placement safeguards are intact
 
-## Not Part of the Current Active Shipped Path
+## Current Multi-Asset Boundary
 
-- **multi-asset selection** — single-asset scoping only per expansion; each expand request accepts at most one `AssetSelector`
+- multi-asset selection v1 is implemented for inspector expand/preview and node quick `Prev` / `Next` on supported non-Bitcoin address flows
+- `All assets` emits no `asset_selectors`; `Specific assets` emits deterministic plural `asset_selectors`
+- edge selective trace remains single-asset scoped and must not inherit inspector multi-selection
+- Bitcoin remains excluded from the asset-selector path
 
-Do not treat multi-asset selection as implemented.
-Do not remove the README **Active Graph Contract** section that documents this boundary.
+Do not remove the README **Active Graph Contract** section that documents this current boundary.
 
 ## Required Reading Before Graph Work
 
