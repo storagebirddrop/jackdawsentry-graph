@@ -26,7 +26,7 @@ from typing import List
 from typing import Optional
 from typing import Tuple
 
-from src.trace_compiler.asset_selection import effective_asset_selector
+from src.trace_compiler.asset_selection import effective_asset_selectors
 from src.trace_compiler.asset_selection import normalize_chain_asset_id
 from src.trace_compiler.chains.base import BaseChainCompiler
 from src.trace_compiler.chains.evm_log_decoder import DEX_SWAP_SIGS
@@ -50,6 +50,19 @@ logger = logging.getLogger(__name__)
 # Maximum rows fetched from the event store per expansion call before
 # pagination.  This is the per-SQL LIMIT, not the max_results option.
 SQL_FETCH_LIMIT = 500
+
+_CHAIN_LOCAL_ASSET_ID_ONLY_CHAINS = {
+    "ethereum",
+    "bsc",
+    "polygon",
+    "arbitrum",
+    "base",
+    "avalanche",
+    "optimism",
+    "starknet",
+    "injective",
+    "tron",
+}
 
 
 class _GenericTransferChainCompiler(BaseChainCompiler):
@@ -117,66 +130,47 @@ class _GenericTransferChainCompiler(BaseChainCompiler):
         chain: str,
         options: ExpandOptions,
     ) -> tuple[list[str], list[str], list[str], bool]:
-        """Return normalized symbol, canonical-id, address, and native filters."""
-        selector = effective_asset_selector(options, chain=chain)
-        if options.asset_selector is not None:
-            symbol_filters: set[str] = set()
-            canonical_filters: set[str] = set()
-            asset_address_filters: set[str] = set()
-            native_selected = False
+        """Return normalized symbol, canonical-id, address, and native filters.
 
-            if selector.mode == "native":
-                native_selected = True
-            elif selector.mode == "asset":
-                if selector.asset_symbol:
-                    symbol_filters.add(selector.asset_symbol.upper())
-                if selector.canonical_asset_id:
-                    canonical_filters.add(selector.canonical_asset_id.lower())
-                normalized_chain_asset_id = normalize_chain_asset_id(
-                    chain,
-                    selector.chain_asset_id,
-                )
-                if normalized_chain_asset_id:
-                    asset_address_filters.add(normalized_chain_asset_id)
+        Empty effective selector lists mean "no filter".  For token selectors,
+        use the strongest available identity only so a selector with a
+        chain-local asset address and a display symbol cannot broaden into every
+        token that shares that symbol.
+        """
+        selectors = effective_asset_selectors(options, chain=chain)
+        if not selectors:
+            return [], [], [], False
 
-            return (
-                sorted(symbol_filters),
-                sorted(canonical_filters),
-                sorted(asset_address_filters),
-                native_selected,
-            )
-
-        raw_values = [
-            str(value).strip()
-            for value in (options.asset_filter or [])
-            if str(value).strip()
-        ]
         symbol_filters: set[str] = set()
         canonical_filters: set[str] = set()
         asset_address_filters: set[str] = set()
         native_selected = False
         normalized_chain = (chain or "").strip().lower()
+        requires_chain_local_identity = (
+            normalized_chain in _CHAIN_LOCAL_ASSET_ID_ONLY_CHAINS
+        )
 
-        for value in raw_values:
-            lowered = value.lower()
-            if lowered.startswith("symbol:"):
-                symbol_filters.add(value.split(":", 1)[1].strip().upper())
+        for selector in selectors:
+            if selector.mode == "native":
+                native_selected = True
                 continue
-            if lowered.startswith("canonical:"):
-                canonical_filters.add(value.split(":", 1)[1].strip().lower())
+            if selector.mode != "asset":
                 continue
-            if lowered.startswith("native:"):
-                selector_chain = value.split(":", 1)[1].strip().lower()
-                if selector_chain == normalized_chain:
-                    native_selected = True
+
+            chain_asset_id = normalize_chain_asset_id(chain, selector.chain_asset_id)
+            if chain_asset_id:
+                asset_address_filters.add(chain_asset_id)
                 continue
-            if lowered.startswith("asset:"):
-                parts = value.split(":", 2)
-                if len(parts) == 3 and parts[1].strip().lower() == normalized_chain:
-                    asset_address_filters.add(parts[2].strip().lower())
+
+            if requires_chain_local_identity:
                 continue
-            symbol_filters.add(value.upper())
-            canonical_filters.add(lowered)
+
+            if selector.canonical_asset_id:
+                canonical_filters.add(selector.canonical_asset_id.lower())
+                continue
+
+            if selector.asset_symbol:
+                symbol_filters.add(selector.asset_symbol.upper())
 
         return (
             sorted(symbol_filters),
@@ -187,9 +181,14 @@ class _GenericTransferChainCompiler(BaseChainCompiler):
 
     def _include_native_asset(self, chain: str, options: ExpandOptions) -> bool:
         """Return True when the native asset should be included for a query."""
-        selector = effective_asset_selector(options, chain=chain)
-        if not options.asset_filter and selector.mode == "all":
+        selectors = effective_asset_selectors(options, chain=chain)
+        # Empty list means no filter → include everything.
+        if not selectors:
             return True
+        # Include native when any selector is native or all-mode.
+        if any(s.mode in {"all", "native"} for s in selectors):
+            return True
+        # Also include native when symbol/canonical filters match the native asset.
         symbol_filters, canonical_filters, _, native_selected = self._normalized_asset_filters(
             chain,
             options,
@@ -202,8 +201,9 @@ class _GenericTransferChainCompiler(BaseChainCompiler):
 
     def _include_token_assets(self, chain: str, options: ExpandOptions) -> bool:
         """Return True when non-native token transfers should be queried."""
-        selector = effective_asset_selector(options, chain=chain)
-        if not options.asset_filter and selector.mode == "all":
+        selectors = effective_asset_selectors(options, chain=chain)
+        # Empty list means no filter → include everything.
+        if not selectors:
             return True
         (
             symbol_filters,
@@ -211,15 +211,7 @@ class _GenericTransferChainCompiler(BaseChainCompiler):
             asset_address_filters,
             _native_selected,
         ) = self._normalized_asset_filters(chain, options)
-        native_symbol = self._native_symbol(chain).upper()
-        native_asset_id = self._native_canonical_asset_id(chain)
-        symbol_only = {value for value in symbol_filters if value != native_symbol}
-        canonical_only = {
-            value
-            for value in canonical_filters
-            if native_asset_id is None or value != native_asset_id.lower()
-        }
-        return bool(symbol_only or canonical_only or asset_address_filters)
+        return bool(symbol_filters or canonical_filters or asset_address_filters)
 
     async def _try_swap_promotion(
         self,
@@ -466,6 +458,11 @@ class _GenericTransferChainCompiler(BaseChainCompiler):
                 asset_address_filters,
                 _native_selected,
             ) = self._normalized_asset_filters(chain, options)
+            if (
+                effective_asset_selectors(options, chain=chain)
+                and not (symbol_filters or canonical_filters or asset_address_filters)
+            ):
+                return []
             params: list = [
                 chain,
                 address,
@@ -564,6 +561,11 @@ class _GenericTransferChainCompiler(BaseChainCompiler):
                 asset_address_filters,
                 _native_selected,
             ) = self._normalized_asset_filters(chain, options)
+            if (
+                effective_asset_selectors(options, chain=chain)
+                and not (symbol_filters or canonical_filters or asset_address_filters)
+            ):
+                return []
             sql = """
                 SELECT
                     rtt.tx_hash,

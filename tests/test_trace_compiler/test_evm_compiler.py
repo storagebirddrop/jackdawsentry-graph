@@ -263,11 +263,75 @@ async def test_fetch_outbound_token_transfers_accepts_asset_selector_chain_asset
     assert chain == "ethereum"
     assert address == "0xseed"
     assert limit == 10
-    assert symbol_filters == ["USDT"]
+    assert symbol_filters is None
     assert canonical_filters is None
     assert asset_filters == ["0xdac17f958d2ee523a2206206994597c13d831ec7"]
     assert time_from is None
     assert time_to is None
+
+
+@pytest.mark.asyncio
+async def test_fetch_outbound_token_transfers_unions_multi_selector_contracts_without_symbol_broadening():
+    usdc = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+    usdt = "0xdac17f958d2ee523a2206206994597c13d831ec7"
+    conn = MagicMock()
+    conn.fetch = AsyncMock(return_value=[])
+    pg = MagicMock()
+    pg.acquire = MagicMock(return_value=_AsyncCtxMgr(conn))
+    compiler = _make_compiler(pg=pg)
+
+    await compiler._fetch_outbound_token_transfers(
+        "0xseed",
+        "ethereum",
+        ExpandOptions(
+            max_results=10,
+            asset_selectors=[
+                AssetSelector(
+                    mode="asset",
+                    chain="ethereum",
+                    chain_asset_id=usdc,
+                    asset_symbol="USDC",
+                ),
+                AssetSelector(
+                    mode="asset",
+                    chain="ethereum",
+                    chain_asset_id=usdt,
+                    asset_symbol="USDT",
+                ),
+            ],
+        ),
+    )
+
+    _, chain, address, limit, symbol_filters, canonical_filters, asset_filters, *_ = conn.fetch.await_args.args
+    assert chain == "ethereum"
+    assert address == "0xseed"
+    assert limit == 10
+    assert symbol_filters is None
+    assert canonical_filters is None
+    assert asset_filters == [usdc, usdt]
+
+
+@pytest.mark.asyncio
+async def test_fetch_outbound_token_transfers_symbol_only_selector_does_not_broaden():
+    conn = MagicMock()
+    conn.fetch = AsyncMock(return_value=[])
+    pg = MagicMock()
+    pg.acquire = MagicMock(return_value=_AsyncCtxMgr(conn))
+    compiler = _make_compiler(pg=pg)
+
+    rows = await compiler._fetch_outbound_token_transfers(
+        "0xseed",
+        "ethereum",
+        ExpandOptions(
+            max_results=10,
+            asset_selectors=[
+                AssetSelector(mode="asset", chain="ethereum", asset_symbol="USDC"),
+            ],
+        ),
+    )
+
+    assert rows == []
+    conn.fetch.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -287,6 +351,8 @@ async def test_expand_next_asset_selector_filters_specific_token_contract():
             return []
         if "FROM raw_token_transfers" in sql:
             assert "LOWER(COALESCE(rtt.asset_contract, '')) = ANY($6)" in sql
+            assert params[3] is None
+            assert params[4] is None
             assert params[5] == ["0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"]
             return [token_row]
         return []
@@ -319,6 +385,127 @@ async def test_expand_next_asset_selector_filters_specific_token_contract():
     assert len(edges) == 1
     assert edges[0].asset_symbol == "USDC"
     assert edges[0].chain_asset_id == "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+
+
+@pytest.mark.asyncio
+async def test_expand_next_asset_selectors_native_plus_token_queries_both():
+    usdc = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+    native_row = _pg_row(
+        counterparty="0xnative",
+        tx_hash="0xnative",
+        value_native=3.0,
+        asset_symbol=None,
+        canonical_asset_id=None,
+        asset_address=None,
+        timestamp=_TS,
+    )
+    token_row = _pg_row(
+        counterparty="0xtokenrecip",
+        tx_hash="0xtoken",
+        value_native=25.0,
+        asset_symbol="USDC",
+        canonical_asset_id="usdc",
+        asset_address=usdc,
+        timestamp=_TS,
+    )
+
+    async def _fetch(sql, *params):
+        if "FROM raw_transactions" in sql:
+            return [native_row]
+        if "FROM raw_token_transfers" in sql:
+            assert params[3] is None
+            assert params[4] is None
+            assert params[5] == [usdc]
+            return [token_row]
+        return []
+
+    conn = MagicMock()
+    conn.fetch = AsyncMock(side_effect=_fetch)
+    pg = MagicMock()
+    pg.acquire = MagicMock(return_value=_AsyncCtxMgr(conn))
+    compiler = _make_compiler(pg=pg)
+
+    with (
+        patch.object(compiler, "_prefetch_prices", new=AsyncMock(return_value={})),
+        patch.object(compiler._bridge, "is_bridge_contract", return_value=False),
+        patch.object(compiler._service, "get_record", return_value=None),
+    ):
+        nodes, edges = await compiler.expand_next(
+            session_id="s",
+            branch_id="b",
+            path_sequence=0,
+            depth=0,
+            seed_address="0xseed",
+            chain="ethereum",
+            options=ExpandOptions(
+                max_results=10,
+                asset_selectors=[
+                    AssetSelector(mode="native", chain="ethereum", asset_symbol="ETH"),
+                    AssetSelector(
+                        mode="asset",
+                        chain="ethereum",
+                        chain_asset_id=usdc,
+                        asset_symbol="USDC",
+                    ),
+                ],
+            ),
+        )
+
+    assert len(nodes) == 2
+    assert {edge.asset_symbol for edge in edges} == {"ETH", "USDC"}
+    assert {edge.chain_asset_id for edge in edges} == {None, usdc}
+
+
+@pytest.mark.asyncio
+async def test_expand_next_asset_selectors_token_specific_skips_neo4j_fallback():
+    conn = MagicMock()
+    conn.fetch = AsyncMock(return_value=[])
+    pg = MagicMock()
+    pg.acquire = MagicMock(return_value=_AsyncCtxMgr(conn))
+
+    class _FakeResult:
+        def __aiter__(self):
+            return self._gen()
+
+        async def _gen(self):
+            yield {
+                "counterparty": "0xneo4jaddr",
+                "tx_hash": "0xneo4j",
+                "value_native": 1.0,
+                "asset_symbol": "ETH",
+                "canonical_asset_id": "ethereum",
+                "timestamp": _TS,
+            }
+
+    neo4j_session = MagicMock()
+    neo4j_session.run = AsyncMock(return_value=_FakeResult())
+    neo4j_driver = MagicMock()
+    neo4j_driver.session = MagicMock(return_value=_AsyncCtxMgr(neo4j_session))
+    compiler = _make_compiler(pg=pg, neo4j=neo4j_driver)
+
+    nodes, edges = await compiler.expand_next(
+        session_id="s",
+        branch_id="b",
+        path_sequence=0,
+        depth=0,
+        seed_address="0xseed",
+        chain="ethereum",
+        options=ExpandOptions(
+            max_results=10,
+            asset_selectors=[
+                AssetSelector(
+                    mode="asset",
+                    chain="ethereum",
+                    chain_asset_id="0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+                    asset_symbol="USDC",
+                ),
+            ],
+        ),
+    )
+
+    assert nodes == []
+    assert edges == []
+    neo4j_session.run.assert_not_called()
 
 
 @pytest.mark.asyncio

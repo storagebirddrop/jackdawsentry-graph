@@ -285,9 +285,10 @@ async def test_fetch_outbound_asset_selector_filters_specific_mint():
             raise AssertionError("Native SOL rows should not be queried for token-specific expansion")
         if "FROM raw_token_transfers" in sql:
             assert "rtt.tx_hash = ANY($2)" in sql
-            assert "rtt.asset_contract = $4" in sql
+            # Filter is now array membership ($4::text[] / ANY($4))
+            assert "ANY($4)" in sql
             assert params[1] == ["SigCaseExact"]
-            assert params[3] == "EPjFWdd5AufqSSqeM2qN1xzybAPq3n1LhF7sB7fJf5D"
+            assert params[3] == ["EPjFWdd5AufqSSqeM2qN1xzybAPq3n1LhF7sB7fJf5D"]
             return [token_row]
         return []
 
@@ -344,9 +345,158 @@ async def test_fetch_outbound_asset_selector_without_mint_refuses_symbol_only_gu
     mock_conn.fetch.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_fetch_outbound_multi_mint_filters_any_of_them():
+    """asset_selectors with two mints passes a list to ANY($4)."""
+    MINT_A = "EPjFWdd5AufqSSqeM2qN1xzybAPq3n1LhF7sB7fJf5D"
+    MINT_B = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"
+    token_row_a = {
+        "tx_hash": TX_HASH_1, "counterparty": COUNTERPARTY, "value_native": 10.0,
+        "asset_symbol": "USDC", "canonical_asset_id": "usdc", "chain_asset_id": MINT_A, "timestamp": None,
+    }
+    token_row_b = {
+        "tx_hash": TX_HASH_2, "counterparty": COUNTERPARTY, "value_native": 5.0,
+        "asset_symbol": "USDT", "canonical_asset_id": "tether", "chain_asset_id": MINT_B, "timestamp": None,
+    }
+
+    seen_mint_filter = []
+
+    async def _fetch(sql, *params):
+        if "FROM raw_transactions" in sql:
+            raise AssertionError("Native SOL should not be queried")
+        if "FROM raw_token_transfers" in sql:
+            # params[3] is the mint_filter list
+            seen_mint_filter.extend(params[3] or [])
+            return [token_row_a, token_row_b]
+        return []
+
+    mock_conn = MagicMock()
+    mock_conn.fetch = AsyncMock(side_effect=_fetch)
+    mock_pg = MagicMock()
+    mock_pg.acquire = MagicMock(return_value=AsyncMock(
+        __aenter__=AsyncMock(return_value=mock_conn),
+        __aexit__=AsyncMock(return_value=False),
+    ))
+    compiler = SolanaChainCompiler(postgres_pool=mock_pg)
+
+    rows = await compiler._fetch_outbound(
+        SEED,
+        ExpandOptions(
+            max_results=10,
+            asset_selectors=[
+                AssetSelector(mode="asset", chain="solana", chain_asset_id=MINT_A, asset_symbol="USDC"),
+                AssetSelector(mode="asset", chain="solana", chain_asset_id=MINT_B, asset_symbol="USDT"),
+            ],
+        ),
+    )
+
+    assert rows == [token_row_a, token_row_b]
+    assert set(seen_mint_filter) == {MINT_A, MINT_B}
+
+
+@pytest.mark.asyncio
+async def test_fetch_outbound_native_plus_asset_queries_both():
+    """native + asset selectors run both the SOL and SPL queries."""
+    MINT_A = "EPjFWdd5AufqSSqeM2qN1xzybAPq3n1LhF7sB7fJf5D"
+    spl_row = {
+        "tx_hash": TX_HASH_1, "counterparty": COUNTERPARTY, "value_native": 10.0,
+        "asset_symbol": "USDC", "canonical_asset_id": "usdc", "chain_asset_id": MINT_A, "timestamp": None,
+    }
+    sol_row = {
+        "tx_hash": TX_HASH_2, "counterparty": COUNTERPARTY, "value_native": 0.5,
+        "asset_symbol": "SOL", "canonical_asset_id": None, "chain_asset_id": None, "timestamp": None,
+    }
+
+    async def _fetch(sql, *params):
+        if "FROM raw_transactions" in sql:
+            return [sol_row]
+        if "FROM raw_token_transfers" in sql:
+            return [spl_row]
+        return []
+
+    mock_conn = MagicMock()
+    mock_conn.fetch = AsyncMock(side_effect=_fetch)
+    mock_pg = MagicMock()
+    mock_pg.acquire = MagicMock(return_value=AsyncMock(
+        __aenter__=AsyncMock(return_value=mock_conn),
+        __aexit__=AsyncMock(return_value=False),
+    ))
+    compiler = SolanaChainCompiler(postgres_pool=mock_pg)
+
+    rows = await compiler._fetch_outbound(
+        SEED,
+        ExpandOptions(
+            max_results=10,
+            asset_selectors=[
+                AssetSelector(mode="native", chain="solana"),
+                AssetSelector(mode="asset", chain="solana", chain_asset_id=MINT_A, asset_symbol="USDC"),
+            ],
+        ),
+    )
+
+    assert spl_row in rows
+    assert sol_row in rows
+
+
+@pytest.mark.asyncio
+async def test_fetch_outbound_native_plus_symbol_only_asset_keeps_sol_without_spl_guessing():
+    """A missing SPL mint does not broaden to all token rows, even with native selected."""
+    sol_row = {
+        "tx_hash": TX_HASH_2,
+        "counterparty": COUNTERPARTY,
+        "value_native": 0.5,
+        "asset_symbol": "SOL",
+        "canonical_asset_id": None,
+        "chain_asset_id": None,
+        "timestamp": None,
+    }
+
+    async def _fetch(sql, *params):
+        if "FROM raw_token_transfers" in sql:
+            raise AssertionError("Symbol-only SPL selector must not query all token transfers")
+        if "FROM raw_transactions" in sql:
+            return [sol_row]
+        return []
+
+    mock_conn = MagicMock()
+    mock_conn.fetch = AsyncMock(side_effect=_fetch)
+    mock_pg = MagicMock()
+    mock_pg.acquire = MagicMock(return_value=AsyncMock(
+        __aenter__=AsyncMock(return_value=mock_conn),
+        __aexit__=AsyncMock(return_value=False),
+    ))
+    compiler = SolanaChainCompiler(postgres_pool=mock_pg)
+
+    rows = await compiler._fetch_outbound(
+        SEED,
+        ExpandOptions(
+            max_results=10,
+            asset_selectors=[
+                AssetSelector(mode="native", chain="solana"),
+                AssetSelector(mode="asset", chain="solana", asset_symbol="USDC"),
+            ],
+        ),
+    )
+
+    assert rows == [sol_row]
+
+
 def test_selector_requires_event_store_only_when_tx_hashes_are_present():
     assert selector_requires_event_store_only(
         ExpandOptions(max_results=10, tx_hashes=["SigCaseExact"]),
+        chain="solana",
+    )
+
+
+def test_selector_requires_event_store_only_when_any_token_selector_is_present():
+    assert selector_requires_event_store_only(
+        ExpandOptions(
+            max_results=10,
+            asset_selectors=[
+                AssetSelector(mode="native", chain="solana"),
+                AssetSelector(mode="asset", chain="solana", asset_symbol="USDC"),
+            ],
+        ),
         chain="solana",
     )
 

@@ -22,6 +22,7 @@ from src.trace_compiler.lineage import edge_id as mk_edge_id
 from src.trace_compiler.lineage import lineage_id as mk_lineage_id
 from src.trace_compiler.lineage import path_id as mk_path_id
 from src.trace_compiler.models import (
+    AssetSelector,
     ExpandOptions,
     ExpandRequest,
     ExpansionResponseV2,
@@ -438,20 +439,34 @@ def test_expansion_cache_key_is_session_scoped_and_option_sensitive():
 
 @pytest.mark.asyncio
 async def test_expand_neighbors_splits_max_results_across_directions():
+    token_selector = AssetSelector(
+        mode="asset",
+        chain="ethereum",
+        chain_asset_id="0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+        asset_symbol="USDC",
+    )
     compiler = TraceCompiler()
     request = ExpandRequest(
         operation_type="expand_neighbors",
         seed_node_id="ethereum:address:0xabc",
-        options=ExpandOptions(max_results=5, page_size=25, depth=1),
+        options=ExpandOptions(
+            max_results=5,
+            page_size=25,
+            depth=1,
+            asset_selectors=[token_selector],
+        ),
     )
 
     class FakeCompiler:
         def __init__(self):
             self.forward_limits = []
             self.backward_limits = []
+            self.forward_asset_selectors = []
+            self.backward_asset_selectors = []
 
         async def expand_next(self, **kwargs):
             self.forward_limits.append(kwargs["options"].max_results)
+            self.forward_asset_selectors.append(kwargs["options"].asset_selectors)
             branch_id = kwargs["branch_id"]
             path_id = mk_path_id(branch_id, kwargs["path_sequence"])
             nodes = []
@@ -496,6 +511,7 @@ async def test_expand_neighbors_splits_max_results_across_directions():
 
         async def expand_prev(self, **kwargs):
             self.backward_limits.append(kwargs["options"].max_results)
+            self.backward_asset_selectors.append(kwargs["options"].asset_selectors)
             branch_id = kwargs["branch_id"]
             path_id = mk_path_id(branch_id, kwargs["path_sequence"])
             nodes = []
@@ -545,6 +561,8 @@ async def test_expand_neighbors_splits_max_results_across_directions():
 
     assert fake.forward_limits == [3]
     assert fake.backward_limits == [2]
+    assert fake.forward_asset_selectors == [[token_selector]]
+    assert fake.backward_asset_selectors == [[token_selector]]
     assert len(response.added_nodes) == 5
     assert len(response.added_edges) == 5
 
