@@ -387,8 +387,11 @@ describe('InvestigationGraph preview and subset apply', () => {
     expect(calledRequest.seed_node_id).toBe(SEED_NODE.node_id);
     expect(calledRequest.options).toMatchObject({ max_results: 25 });
 
-    // Canvas store unchanged — preview edges not committed
-    expect(useGraphStore.getState().edgeMap.size).toBe(0);
+    // Canvas store unchanged — preview edges and nodes not committed
+    const { nodeMap, edgeMap } = useGraphStore.getState();
+    expect(edgeMap.size).toBe(0);
+    expect(nodeMap.has(PREVIEW_NODE_A.node_id)).toBe(false);
+    expect(nodeMap.has(PREVIEW_NODE_B.node_id)).toBe(false);
 
     // Preview panel shows Apply / Dismiss controls
     expect(findButton('Apply all')).not.toBeNull();
