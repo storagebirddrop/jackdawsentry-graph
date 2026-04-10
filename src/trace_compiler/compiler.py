@@ -604,31 +604,11 @@ class TraceCompiler:
                     max_fwd = (max_total + 1) // 2 if max_total is not None else None
                     max_bwd = max_total // 2 if max_total is not None else None
                     
-                    fwd_options = ExpandOptions(
-                        max_results=max_fwd,
-                        page_size=request.options.page_size,
-                        depth=request.options.depth,
-                        asset_filter=request.options.asset_filter,
-                        asset_selector=request.options.asset_selector,
-                        tx_hashes=request.options.tx_hashes,
-                        min_value_fiat=request.options.min_value_fiat,
-                        include_services=request.options.include_services,
-                        follow_bridges=request.options.follow_bridges,
-                        time_from=request.options.time_from,
-                        time_to=request.options.time_to,
+                    fwd_options = request.options.model_copy(
+                        update={"max_results": max_fwd},
                     )
-                    bwd_options = ExpandOptions(
-                        max_results=max_bwd,
-                        page_size=request.options.page_size,
-                        depth=request.options.depth,
-                        asset_filter=request.options.asset_filter,
-                        asset_selector=request.options.asset_selector,
-                        tx_hashes=request.options.tx_hashes,
-                        min_value_fiat=request.options.min_value_fiat,
-                        include_services=request.options.include_services,
-                        follow_bridges=request.options.follow_bridges,
-                        time_from=request.options.time_from,
-                        time_to=request.options.time_to,
+                    bwd_options = request.options.model_copy(
+                        update={"max_results": max_bwd},
                     )
                     
                     fwd_n, fwd_e = await compiler.expand_next(

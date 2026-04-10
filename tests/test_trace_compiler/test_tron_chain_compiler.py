@@ -272,6 +272,8 @@ async def test_fetch_outbound_asset_selector_filters_specific_trc20_contract():
             return []
         if "FROM raw_token_transfers" in sql:
             assert "LOWER(COALESCE(rtt.asset_contract, '')) = ANY($6)" in sql
+            assert params[3] is None
+            assert params[4] is None
             assert params[5] == ["txyzopyrdj2d9xrtbg411xzz3km5vkaebf"]
             return [token_row]
         return []
@@ -297,6 +299,70 @@ async def test_fetch_outbound_asset_selector_filters_specific_trc20_contract():
     )
 
     assert rows == [token_row]
+
+
+@pytest.mark.asyncio
+async def test_fetch_outbound_asset_selectors_union_multiple_trc20_contracts():
+    usdt = "txyzopyrdj2d9xrtbg411xzz3km5vkaebf"
+    usdc = "ta0b86991c6218b36c1d19d4a2e9eb0ce3606"
+    conn = MagicMock()
+    conn.fetch = AsyncMock(return_value=[])
+    pg = MagicMock()
+    pg.acquire = MagicMock(return_value=_AsyncCtxMgr(conn))
+    compiler = TronChainCompiler(postgres_pool=pg)
+
+    await compiler._fetch_outbound_token_transfers(
+        SEED,
+        "tron",
+        ExpandOptions(
+            max_results=10,
+            asset_selectors=[
+                AssetSelector(
+                    mode="asset",
+                    chain="tron",
+                    chain_asset_id=usdt,
+                    asset_symbol="USDT",
+                ),
+                AssetSelector(
+                    mode="asset",
+                    chain="tron",
+                    chain_asset_id=usdc,
+                    asset_symbol="USDC",
+                ),
+            ],
+        ),
+    )
+
+    _, chain, address, limit, symbol_filters, canonical_filters, asset_filters, *_ = conn.fetch.await_args.args
+    assert chain == "tron"
+    assert address == SEED
+    assert limit == 10
+    assert symbol_filters is None
+    assert canonical_filters is None
+    assert asset_filters == sorted([usdt, usdc])
+
+
+@pytest.mark.asyncio
+async def test_fetch_outbound_asset_selectors_symbol_only_does_not_broaden_tron():
+    conn = MagicMock()
+    conn.fetch = AsyncMock(return_value=[])
+    pg = MagicMock()
+    pg.acquire = MagicMock(return_value=_AsyncCtxMgr(conn))
+    compiler = TronChainCompiler(postgres_pool=pg)
+
+    rows = await compiler._fetch_outbound_token_transfers(
+        SEED,
+        "tron",
+        ExpandOptions(
+            max_results=10,
+            asset_selectors=[
+                AssetSelector(mode="asset", chain="tron", asset_symbol="USDT"),
+            ],
+        ),
+    )
+
+    assert rows == []
+    conn.fetch.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
