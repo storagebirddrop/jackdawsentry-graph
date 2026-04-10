@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useState } from 'react';
 import type { Edge, Node } from '@xyflow/react';
 
 import type {
@@ -71,6 +71,8 @@ export interface PathStory {
   color: string;
 }
 
+type AssetScopeMode = 'all' | 'specific';
+
 interface Props {
   node: Node | null;
   edge: Edge | null;
@@ -103,8 +105,12 @@ interface Props {
   onTraceEdgeBackward?: () => void;
   assetOptions?: AssetOption[];
   assetOptionsLoading?: boolean;
+  assetScopeMode?: AssetScopeMode;
   selectedAssetOptionKeys?: readonly string[];
+  hasSpecificAssetSelection?: boolean;
+  onChangeAssetScopeMode?: (mode: AssetScopeMode) => void;
   onToggleAssetOption?: (optionKey: string) => void;
+  onClearAssetSelection?: () => void;
   onExpandNode?: (
     operation: 'expand_prev' | 'expand_next' | 'expand_neighbors',
   ) => void;
@@ -152,8 +158,12 @@ export default function GraphInspectorPanel({
   onTraceEdgeBackward,
   assetOptions = [],
   assetOptionsLoading = false,
+  assetScopeMode = 'all',
   selectedAssetOptionKeys = [],
+  hasSpecificAssetSelection = false,
+  onChangeAssetScopeMode,
   onToggleAssetOption,
+  onClearAssetSelection,
   onExpandNode,
   onPreviewExpand,
   previewResult = null,
@@ -242,8 +252,12 @@ export default function GraphInspectorPanel({
           onClearSemanticFocus={onClearSemanticFocus}
           assetOptions={assetOptions}
           assetOptionsLoading={assetOptionsLoading}
+          assetScopeMode={assetScopeMode}
           selectedAssetOptionKeys={selectedAssetOptionKeys}
+          hasSpecificAssetSelection={hasSpecificAssetSelection}
+          onChangeAssetScopeMode={onChangeAssetScopeMode}
           onToggleAssetOption={onToggleAssetOption}
+          onClearAssetSelection={onClearAssetSelection}
           onExpandNode={onExpandNode}
           onPreviewExpand={onPreviewExpand}
           previewResult={previewResult}
@@ -311,8 +325,12 @@ function NodeInspectorContent({
   onClearSemanticFocus,
   assetOptions,
   assetOptionsLoading,
+  assetScopeMode,
   selectedAssetOptionKeys,
+  hasSpecificAssetSelection,
+  onChangeAssetScopeMode,
   onToggleAssetOption,
+  onClearAssetSelection,
   onExpandNode,
   onPreviewExpand,
   previewResult,
@@ -345,8 +363,12 @@ function NodeInspectorContent({
   onClearSemanticFocus?: () => void;
   assetOptions: AssetOption[];
   assetOptionsLoading: boolean;
+  assetScopeMode: AssetScopeMode;
   selectedAssetOptionKeys: readonly string[];
+  hasSpecificAssetSelection: boolean;
+  onChangeAssetScopeMode?: (mode: AssetScopeMode) => void;
   onToggleAssetOption?: (optionKey: string) => void;
+  onClearAssetSelection?: () => void;
   onExpandNode?: (
     operation: 'expand_prev' | 'expand_next' | 'expand_neighbors',
   ) => void;
@@ -367,12 +389,52 @@ function NodeInspectorContent({
   const subtitle = nodeSubtitle(node);
   const activity = node.activity_summary;
   const nodeSemantic = semanticMeta ?? semanticMetaForNode(node);
-  const selectedKeySet = useMemo(
-    () => new Set(selectedAssetOptionKeys),
-    [selectedAssetOptionKeys],
+  const assetScopeRadioName = useId();
+  const specificAssetOptions = useMemo(
+    () => assetOptions.filter((option) => option.mode !== 'all'),
+    [assetOptions],
   );
-  // "All assets" is active when no specific keys are selected.
-  const allAssetsActive = selectedAssetOptionKeys.length === 0;
+  const specificAssetOptionByKey = useMemo(
+    () => new Map(specificAssetOptions.map((option) => [assetOptionKey(option), option])),
+    [specificAssetOptions],
+  );
+  const selectedSpecificAssetKeys = useMemo(
+    () => selectedAssetOptionKeys.filter((key) => specificAssetOptionByKey.has(key)).sort(),
+    [selectedAssetOptionKeys, specificAssetOptionByKey],
+  );
+  const selectedSpecificAssetKeySet = useMemo(
+    () => new Set(selectedSpecificAssetKeys),
+    [selectedSpecificAssetKeys],
+  );
+  const optionDisplayCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    specificAssetOptions.forEach((option) => {
+      counts.set(option.display_label, (counts.get(option.display_label) ?? 0) + 1);
+    });
+    return counts;
+  }, [specificAssetOptions]);
+  const labeledSpecificAssetOptions = useMemo(
+    () => specificAssetOptions.map((option) => {
+      const labelCount = optionDisplayCounts.get(option.display_label) ?? 0;
+      if (labelCount <= 1) {
+        return { option, label: option.display_label };
+      }
+      const chainLocalIdentity = option.chain_asset_id
+        ? shortHash(option.chain_asset_id, 8, 4)
+        : option.canonical_asset_id
+          ? shortHash(option.canonical_asset_id, 8, 4)
+          : option.mode === 'native'
+            ? `${option.chain.toUpperCase()} native`
+            : option.asset_symbol ?? option.chain.toUpperCase();
+      return {
+        option,
+        label: `${option.display_label} · ${chainLocalIdentity}`,
+      };
+    }),
+    [optionDisplayCounts, specificAssetOptions],
+  );
+  const specificScopeRequiresSelection = assetScopeMode === 'specific' && !hasSpecificAssetSelection;
+  const expandActionsDisabled = specificScopeRequiresSelection;
   const showAssetSelector = node.node_type === 'address' && (assetOptionsLoading || assetOptions.length > 1);
 
   // Filter & Preview local state
@@ -486,63 +548,99 @@ function NodeInspectorContent({
 
       <Section title="Workspace actions">
         {showAssetSelector && (
-          <div style={{ display: 'grid', gap: 6, color: '#475569', fontSize: 12 }}>
-            <span style={{ fontWeight: 600 }}>Asset scope</span>
+          <fieldset style={assetScopeFieldsetStyle}>
+            <legend style={assetScopeLegendStyle}>Asset scope</legend>
             {assetOptionsLoading && assetOptions.length === 0 ? (
               <span style={{ color: '#94a3b8', fontSize: 11 }}>Loading asset choices...</span>
             ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 160, overflowY: 'auto' }}>
-                {/* "All assets" is checked when no specific assets are selected. */}
-                <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+              <div style={{ display: 'grid', gap: 10, color: '#475569', fontSize: 12 }}>
+                <label style={assetScopeControlStyle}>
                   <input
-                    type="checkbox"
-                    checked={allAssetsActive}
+                    type="radio"
+                    name={assetScopeRadioName}
+                    checked={assetScopeMode === 'all'}
                     disabled={assetOptionsLoading}
-                    onChange={() => {
-                      // Clicking "All assets" when already active is a no-op;
-                      // clicking it when something is selected clears the selection.
-                      if (!allAssetsActive) {
-                        const allOption = assetOptions.find((o) => o.mode === 'all');
-                        if (allOption) onToggleAssetOption?.(assetOptionKey(allOption));
-                      }
-                    }}
+                    onChange={() => onChangeAssetScopeMode?.('all')}
                   />
                   <span>All assets</span>
                 </label>
-                {/* Individual asset rows skip the synthetic "all" option. */}
-                {assetOptions
-                  .filter((o) => o.mode !== 'all')
-                  .map((option) => {
-                    const key = assetOptionKey(option);
-                    return (
-                      <label key={key} style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
-                        <input
-                          type="checkbox"
-                          checked={selectedKeySet.has(key)}
-                          disabled={assetOptionsLoading}
-                          onChange={() => onToggleAssetOption?.(key)}
-                        />
-                        <span>{option.display_label}</span>
-                      </label>
-                    );
-                  })}
+                <label style={assetScopeControlStyle}>
+                  <input
+                    type="radio"
+                    name={assetScopeRadioName}
+                    checked={assetScopeMode === 'specific'}
+                    disabled={assetOptionsLoading}
+                    onChange={() => onChangeAssetScopeMode?.('specific')}
+                  />
+                  <span>Specific assets</span>
+                </label>
+                {assetScopeMode === 'specific' && (
+                  <div style={specificAssetPanelStyle}>
+                    <div style={specificAssetHeaderStyle}>
+                      <span style={{ fontWeight: 600, color: '#334155' }}>
+                        {selectedSpecificAssetKeys.length} selected
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => onClearAssetSelection?.()}
+                        style={assetScopeInlineActionStyle}
+                      >
+                        Clear
+                      </button>
+                    </div>
+                    <div style={specificAssetChecklistStyle}>
+                      {labeledSpecificAssetOptions.map(({ option, label }) => {
+                        const key = assetOptionKey(option);
+                        return (
+                          <label key={key} style={assetScopeControlStyle}>
+                            <input
+                              type="checkbox"
+                              checked={selectedSpecificAssetKeySet.has(key)}
+                              disabled={assetOptionsLoading}
+                              onChange={() => onToggleAssetOption?.(key)}
+                            />
+                            <span>{label}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                    {specificScopeRequiresSelection && (
+                      <div style={{ fontSize: 11, color: '#b45309' }}>Select at least one asset</div>
+                    )}
+                  </div>
+                )}
               </div>
             )}
-          </div>
+          </fieldset>
         )}
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           {node.expandable_directions.includes('prev') && onExpandNode && (
-            <button type="button" onClick={() => onExpandNode('expand_prev')} style={actionButtonStyle}>
+            <button
+              type="button"
+              disabled={expandActionsDisabled}
+              onClick={() => onExpandNode('expand_prev')}
+              style={expandActionsDisabled ? disabledActionButtonStyle : actionButtonStyle}
+            >
               Expand previous
             </button>
           )}
           {node.expandable_directions.includes('next') && onExpandNode && (
-            <button type="button" onClick={() => onExpandNode('expand_next')} style={actionButtonStyle}>
+            <button
+              type="button"
+              disabled={expandActionsDisabled}
+              onClick={() => onExpandNode('expand_next')}
+              style={expandActionsDisabled ? disabledActionButtonStyle : actionButtonStyle}
+            >
               Expand next
             </button>
           )}
           {node.expandable_directions.includes('neighbors') && onExpandNode && (
-            <button type="button" onClick={() => onExpandNode('expand_neighbors')} style={actionButtonStyle}>
+            <button
+              type="button"
+              disabled={expandActionsDisabled}
+              onClick={() => onExpandNode('expand_neighbors')}
+              style={expandActionsDisabled ? disabledActionButtonStyle : actionButtonStyle}
+            >
               Expand around
             </button>
           )}
@@ -614,7 +712,7 @@ function NodeInspectorContent({
               {node.expandable_directions.includes('prev') && (
                 <button
                   type="button"
-                  disabled={isPreviewLoading}
+                  disabled={isPreviewLoading || expandActionsDisabled}
                   onClick={() => {
                     setPreviewDirection('expand_prev');
                     onPreviewExpand('expand_prev', {
@@ -623,7 +721,9 @@ function NodeInspectorContent({
                       maxResults: filterMaxResults,
                     });
                   }}
-                  style={{ ...actionButtonStyle, opacity: isPreviewLoading ? 0.6 : 1 }}
+                  style={(isPreviewLoading || expandActionsDisabled)
+                    ? disabledActionButtonStyle
+                    : actionButtonStyle}
                 >
                   {isPreviewLoading && previewDirection === 'expand_prev' ? 'Loading…' : 'Preview prev'}
                 </button>
@@ -631,7 +731,7 @@ function NodeInspectorContent({
               {node.expandable_directions.includes('next') && (
                 <button
                   type="button"
-                  disabled={isPreviewLoading}
+                  disabled={isPreviewLoading || expandActionsDisabled}
                   onClick={() => {
                     setPreviewDirection('expand_next');
                     onPreviewExpand('expand_next', {
@@ -640,7 +740,9 @@ function NodeInspectorContent({
                       maxResults: filterMaxResults,
                     });
                   }}
-                  style={{ ...actionButtonStyle, opacity: isPreviewLoading ? 0.6 : 1 }}
+                  style={(isPreviewLoading || expandActionsDisabled)
+                    ? disabledActionButtonStyle
+                    : actionButtonStyle}
                 >
                   {isPreviewLoading && previewDirection === 'expand_next' ? 'Loading…' : 'Preview next'}
                 </button>
@@ -648,7 +750,7 @@ function NodeInspectorContent({
               {node.expandable_directions.includes('neighbors') && (
                 <button
                   type="button"
-                  disabled={isPreviewLoading}
+                  disabled={isPreviewLoading || expandActionsDisabled}
                   onClick={() => {
                     setPreviewDirection('expand_neighbors');
                     onPreviewExpand('expand_neighbors', {
@@ -657,7 +759,9 @@ function NodeInspectorContent({
                       maxResults: filterMaxResults,
                     });
                   }}
-                  style={{ ...actionButtonStyle, opacity: isPreviewLoading ? 0.6 : 1 }}
+                  style={(isPreviewLoading || expandActionsDisabled)
+                    ? disabledActionButtonStyle
+                    : actionButtonStyle}
                 >
                   {isPreviewLoading && previewDirection === 'expand_neighbors' ? 'Loading…' : 'Preview around'}
                 </button>
@@ -1761,6 +1865,72 @@ const actionButtonStyle: React.CSSProperties = {
   fontWeight: 700,
   lineHeight: 1.2,
   cursor: 'pointer',
+};
+
+const disabledActionButtonStyle: React.CSSProperties = {
+  ...actionButtonStyle,
+  color: '#94a3b8',
+  background: '#f8fafc',
+  cursor: 'not-allowed',
+  opacity: 0.7,
+};
+
+const assetScopeFieldsetStyle: React.CSSProperties = {
+  display: 'grid',
+  gap: 8,
+  margin: 0,
+  padding: 0,
+  border: 'none',
+  minWidth: 0,
+};
+
+const assetScopeLegendStyle: React.CSSProperties = {
+  padding: 0,
+  marginBottom: 2,
+  color: '#334155',
+  fontSize: 12,
+  fontWeight: 700,
+};
+
+const assetScopeControlStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 6,
+  cursor: 'pointer',
+};
+
+const specificAssetPanelStyle: React.CSSProperties = {
+  display: 'grid',
+  gap: 8,
+  padding: '10px 12px',
+  borderRadius: 10,
+  border: '1px solid rgba(148,163,184,0.22)',
+  background: 'rgba(248,250,252,0.9)',
+};
+
+const specificAssetHeaderStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  gap: 8,
+};
+
+const specificAssetChecklistStyle: React.CSSProperties = {
+  display: 'grid',
+  gap: 6,
+  maxHeight: 180,
+  overflowY: 'auto',
+  paddingRight: 4,
+};
+
+const assetScopeInlineActionStyle: React.CSSProperties = {
+  border: 'none',
+  background: 'transparent',
+  color: '#0f766e',
+  fontSize: 11,
+  fontWeight: 700,
+  cursor: 'pointer',
+  padding: 0,
 };
 
 const filterLabelStyle: React.CSSProperties = {
