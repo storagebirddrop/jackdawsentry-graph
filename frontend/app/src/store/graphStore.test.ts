@@ -39,6 +39,34 @@ function makeNode(
   };
 }
 
+function makeScopedAddressNode(
+  id: string,
+  chain: string,
+  overrides: Partial<InvestigationNode> = {},
+): InvestigationNode {
+  const address = id.split(':').slice(2).join(':') || id;
+  return makeNode(id, 'branch-a', {
+    chain,
+    address_data: {
+      address,
+      chain,
+    },
+    ...overrides,
+  });
+}
+
+function makeEntityNode(id: string): InvestigationNode {
+  return {
+    node_id: id,
+    node_type: 'entity',
+    branch_id: 'branch-a',
+    path_id: `path-${id}`,
+    lineage_id: `lineage-${id}`,
+    depth: 0,
+    expandable_directions: [],
+  };
+}
+
 function makeDelta(nodes: InvestigationNode[]): ExpansionResponseV2 {
   return {
     session_id: 'sess-1',
@@ -428,5 +456,100 @@ describe('V2 subset apply — applyExpansionDelta with filtered response', () =>
     expect(nodeMap.has('n2')).toBe(true);
     expect(edgeMap.has('e1')).toBe(true);
     expect(edgeMap.has('e2')).toBe(true);
+  });
+});
+
+describe('nodeAssetScopes snapshot and pruning', () => {
+  const ROOT = makeScopedAddressNode('ethereum:address:0xaaa', 'ethereum');
+  const SOLANA_NODE = makeScopedAddressNode(
+    'solana:address:So11111111111111111111111111111111111111112',
+    'solana',
+  );
+  const BITCOIN_NODE = makeScopedAddressNode(
+    'bitcoin:address:bc1qexampleaddress0000000000000000000000000',
+    'bitcoin',
+  );
+  const ENTITY_NODE = makeEntityNode('entity:binance');
+  const ETH_USDC_SELECTOR = {
+    mode: 'asset' as const,
+    chain: 'ethereum',
+    chain_asset_id: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48',
+    asset_symbol: 'USDC',
+  };
+
+  beforeEach(() => {
+    useGraphStore.getState().reset();
+    useGraphStore.getState().initSession('sess-scope', ROOT);
+    useGraphStore.getState().applyExpansionDelta(makeDelta([
+      SOLANA_NODE,
+      BITCOIN_NODE,
+      ENTITY_NODE,
+    ]));
+  });
+
+  it('exportSnapshot and importSnapshot round-trip nodeAssetScopes and preserve empty-vs-missing semantics', () => {
+    useGraphStore.getState().setNodeAssetScope(ROOT.node_id, [
+      { ...ETH_USDC_SELECTOR, chain: 'Ethereum' },
+      ETH_USDC_SELECTOR,
+    ]);
+    useGraphStore.getState().setNodeAssetScope(SOLANA_NODE.node_id, []);
+
+    const snapshot = useGraphStore.getState().exportSnapshot();
+
+    useGraphStore.getState().reset();
+    const restored = useGraphStore.getState().importSnapshot(snapshot);
+
+    expect(restored).toBe(true);
+    const scopes = useGraphStore.getState().nodeAssetScopes;
+    expect(scopes.has(ROOT.node_id)).toBe(true);
+    expect(scopes.get(ROOT.node_id)).toEqual([ETH_USDC_SELECTOR]);
+    expect(scopes.has(SOLANA_NODE.node_id)).toBe(true);
+    expect(scopes.get(SOLANA_NODE.node_id)).toEqual([]);
+    expect(scopes.has(BITCOIN_NODE.node_id)).toBe(false);
+  });
+
+  it('applyExpansionDelta prunes stored nodeAssetScopes for removed nodes', () => {
+    useGraphStore.getState().setNodeAssetScope(SOLANA_NODE.node_id, []);
+
+    useGraphStore.getState().applyExpansionDelta({
+      ...makeDelta([]),
+      removed_node_ids: [SOLANA_NODE.node_id],
+      updated_nodes: [],
+      added_nodes: [],
+      added_edges: [],
+    });
+
+    expect(useGraphStore.getState().nodeAssetScopes.has(SOLANA_NODE.node_id)).toBe(false);
+  });
+
+  it('importSnapshot ignores Bitcoin, non-address, and unknown nodeAssetScopes entries', () => {
+    const snapshot = JSON.stringify({
+      sessionId: 'sess-scope',
+      nodes: [ROOT, SOLANA_NODE, BITCOIN_NODE, ENTITY_NODE],
+      edges: [],
+      positions: {},
+      branches: [],
+      nodeAssetScopes: {
+        [ROOT.node_id]: [ETH_USDC_SELECTOR],
+        [SOLANA_NODE.node_id]: [],
+        [BITCOIN_NODE.node_id]: [{
+          mode: 'native',
+          chain: 'bitcoin',
+          asset_symbol: 'BTC',
+        }],
+        [ENTITY_NODE.node_id]: [ETH_USDC_SELECTOR],
+        'missing:address:0xdead': [ETH_USDC_SELECTOR],
+      },
+    });
+
+    const restored = useGraphStore.getState().importSnapshot(snapshot);
+
+    expect(restored).toBe(true);
+    expect(useGraphStore.getState().nodeAssetScopes).toEqual(
+      new Map([
+        [ROOT.node_id, [ETH_USDC_SELECTOR]],
+        [SOLANA_NODE.node_id, []],
+      ]),
+    );
   });
 });

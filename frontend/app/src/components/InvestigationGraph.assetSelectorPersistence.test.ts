@@ -227,6 +227,26 @@ function getAssetCheckbox(container: HTMLElement, label: string): HTMLInputEleme
   return checkbox;
 }
 
+function getButtonByText(container: HTMLElement, label: string): HTMLButtonElement {
+  const button = Array.from(container.querySelectorAll('button')).find(
+    (candidate) => candidate.textContent?.trim() === label,
+  );
+  if (!button) {
+    throw new Error(`Unable to find button "${label}"`);
+  }
+  return button as HTMLButtonElement;
+}
+
+function getButtonByTextWithin(container: HTMLElement, label: string): HTMLButtonElement {
+  const button = Array.from(container.querySelectorAll('button')).find(
+    (candidate) => candidate.textContent?.trim() === label,
+  );
+  if (!button) {
+    throw new Error(`Unable to find nested button "${label}"`);
+  }
+  return button as HTMLButtonElement;
+}
+
 async function clickInput(input: HTMLInputElement): Promise<void> {
   await act(async () => {
     input.click();
@@ -456,5 +476,275 @@ describe('InvestigationGraph asset selector persistence', () => {
       expect(queryLabeledInput(container, 'USDC · 0xa0b869...eb48', 'checkbox')).not.toBeNull();
       expect(queryLabeledInput(container, 'USDC · 0x123456...5678', 'checkbox')).not.toBeNull();
     });
+  });
+
+  it('round-trips manual export/import and restores the selected asset scope in the active UI', async () => {
+    getAssetOptionsMock.mockResolvedValue({
+      session_id: 'sess-selector',
+      seed_node_id: 'ethereum:address:0xaaa',
+      seed_lineage_id: 'lineage-ethereum:address:0xaaa',
+      options: [
+        { mode: 'all', chain: 'ethereum', display_label: 'All assets' },
+        {
+          mode: 'asset',
+          chain: 'ethereum',
+          chain_asset_id: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48',
+          asset_symbol: 'USDC',
+          display_label: 'USDC · Ethereum',
+        },
+      ] satisfies AssetOption[],
+    });
+
+    await act(async () => {
+      root.render(
+        React.createElement(InvestigationGraph, {
+          sessionId: 'sess-selector',
+          onStartNewInvestigation: () => undefined,
+        }),
+      );
+    });
+
+    await act(async () => {
+      findByTestId(container, 'rf-node-ethereum:address:0xaaa').click();
+    });
+
+    await waitFor(() => {
+      expect(getAssetModeRadio(container, 'All assets').checked).toBe(true);
+    });
+
+    await clickInput(getAssetModeRadio(container, 'Specific assets'));
+    await clickInput(getAssetCheckbox(container, 'USDC · Ethereum'));
+
+    const snapshot = useGraphStore.getState().exportSnapshot();
+
+    await act(async () => {
+      useGraphStore.getState().setNodeAssetScope('ethereum:address:0xaaa', null);
+    });
+
+    await waitFor(() => {
+      expect(getAssetModeRadio(container, 'All assets').checked).toBe(true);
+      expect(getAssetModeRadio(container, 'Specific assets').checked).toBe(false);
+    });
+
+    await act(async () => {
+      useGraphStore.getState().importSnapshot(snapshot);
+    });
+
+    await waitFor(() => {
+      expect(getAssetModeRadio(container, 'Specific assets').checked).toBe(true);
+      expect(getAssetCheckbox(container, 'USDC · Ethereum').checked).toBe(true);
+    });
+  });
+
+  it('uses restored stored selectors for quick expand, direct expand, and preview after importSnapshot restore', async () => {
+    const selector = {
+      mode: 'asset' as const,
+      chain: 'ethereum',
+      chain_asset_id: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48',
+      asset_symbol: 'USDC',
+    };
+
+    getAssetOptionsMock.mockResolvedValue({
+      session_id: 'sess-selector',
+      seed_node_id: 'ethereum:address:0xaaa',
+      seed_lineage_id: 'lineage-ethereum:address:0xaaa',
+      options: [
+        { mode: 'all', chain: 'ethereum', display_label: 'All assets' },
+        {
+          ...selector,
+          display_label: 'USDC · Ethereum',
+        },
+      ] satisfies AssetOption[],
+    });
+    expandNodeMock.mockResolvedValue(makeDelta([]));
+
+    useGraphStore.getState().setNodeAssetScope('ethereum:address:0xaaa', [selector]);
+    const snapshot = useGraphStore.getState().exportSnapshot();
+    useGraphStore.getState().reset();
+    useGraphStore.getState().importSnapshot(snapshot);
+
+    await act(async () => {
+      root.render(
+        React.createElement(InvestigationGraph, {
+          sessionId: 'sess-selector',
+          onStartNewInvestigation: () => undefined,
+        }),
+      );
+    });
+
+    await act(async () => {
+      getButtonByTextWithin(
+        findByTestId(container, 'rf-node-ethereum:address:0xaaa'),
+        'Next →',
+      ).click();
+    });
+
+    await waitFor(() => {
+      expect(expandNodeMock).toHaveBeenCalledWith('sess-selector', expect.objectContaining({
+        operation_type: 'expand_next',
+        seed_node_id: 'ethereum:address:0xaaa',
+        options: expect.objectContaining({
+          asset_selectors: [selector],
+        }),
+      }));
+    });
+
+    expandNodeMock.mockClear();
+
+    await act(async () => {
+      findByTestId(container, 'rf-node-ethereum:address:0xaaa').click();
+    });
+
+    await waitFor(() => {
+      expect(getAssetModeRadio(container, 'Specific assets').checked).toBe(true);
+    });
+
+    await act(async () => {
+      getButtonByText(container, 'Expand next').click();
+    });
+
+    await waitFor(() => {
+      expect(expandNodeMock).toHaveBeenCalledWith('sess-selector', expect.objectContaining({
+        operation_type: 'expand_next',
+        seed_node_id: 'ethereum:address:0xaaa',
+        options: expect.objectContaining({
+          asset_selectors: [selector],
+        }),
+      }));
+    });
+
+    expandNodeMock.mockClear();
+
+    await act(async () => {
+      getButtonByText(container, 'Filter & Preview ▼').click();
+    });
+    await act(async () => {
+      getButtonByText(container, 'Preview next').click();
+    });
+
+    await waitFor(() => {
+      expect(expandNodeMock).toHaveBeenCalledWith('sess-selector', expect.objectContaining({
+        operation_type: 'expand_next',
+        seed_node_id: 'ethereum:address:0xaaa',
+        options: expect.objectContaining({
+          asset_selectors: [selector],
+          max_results: 25,
+        }),
+      }));
+    });
+  });
+
+  it('restores explicit zero-selection specific mode and keeps expand actions blocked', async () => {
+    getAssetOptionsMock.mockResolvedValue({
+      session_id: 'sess-selector',
+      seed_node_id: 'ethereum:address:0xaaa',
+      seed_lineage_id: 'lineage-ethereum:address:0xaaa',
+      options: [
+        { mode: 'all', chain: 'ethereum', display_label: 'All assets' },
+        {
+          mode: 'asset',
+          chain: 'ethereum',
+          chain_asset_id: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48',
+          asset_symbol: 'USDC',
+          display_label: 'USDC · Ethereum',
+        },
+      ] satisfies AssetOption[],
+    });
+
+    const snapshot = JSON.stringify({
+      sessionId: 'sess-selector',
+      nodes: Array.from(useGraphStore.getState().nodeMap.values()),
+      edges: [],
+      positions: {},
+      branches: Array.from(useGraphStore.getState().branchMap.values()),
+      nodeAssetScopes: {
+        'ethereum:address:0xaaa': [],
+      },
+    });
+    useGraphStore.getState().reset();
+    useGraphStore.getState().importSnapshot(snapshot);
+
+    await act(async () => {
+      root.render(
+        React.createElement(InvestigationGraph, {
+          sessionId: 'sess-selector',
+          onStartNewInvestigation: () => undefined,
+        }),
+      );
+    });
+
+    await act(async () => {
+      findByTestId(container, 'rf-node-ethereum:address:0xaaa').click();
+    });
+
+    await waitFor(() => {
+      expect(getAssetModeRadio(container, 'Specific assets').checked).toBe(true);
+    });
+
+    expect(getButtonByText(container, 'Expand next').disabled).toBe(true);
+
+    await act(async () => {
+      getButtonByText(container, 'Filter & Preview ▼').click();
+    });
+    expect(getButtonByText(container, 'Preview next').disabled).toBe(true);
+
+    await act(async () => {
+      getButtonByTextWithin(
+        findByTestId(container, 'rf-node-ethereum:address:0xaaa'),
+        'Next →',
+      ).click();
+    });
+    expect(expandNodeMock).not.toHaveBeenCalled();
+  });
+
+  it('ignores Bitcoin nodeAssetScopes present in an imported snapshot', async () => {
+    expandNodeMock.mockResolvedValue(makeDelta([]));
+
+    const snapshot = JSON.stringify({
+      sessionId: 'sess-selector',
+      nodes: Array.from(useGraphStore.getState().nodeMap.values()),
+      edges: [],
+      positions: {},
+      branches: Array.from(useGraphStore.getState().branchMap.values()),
+      nodeAssetScopes: {
+        'bitcoin:address:bc1qexampleaddress0000000000000000000000000': [{
+          mode: 'native',
+          chain: 'bitcoin',
+          asset_symbol: 'BTC',
+        }],
+      },
+    });
+    useGraphStore.getState().reset();
+    useGraphStore.getState().importSnapshot(snapshot);
+
+    await act(async () => {
+      root.render(
+        React.createElement(InvestigationGraph, {
+          sessionId: 'sess-selector',
+          onStartNewInvestigation: () => undefined,
+        }),
+      );
+    });
+
+    expect(
+      useGraphStore.getState().nodeAssetScopes.has(
+        'bitcoin:address:bc1qexampleaddress0000000000000000000000000',
+      ),
+    ).toBe(false);
+
+    await act(async () => {
+      getButtonByTextWithin(
+        findByTestId(container, 'rf-node-bitcoin:address:bc1qexampleaddress0000000000000000000000000'),
+        'Next →',
+      ).click();
+    });
+
+    await waitFor(() => {
+      expect(expandNodeMock).toHaveBeenCalledWith('sess-selector', expect.objectContaining({
+        seed_node_id: 'bitcoin:address:bc1qexampleaddress0000000000000000000000000',
+      }));
+    });
+    const request = expandNodeMock.mock.calls[0]?.[1];
+    expect(request?.options?.asset_selectors).toBeUndefined();
   });
 });
