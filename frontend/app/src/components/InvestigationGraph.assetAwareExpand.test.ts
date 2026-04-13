@@ -273,6 +273,14 @@ const ETH_NATIVE_SELECTOR: AssetSelector = {
   asset_symbol: 'ETH',
 };
 
+const ETH_DAI_SELECTOR: AssetSelector = {
+  mode: 'asset',
+  chain: 'ethereum',
+  chain_asset_id: '0x6b175474e89094c44da98b954eedeac495271d0f',
+  asset_symbol: 'DAI',
+  canonical_asset_id: 'maker-dai',
+};
+
 function makeEmptyExpansion(request: ExpandRequest): ExpansionResponseV2 {
   return {
     session_id: SESSION_ID,
@@ -381,10 +389,33 @@ function getAssetRadio(optionText: string): HTMLInputElement {
   return radio as HTMLInputElement;
 }
 
+function queryAssetSearchInput(): HTMLInputElement | null {
+  return document.querySelector('input[aria-label="Search assets"]') as HTMLInputElement | null;
+}
+
+function getAssetSearchInput(): HTMLInputElement {
+  const input = queryAssetSearchInput();
+  expect(input, 'Expected asset search input to exist.').not.toBeNull();
+  return input as HTMLInputElement;
+}
+
 async function chooseAssetScopeMode(optionText: 'All assets' | 'Specific assets'): Promise<void> {
   const radio = getAssetRadio(optionText);
   await act(async () => {
     radio.click();
+  });
+}
+
+async function setAssetSearchQuery(value: string): Promise<void> {
+  const input = getAssetSearchInput();
+  const valueSetter = Object.getOwnPropertyDescriptor(
+    window.HTMLInputElement.prototype,
+    'value',
+  )?.set;
+  await act(async () => {
+    valueSetter?.call(input, value);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
   });
 }
 
@@ -441,6 +472,10 @@ describe('InvestigationGraph asset-aware expand contract', () => {
           {
             ...ETH_NATIVE_SELECTOR,
             display_label: 'ETH',
+          },
+          {
+            ...ETH_DAI_SELECTOR,
+            display_label: 'Stable Dollar',
           },
         ],
       };
@@ -600,5 +635,68 @@ describe('InvestigationGraph asset-aware expand contract', () => {
 
     expect(document.body.textContent).toContain('Investigation note');
     expect(expandNodeMock).not.toHaveBeenCalled();
+  });
+
+  it('filters the visible asset checklist without changing selection or selector emission', async () => {
+    await clickButton(`Select node ${ETH_NODE.node_id}`);
+    await flushAsyncWork();
+
+    await chooseAssetScopeMode('Specific assets');
+    expect(getAssetSearchInput().value).toBe('');
+
+    await setAssetSearchQuery('stable');
+    expect(queryAssetCheckbox('Stable Dollar')).not.toBeNull();
+    expect(queryAssetCheckbox('USDC')).toBeNull();
+    expect(queryAssetCheckbox('ETH')).toBeNull();
+
+    await setAssetSearchQuery('dai');
+    expect(queryAssetCheckbox('Stable Dollar')).not.toBeNull();
+    await toggleAssetOption('Stable Dollar');
+    await flushAsyncWork();
+
+    expect(document.body.textContent).toContain('1 selected');
+
+    await setAssetSearchQuery('0x6b1754');
+    expect(queryAssetCheckbox('Stable Dollar')).not.toBeNull();
+
+    await setAssetSearchQuery('usdc');
+    expect(queryAssetCheckbox('USDC')).not.toBeNull();
+    expect(queryAssetCheckbox('Stable Dollar')).toBeNull();
+    expect(document.body.textContent).toContain('1 selected outside current filter');
+
+    await toggleAssetOption('USDC');
+    await flushAsyncWork();
+
+    await setAssetSearchQuery('zzzz');
+    expect(document.body.textContent).toContain('2 selected outside current filter');
+    expect(document.body.textContent).toContain('No assets match this search');
+
+    await clickButton('Clear search');
+    expect(getAssetCheckbox('Stable Dollar').checked).toBe(true);
+    expect(getAssetCheckbox('USDC').checked).toBe(true);
+
+    await clickButtonContaining('Filter & Preview');
+    await clickButton('Preview next');
+    await flushAsyncWork();
+
+    expect(nthExpandRequest(0)).toEqual(expect.objectContaining({
+      seed_node_id: ETH_NODE.node_id,
+      seed_lineage_id: ETH_NODE.lineage_id,
+      operation_type: 'expand_next',
+      options: expect.objectContaining({
+        asset_selectors: [ETH_DAI_SELECTOR, ETH_USDC_SELECTOR],
+        max_results: 25,
+      }),
+    }));
+
+    await clickButton('Expand around');
+    expect(nthExpandRequest(1)).toEqual({
+      seed_node_id: ETH_NODE.node_id,
+      seed_lineage_id: ETH_NODE.lineage_id,
+      operation_type: 'expand_neighbors',
+      options: {
+        asset_selectors: [ETH_DAI_SELECTOR, ETH_USDC_SELECTOR],
+      },
+    });
   });
 });

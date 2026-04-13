@@ -235,6 +235,18 @@ function getAssetCheckbox(container: HTMLElement, label: string): HTMLInputEleme
   return checkbox;
 }
 
+function queryAssetSearchInput(container: HTMLElement): HTMLInputElement | null {
+  return container.querySelector('input[aria-label="Search assets"]') as HTMLInputElement | null;
+}
+
+function getAssetSearchInput(container: HTMLElement): HTMLInputElement {
+  const input = queryAssetSearchInput(container);
+  if (!input) {
+    throw new Error('Unable to find the asset search input');
+  }
+  return input;
+}
+
 function getButtonByText(container: HTMLElement, label: string): HTMLButtonElement {
   const button = Array.from(container.querySelectorAll('button')).find(
     (candidate) => candidate.textContent?.trim() === label,
@@ -258,6 +270,19 @@ function getButtonByTextWithin(container: HTMLElement, label: string): HTMLButto
 async function clickInput(input: HTMLInputElement): Promise<void> {
   await act(async () => {
     input.click();
+  });
+}
+
+async function setAssetSearchQuery(container: HTMLElement, value: string): Promise<void> {
+  const input = getAssetSearchInput(container);
+  const valueSetter = Object.getOwnPropertyDescriptor(
+    window.HTMLInputElement.prototype,
+    'value',
+  )?.set;
+  await act(async () => {
+    valueSetter?.call(input, value);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
   });
 }
 
@@ -437,6 +462,113 @@ describe('InvestigationGraph asset selector persistence', () => {
     ]);
   });
 
+  it('resets the search query on node change while keeping hidden selections intact', async () => {
+    const nodeAOptions: AssetOption[] = [
+      { mode: 'all', chain: 'ethereum', display_label: 'All assets' },
+      {
+        mode: 'asset',
+        chain: 'ethereum',
+        chain_asset_id: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48',
+        asset_symbol: 'USDC',
+        display_label: 'USDC · Ethereum',
+      },
+      {
+        mode: 'asset',
+        chain: 'ethereum',
+        chain_asset_id: '0x6b175474e89094c44da98b954eedeac495271d0f',
+        asset_symbol: 'DAI',
+        canonical_asset_id: 'maker-dai',
+        display_label: 'Stable Dollar',
+      },
+    ];
+    const nodeBOptions: AssetOption[] = [
+      { mode: 'all', chain: 'solana', display_label: 'All assets' },
+      {
+        mode: 'asset',
+        chain: 'solana',
+        chain_asset_id: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+        asset_symbol: 'USDC',
+        display_label: 'USDC · Solana',
+      },
+      {
+        mode: 'native',
+        chain: 'solana',
+        asset_symbol: 'SOL',
+        display_label: 'Native SOL',
+      },
+    ];
+
+    getAssetOptionsMock.mockImplementation(async (_sessionId: string, request: { seed_node_id: string }) => {
+      if (request.seed_node_id === 'ethereum:address:0xaaa') {
+        return {
+          session_id: 'sess-selector',
+          seed_node_id: request.seed_node_id,
+          seed_lineage_id: 'lineage-ethereum:address:0xaaa',
+          options: nodeAOptions,
+        };
+      }
+      if (request.seed_node_id === 'solana:address:So11111111111111111111111111111111111111112') {
+        return {
+          session_id: 'sess-selector',
+          seed_node_id: request.seed_node_id,
+          seed_lineage_id: 'lineage-solana:address:So11111111111111111111111111111111111111112',
+          options: nodeBOptions,
+        };
+      }
+      throw new Error(`Unexpected asset-options request for ${request.seed_node_id}`);
+    });
+
+    await act(async () => {
+      root.render(
+        React.createElement(InvestigationGraph, {
+          sessionId: 'sess-selector',
+          onStartNewInvestigation: () => undefined,
+        }),
+      );
+    });
+
+    await act(async () => {
+      findByTestId(container, 'rf-node-ethereum:address:0xaaa').click();
+    });
+
+    await waitFor(() => {
+      expect(getAssetModeRadio(container, 'All assets').checked).toBe(true);
+    });
+
+    await clickInput(getAssetModeRadio(container, 'Specific assets'));
+    await setAssetSearchQuery(container, 'stable');
+    await clickInput(getAssetCheckbox(container, 'Stable Dollar'));
+
+    expect(getAssetSearchInput(container).value).toBe('stable');
+
+    await setAssetSearchQuery(container, 'usdc');
+    expect(queryLabeledInput(container, 'Stable Dollar', 'checkbox')).toBeNull();
+    expect(container.textContent).toContain('1 selected outside current filter');
+
+    await act(async () => {
+      findByTestId(container, 'rf-node-solana:address:So11111111111111111111111111111111111111112').click();
+    });
+
+    await waitFor(() => {
+      expect(getAssetModeRadio(container, 'All assets').checked).toBe(true);
+    });
+
+    await clickInput(getAssetModeRadio(container, 'Specific assets'));
+    expect(getAssetSearchInput(container).value).toBe('');
+    expect(queryLabeledInput(container, 'Stable Dollar', 'checkbox')).toBeNull();
+    expect(queryLabeledInput(container, 'Native SOL', 'checkbox')).not.toBeNull();
+
+    await act(async () => {
+      findByTestId(container, 'rf-node-ethereum:address:0xaaa').click();
+    });
+
+    await waitFor(() => {
+      expect(getAssetModeRadio(container, 'Specific assets').checked).toBe(true);
+      expect(getAssetCheckbox(container, 'Stable Dollar').checked).toBe(true);
+    });
+    expect(getAssetSearchInput(container).value).toBe('');
+  });
+
   it('disambiguates repeated asset labels with shortened chain-local identity', async () => {
     getAssetOptionsMock.mockImplementation(async (_sessionId: string, request: { seed_node_id: string }) => {
       if (request.seed_node_id !== 'ethereum:address:0xaaa') {
@@ -547,6 +679,83 @@ describe('InvestigationGraph asset selector persistence', () => {
       expect(getAssetModeRadio(container, 'Specific assets').checked).toBe(true);
       expect(getAssetCheckbox(container, 'USDC · Ethereum').checked).toBe(true);
     });
+  });
+
+  it('does not restore the asset search query after snapshot restore', async () => {
+    getAssetOptionsMock.mockResolvedValue({
+      session_id: 'sess-selector',
+      seed_node_id: 'ethereum:address:0xaaa',
+      seed_lineage_id: 'lineage-ethereum:address:0xaaa',
+      options: [
+        { mode: 'all', chain: 'ethereum', display_label: 'All assets' },
+        {
+          mode: 'asset',
+          chain: 'ethereum',
+          chain_asset_id: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48',
+          asset_symbol: 'USDC',
+          display_label: 'USDC · Ethereum',
+        },
+        {
+          mode: 'asset',
+          chain: 'ethereum',
+          chain_asset_id: '0x6b175474e89094c44da98b954eedeac495271d0f',
+          asset_symbol: 'DAI',
+          canonical_asset_id: 'maker-dai',
+          display_label: 'Stable Dollar',
+        },
+      ] satisfies AssetOption[],
+    });
+
+    await act(async () => {
+      root.render(
+        React.createElement(InvestigationGraph, {
+          sessionId: 'sess-selector',
+          onStartNewInvestigation: () => undefined,
+        }),
+      );
+    });
+
+    await act(async () => {
+      findByTestId(container, 'rf-node-ethereum:address:0xaaa').click();
+    });
+
+    await waitFor(() => {
+      expect(getAssetModeRadio(container, 'All assets').checked).toBe(true);
+    });
+
+    await clickInput(getAssetModeRadio(container, 'Specific assets'));
+    await clickInput(getAssetCheckbox(container, 'Stable Dollar'));
+    await setAssetSearchQuery(container, 'stable');
+    expect(getAssetSearchInput(container).value).toBe('stable');
+
+    const snapshot = useGraphStore.getState().exportSnapshot();
+
+    await act(async () => {
+      root.unmount();
+    });
+    container.innerHTML = '';
+    useGraphStore.getState().reset();
+    useGraphStore.getState().importSnapshot(snapshot);
+    root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        React.createElement(InvestigationGraph, {
+          sessionId: 'sess-selector',
+          onStartNewInvestigation: () => undefined,
+        }),
+      );
+    });
+
+    await act(async () => {
+      findByTestId(container, 'rf-node-ethereum:address:0xaaa').click();
+    });
+
+    await waitFor(() => {
+      expect(getAssetModeRadio(container, 'Specific assets').checked).toBe(true);
+      expect(getAssetCheckbox(container, 'Stable Dollar').checked).toBe(true);
+    });
+    expect(getAssetSearchInput(container).value).toBe('');
   });
 
   it('uses restored stored selectors for quick expand, direct expand, and preview after importSnapshot restore', async () => {

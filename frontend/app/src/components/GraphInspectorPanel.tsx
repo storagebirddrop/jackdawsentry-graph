@@ -406,6 +406,7 @@ function NodeInspectorContent({
     () => new Set(selectedSpecificAssetKeys),
     [selectedSpecificAssetKeys],
   );
+  const [assetSearchQuery, setAssetSearchQuery] = useState('');
   const optionDisplayCounts = useMemo(() => {
     const counts = new Map<string, number>();
     specificAssetOptions.forEach((option) => {
@@ -433,6 +434,36 @@ function NodeInspectorContent({
     }),
     [optionDisplayCounts, specificAssetOptions],
   );
+  const normalizedAssetSearchQuery = assetSearchQuery.trim().toLowerCase();
+  const filteredSpecificAssetOptions = useMemo(
+    () => {
+      if (!normalizedAssetSearchQuery) {
+        return labeledSpecificAssetOptions;
+      }
+      return labeledSpecificAssetOptions.filter(({ option, label }) => {
+        const searchFields = [
+          label,
+          option.display_label,
+          option.asset_symbol,
+          option.chain_asset_id,
+          option.canonical_asset_id,
+          option.chain,
+        ];
+        return searchFields.some((field) => (
+          (field ?? '').toLowerCase().includes(normalizedAssetSearchQuery)
+        ));
+      });
+    },
+    [labeledSpecificAssetOptions, normalizedAssetSearchQuery],
+  );
+  const filteredSpecificAssetKeySet = useMemo(
+    () => new Set(filteredSpecificAssetOptions.map(({ option }) => assetOptionKey(option))),
+    [filteredSpecificAssetOptions],
+  );
+  const hiddenSelectedSpecificAssetCount = useMemo(
+    () => selectedSpecificAssetKeys.filter((key) => !filteredSpecificAssetKeySet.has(key)).length,
+    [filteredSpecificAssetKeySet, selectedSpecificAssetKeys],
+  );
   const specificScopeRequiresSelection = assetScopeMode === 'specific' && !hasSpecificAssetSelection;
   const expandActionsDisabled = specificScopeRequiresSelection;
   const showAssetSelector = node.node_type === 'address' && (assetOptionsLoading || assetOptions.length > 1);
@@ -456,7 +487,14 @@ function NodeInspectorContent({
     setFilterTimeTo('');
     setFilterMaxResults(25);
     setPreviewDirection('expand_next');
+    setAssetSearchQuery('');
   }, [node.node_id]);
+
+  useEffect(() => {
+    if (assetScopeMode !== 'specific') {
+      setAssetSearchQuery('');
+    }
+  }, [assetScopeMode]);
 
   return (
     <div style={{ display: 'grid', gap: 18, marginTop: 18 }}>
@@ -588,21 +626,54 @@ function NodeInspectorContent({
                         Clear
                       </button>
                     </div>
+                    {labeledSpecificAssetOptions.length > 0 && (
+                      <div style={specificAssetSearchBlockStyle}>
+                        <div style={specificAssetSearchRowStyle}>
+                          <input
+                            type="text"
+                            value={assetSearchQuery}
+                            onChange={(event) => setAssetSearchQuery(event.target.value)}
+                            placeholder="Search assets"
+                            aria-label="Search assets"
+                            className="filter-input"
+                            style={{ ...filterInputStyle, width: '100%' }}
+                          />
+                          {assetSearchQuery && (
+                            <button
+                              type="button"
+                              onClick={() => setAssetSearchQuery('')}
+                              style={assetScopeInlineActionStyle}
+                            >
+                              Clear search
+                            </button>
+                          )}
+                        </div>
+                        {hiddenSelectedSpecificAssetCount > 0 && (
+                          <div style={specificAssetHintStyle}>
+                            {hiddenSelectedSpecificAssetCount} selected outside current filter
+                          </div>
+                        )}
+                      </div>
+                    )}
                     <div style={specificAssetChecklistStyle}>
-                      {labeledSpecificAssetOptions.map(({ option, label }) => {
-                        const key = assetOptionKey(option);
-                        return (
-                          <label key={key} style={assetScopeControlStyle}>
-                            <input
-                              type="checkbox"
-                              checked={selectedSpecificAssetKeySet.has(key)}
-                              disabled={assetOptionsLoading}
-                              onChange={() => onToggleAssetOption?.(key)}
-                            />
-                            <span>{label}</span>
-                          </label>
-                        );
-                      })}
+                      {filteredSpecificAssetOptions.length > 0 ? (
+                        filteredSpecificAssetOptions.map(({ option, label }) => {
+                          const key = assetOptionKey(option);
+                          return (
+                            <label key={key} style={assetScopeControlStyle}>
+                              <input
+                                type="checkbox"
+                                checked={selectedSpecificAssetKeySet.has(key)}
+                                disabled={assetOptionsLoading}
+                                onChange={() => onToggleAssetOption?.(key)}
+                              />
+                              <span>{label}</span>
+                            </label>
+                          );
+                        })
+                      ) : (
+                        <div style={specificAssetHintStyle}>No assets match this search</div>
+                      )}
                     </div>
                     {specificScopeRequiresSelection && (
                       <div style={{ fontSize: 11, color: '#b45309' }}>Select at least one asset</div>
@@ -1915,12 +1986,28 @@ const specificAssetHeaderStyle: React.CSSProperties = {
   gap: 8,
 };
 
+const specificAssetSearchBlockStyle: React.CSSProperties = {
+  display: 'grid',
+  gap: 6,
+};
+
+const specificAssetSearchRowStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+};
+
 const specificAssetChecklistStyle: React.CSSProperties = {
   display: 'grid',
   gap: 6,
   maxHeight: 180,
   overflowY: 'auto',
   paddingRight: 4,
+};
+
+const specificAssetHintStyle: React.CSSProperties = {
+  fontSize: 11,
+  color: '#64748b',
 };
 
 const assetScopeInlineActionStyle: React.CSSProperties = {
