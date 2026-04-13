@@ -34,7 +34,7 @@ import {
   toRfNode,
   type BranchMeta,
 } from '../store/graphStore';
-import { expandNode, getAssetOptions } from '../api/client';
+import { ApiError, expandNode, getAssetOptions, saveSessionSnapshot } from '../api/client';
 import { computeElkLayout } from '../layout/elkLayout';
 import {
   buildLocalLayoutNeighborhood,
@@ -50,6 +50,7 @@ import type {
   ExpansionResponseV2,
   InvestigationEdge,
   InvestigationNode,
+  WorkspaceSnapshotV1,
 } from '../types/graph';
 
 import AddressNode from './nodes/AddressNode';
@@ -147,6 +148,12 @@ interface SessionBriefing {
 }
 
 type NodeAssetScopeMode = 'all' | 'specific';
+type GraphNotice = {
+  tone: 'info' | 'error';
+  message: string;
+  label?: string;
+  sticky?: boolean;
+} | null;
 
 /** Apply filter state to raw nodes/edges, returning the visible subset. */
 function applyFilters(
@@ -279,7 +286,13 @@ function applyFilters(
   return { nodes: visibleNodes, edges: visibleEdges };
 }
 
-export default function InvestigationGraph({ sessionId, onStartNewInvestigation }: Props) {
+export default function InvestigationGraph({
+  sessionId,
+  onStartNewInvestigation,
+  initialWorkspaceRevision = 0,
+  initialSavedAt = null,
+  initialRestoreNotice = null,
+}: Props) {
   const {
     rfNodes,
     rfEdges,
@@ -313,7 +326,10 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
   const [isPreviewLoading, setIsPreviewLoading] = useState(false);
   const [inspectorCollapsed, setInspectorCollapsed] = useState(false);
   const [briefingVisible, setBriefingVisible] = useState(false);
-  const [notice, setNotice] = useState<{ tone: 'info' | 'error'; message: string } | null>(null);
+  const [notice, setNotice] = useState<GraphNotice>(
+    initialRestoreNotice ? { ...initialRestoreNotice } : null,
+  );
+  const [autosavePaused, setAutosavePaused] = useState(false);
   const [bridgeRouteHistory, setBridgeRouteHistory] = useState<string[]>([]);
   const [activeBranchIds, setActiveBranchIds] = useState<string[]>([]);
   const [branchHistory, setBranchHistory] = useState<string[]>([]);
@@ -354,9 +370,25 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
   const fitViewTimerRef = useRef<number | null>(null);
   const autosaveTimerRef = useRef<number | null>(null);
   const localLayoutRunRef = useRef<string | null>(null);
+  const mountedRef = useRef(true);
+  const workspaceRevisionRef = useRef(initialWorkspaceRevision);
+  const latestSavedAtRef = useRef<string | null>(initialSavedAt);
+  const backendAutosaveDirtyRef = useRef(false);
+  const backendAutosaveInFlightRef = useRef(false);
+  const backendAutosavePausedRef = useRef(false);
+  const skipInitialBackendAutosaveRef = useRef(true);
 
-  const showNotice = useCallback((message: string, tone: 'info' | 'error' = 'info') => {
-    setNotice({ tone, message });
+  const showNotice = useCallback((
+    message: string,
+    tone: 'info' | 'error' = 'info',
+    options?: { label?: string; sticky?: boolean },
+  ) => {
+    setNotice({
+      tone,
+      message,
+      label: options?.label,
+      sticky: options?.sticky,
+    });
   }, []);
 
   const scheduleFitView = useCallback((duration = 260) => {
@@ -379,6 +411,7 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
   }, []);
 
   useEffect(() => () => {
+    mountedRef.current = false;
     if (fitViewTimerRef.current !== null) {
       window.clearTimeout(fitViewTimerRef.current);
       fitViewTimerRef.current = null;
@@ -388,6 +421,59 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
       autosaveTimerRef.current = null;
     }
   }, []);
+
+  const flushBackendAutosave = useCallback(async () => {
+    if (!sessionId || rfNodes.length === 0 || backendAutosavePausedRef.current) {
+      return;
+    }
+
+    if (backendAutosaveInFlightRef.current) {
+      backendAutosaveDirtyRef.current = true;
+      return;
+    }
+
+    backendAutosaveDirtyRef.current = false;
+    backendAutosaveInFlightRef.current = true;
+
+    try {
+      const snapshot = JSON.parse(exportSnapshot()) as Omit<WorkspaceSnapshotV1, 'revision'>;
+      const response = await saveSessionSnapshot(sessionId, {
+        ...snapshot,
+        revision: workspaceRevisionRef.current,
+      });
+      if (!mountedRef.current) return;
+      workspaceRevisionRef.current = response.revision;
+      latestSavedAtRef.current = response.saved_at ?? null;
+    } catch (error) {
+      if (!mountedRef.current) return;
+      if (error instanceof ApiError && error.status === 409) {
+        backendAutosavePausedRef.current = true;
+        setAutosavePaused(true);
+        showNotice(
+          'This investigation tab is working from a stale saved workspace revision. Backend autosave is paused for this mount so a newer server snapshot is not overwritten.',
+          'error',
+          { label: 'Autosave paused', sticky: true },
+        );
+        return;
+      }
+
+      console.error('Workspace autosave failed:', error);
+      showNotice(
+        'Unable to save this workspace snapshot to the backend right now. The local recent-session hint is still being updated in this browser.',
+        'error',
+        { label: 'Autosave warning' },
+      );
+    } finally {
+      backendAutosaveInFlightRef.current = false;
+      if (
+        mountedRef.current
+        && !backendAutosavePausedRef.current
+        && backendAutosaveDirtyRef.current
+      ) {
+        void flushBackendAutosave();
+      }
+    }
+  }, [exportSnapshot, rfNodes.length, sessionId, showNotice]);
 
   const branchEntries = useMemo(
     () =>
@@ -566,15 +652,33 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
       return;
     }
 
+    const snapshotJson = exportSnapshot();
+    const skipBackendAutosave = skipInitialBackendAutosaveRef.current;
+    skipInitialBackendAutosaveRef.current = false;
+
     if (autosaveTimerRef.current !== null) {
       window.clearTimeout(autosaveTimerRef.current);
     }
 
     autosaveTimerRef.current = window.setTimeout(() => {
       autosaveTimerRef.current = null;
-      saveWorkspace(sessionId, exportSnapshot());
+      saveWorkspace(sessionId, snapshotJson);
+      if (skipBackendAutosave) {
+        return;
+      }
+      backendAutosaveDirtyRef.current = true;
+      void flushBackendAutosave();
     }, 320);
-  }, [sessionId, rfNodes, rfEdges, branchMap, layoutMetaMap, exportSnapshot]);
+  }, [
+    branchMap,
+    exportSnapshot,
+    flushBackendAutosave,
+    layoutMetaMap,
+    nodeAssetScopes,
+    rfEdges,
+    rfNodes,
+    sessionId,
+  ]);
 
   useEffect(() => {
     if (rfNodes.length === 0) {
@@ -1405,7 +1509,7 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
   }, [activeSemanticKey, semanticLegend.entries]);
 
   useEffect(() => {
-    if (!notice) return;
+    if (!notice || notice.sticky) return;
     const timeoutId = window.setTimeout(() => {
       setNotice((current) => (current?.message === notice.message ? null : current));
     }, 4200);
@@ -1916,6 +2020,19 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
         <span style={toolbarPillStyle}>
           {appearance.interactionMode} mode
         </span>
+        {autosavePaused && (
+          <span
+            style={{
+              ...toolbarPillStyle,
+              background: 'rgba(254,226,226,0.92)',
+              borderColor: 'rgba(248,113,113,0.32)',
+              color: '#b91c1c',
+            }}
+            title="Backend autosave is paused because this mount is working from a stale saved workspace revision."
+          >
+            Autosave paused
+          </span>
+        )}
         <span style={{ color: '#475569', fontSize: 12, alignSelf: 'center', fontWeight: 600 }}>
           {rfNodes.length} nodes · {rfEdges.length} edges
         </span>
@@ -1958,7 +2075,7 @@ export default function InvestigationGraph({ sessionId, onStartNewInvestigation 
               whiteSpace: 'nowrap',
             }}
           >
-            {notice.tone === 'error' ? 'Expand error' : 'Investigation note'}
+            {notice.label ?? (notice.tone === 'error' ? 'Investigation alert' : 'Investigation note')}
           </div>
           <div style={{ flex: 1, fontSize: 12, lineHeight: 1.55 }}>
             {notice.message}
