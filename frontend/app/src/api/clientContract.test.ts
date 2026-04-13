@@ -2,7 +2,7 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { expandNode } from './client';
+import { ApiError, expandNode, saveSessionSnapshot } from './client';
 
 describe('expandNode contract normalization', () => {
   afterEach(() => {
@@ -94,5 +94,37 @@ describe('expandNode contract normalization', () => {
         value_fiat: 19.75,
       }),
     );
+  });
+
+  it('surfaces HTTP status on snapshot save conflicts', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({ detail: 'Stale workspace snapshot revision.' }),
+        {
+          status: 409,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      ),
+    );
+
+    await expect(
+      saveSessionSnapshot('sess-1', {
+        revision: 4,
+        sessionId: 'sess-1',
+        nodes: [],
+        edges: [],
+        positions: {},
+      }),
+    ).rejects.toBeInstanceOf(ApiError);
+
+    await expect(
+      saveSessionSnapshot('sess-1', {
+        revision: 4,
+        sessionId: 'sess-1',
+        nodes: [],
+        edges: [],
+        positions: {},
+      }),
+    ).rejects.toMatchObject({ status: 409 });
   });
 });
