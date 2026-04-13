@@ -78,7 +78,7 @@ This repository is intentionally narrower than the private Jackdaw Sentry platfo
 - `Specific assets` supports deterministic multi-asset `asset_selectors`; zero checked assets disables expand/preview until at least one asset is selected
 - manual export/import and backend session restore preserve per-node asset scope
 - backend autosave persists updated workspace snapshots, including `nodeAssetScopes`
-- stale snapshot revision conflicts pause autosave with an honest notice instead of silently overwriting newer saved state
+- on `409` stale workspace snapshot revision conflict, autosave pauses safely with an honest notice instead of silently overwriting newer saved state
 - the conflict notice offers `Load saved version` and `Save my version`
 - autosave remains paused until one of those recovery actions succeeds
 - edge selective trace is `tx_hash`-first and only adds at most one `asset_selector` when safe chain-local asset identity exists
@@ -220,7 +220,7 @@ Current shipped persistence behavior:
 - manual export/import round-trips per-node asset scope
 - backend session restore returns saved `nodeAssetScopes` in the authoritative workspace snapshot
 - backend autosave persists updated workspace snapshots, including `nodeAssetScopes`, as part of the same workspace contract
-- stale snapshot revision conflicts pause autosave for the current mount and surface an honest notice instead of silently overwriting newer saved state
+- on `409` stale workspace snapshot revision conflict, autosave pauses safely for the current mount and surfaces an honest notice instead of silently overwriting newer saved state
 - the recovery UI requires an explicit choice: `Save my version` or `Load saved version`
 - autosave does not resume automatically after a conflict; it resumes only after one of those recovery steps succeeds
 
