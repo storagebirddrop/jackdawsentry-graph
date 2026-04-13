@@ -12,7 +12,7 @@ Read this file before touching graph schema, graph API, trace compiler semantics
 
 ## Current Shipped State
 
-As of 2026-04-10, current main is the source of truth. Compare all new
+As of 2026-04-13, current main is the source of truth. Compare all new
 work against main, not older recovery branches.
 
 Active shipped graph path on main:
@@ -32,6 +32,10 @@ Active shipped graph path on main:
 - candidate selection / subset apply: per-edge checkboxes in the preview
   panel; "Apply selected" prunes both edges and reachable nodes before
   committing the delta via `applyExpansionDelta`
+- asset-scope persistence v1: manual export/import and backend session restore
+  preserve per-node asset scope; backend autosave persists updated snapshots;
+  stale revision conflicts pause autosave with an honest notice instead of
+  silently overwriting newer saved state
 
 Current shipped behavior:
 - EVM / Solana / TRON asset-specific token filtering requires chain-local identity
@@ -39,6 +43,10 @@ Current shipped behavior:
   plural `asset_selectors`
 - empty `Specific assets` disables expand/preview actions until at least one
   asset is checked
+- manual export/import, backend restore, and backend autosave all round-trip
+  per-node asset scope through authoritative workspace snapshots
+- stale snapshot conflicts pause autosave for the current mount instead of
+  silently overwriting newer saved workspace state
 - Bitcoin excluded from the asset-selector path
 - `value_fiat` canonical for active-path edge fiat handling
 - bridge animation follows `bridge_source` / `bridge_dest`
@@ -47,6 +55,8 @@ Current shipped behavior:
 Current multi-asset boundary:
 - multi-asset selection v1 is shipped for inspector expand/preview and node
   quick Prev/Next on supported non-Bitcoin address flows
+- asset-scope persistence v1 is shipped for those same flows across manual
+  export/import, backend restore, and backend autosave
 - edge selective trace remains single-asset scoped
 
 Cleanup status (2026-04-09):
@@ -261,8 +271,13 @@ code reality.
   browser-local graph payloads.
 - Browser storage may keep a recent-session hint and safe workspace preferences,
   but it must not become the source of truth for restorable graph state.
+- Per-node asset scope now rides inside the same authoritative workspace
+  snapshot contract for manual export/import, backend restore, and autosave.
 - Snapshot writes are monotonic. Stale autosave writes must fail with a
   revision conflict instead of silently overwriting newer workspace state.
+- On a stale snapshot conflict, the frontend pauses autosave for the current
+  mount and surfaces an honest notice rather than retrying with overwrite
+  behavior.
 
 ### ADR-027 (COMPLETE — Mounted Bridge Polling Ownership)
 - The mounted investigator path owns bridge-hop freshness:
