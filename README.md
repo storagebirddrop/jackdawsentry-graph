@@ -79,6 +79,8 @@ This repository is intentionally narrower than the private Jackdaw Sentry platfo
 - manual export/import and backend session restore preserve per-node asset scope
 - backend autosave persists updated workspace snapshots, including `nodeAssetScopes`
 - stale snapshot revision conflicts pause autosave with an honest notice instead of silently overwriting newer saved state
+- the conflict notice offers `Load saved version` and `Save my version`
+- autosave remains paused until one of those recovery actions succeeds
 - edge selective trace is `tx_hash`-first and only adds at most one `asset_selector` when safe chain-local asset identity exists
 - EVM, Solana, and Tron asset-specific filtering requires chain-local identity and does not guess by symbol
 - edge selective trace does not inherit inspector multi-selection
@@ -217,8 +219,10 @@ Current shipped persistence behavior:
 
 - manual export/import round-trips per-node asset scope
 - backend session restore returns saved `nodeAssetScopes` in the authoritative workspace snapshot
-- backend autosave persists updated asset-scope snapshots as part of the same workspace contract
+- backend autosave persists updated workspace snapshots, including `nodeAssetScopes`, as part of the same workspace contract
 - stale snapshot revision conflicts pause autosave for the current mount and surface an honest notice instead of silently overwriting newer saved state
+- the recovery UI requires an explicit choice: `Save my version` or `Load saved version`
+- autosave does not resume automatically after a conflict; it resumes only after one of those recovery steps succeeds
 
 Browser storage is intentionally weaker than the backend contract:
 

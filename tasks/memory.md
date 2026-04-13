@@ -33,9 +33,11 @@ Active shipped graph path on main:
   panel; "Apply selected" prunes both edges and reachable nodes before
   committing the delta via `applyExpansionDelta`
 - asset-scope persistence v1: manual export/import and backend session restore
-  preserve per-node asset scope; backend autosave persists updated snapshots;
-  stale revision conflicts pause autosave with an honest notice instead of
-  silently overwriting newer saved state
+  preserve per-node asset scope; backend autosave persists updated workspace
+  snapshots; stale revision conflicts pause autosave with an honest notice
+  instead of silently overwriting newer saved state; recovery is explicit via
+  `Save my version` or `Load saved version`, and autosave stays paused until
+  one of those steps succeeds
 
 Current shipped behavior:
 - EVM / Solana / TRON asset-specific token filtering requires chain-local identity
@@ -47,6 +49,10 @@ Current shipped behavior:
   per-node asset scope through authoritative workspace snapshots
 - stale snapshot conflicts pause autosave for the current mount instead of
   silently overwriting newer saved workspace state
+- the conflict notice offers explicit recovery actions: `Save my version` and
+  `Load saved version`
+- autosave does not resume automatically after a conflict; it resumes only
+  after an explicit recovery step succeeds
 - Bitcoin excluded from the asset-selector path
 - `value_fiat` canonical for active-path edge fiat handling
 - bridge animation follows `bridge_source` / `bridge_dest`
@@ -278,6 +284,9 @@ code reality.
 - On a stale snapshot conflict, the frontend pauses autosave for the current
   mount and surfaces an honest notice rather than retrying with overwrite
   behavior.
+- Conflict recovery is explicit. The shipped UI offers `Save my version` and
+  `Load saved version`, and autosave stays paused until one of those recovery
+  paths succeeds.
 
 ### ADR-027 (COMPLETE — Mounted Bridge Polling Ownership)
 - The mounted investigator path owns bridge-hop freshness:

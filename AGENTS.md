@@ -11,7 +11,7 @@ Compare all new work against `main`, not stale recovery branches, older task mem
 
 ## Active Shipped Graph Path
 
-The currently shipped session graph path includes **direct expand**, **preview/apply**, **date-filtered expansion**, **candidate selection / subset apply**, and **asset-scope persistence**.
+The currently shipped session graph path includes **direct expand**, **preview/apply**, **date-filtered expansion**, **candidate selection / subset apply**, **asset-scope persistence**, and **autosave conflict recovery / explicit resume UX**.
 
 Shipped behavior:
 - **asset-aware expand** for supported non-Bitcoin address flows
@@ -19,8 +19,10 @@ Shipped behavior:
   - specific-assets mode supports multi-select with stored per-node scope reused by Prev/Next
   - empty `Specific assets` disables expand/preview actions until at least one asset is checked
   - manual export/import and backend session restore preserve per-node asset scope
-  - backend autosave persists updated asset-scope snapshots
+  - backend autosave persists updated workspace snapshots, including per-node asset scope
   - stale snapshot conflicts pause autosave with an honest notice instead of silently overwriting newer saved state
+  - the conflict notice offers explicit recovery actions: `Save my version` and `Load saved version`
+  - autosave stays paused until one of those recovery actions succeeds; it does not resume automatically
 - **edge selective trace** is `tx_hash`-first and only adds at most one safe asset scope when chain-local identity exists (EVM, Solana, TRON)
   - edge trace does not inherit inspector multi-selection
 - **preview/apply**: inspector "Filter & Preview" panel runs an expansion without committing it to the canvas; investigators review candidate edges before applying
@@ -35,8 +37,10 @@ Shipped behavior:
 
 - multi-asset selection v1 and asset-scope persistence v1 are shipped for inspector expand/preview and node quick `Prev` / `Next` on supported non-Bitcoin address flows
 - `All assets` emits no `asset_selectors`; `Specific assets` emits deterministic plural `asset_selectors`
-- manual export/import, backend session restore, and backend autosave all round-trip per-node asset scope
+- manual export/import, backend session restore, and backend autosave all round-trip per-node asset scope through workspace snapshots
 - stale snapshot conflicts pause autosave with a visible notice instead of overwriting newer saved state
+- recovery is explicit: `Save my version` or `Load saved version`
+- autosave remains paused until an explicit recovery step succeeds
 - edge selective trace remains single-asset scoped and must not inherit inspector multi-selection
 - Bitcoin remains excluded from the asset-selector path
 
