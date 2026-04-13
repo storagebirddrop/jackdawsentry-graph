@@ -136,14 +136,26 @@ class EVMChainCompiler(_GenericTransferChainCompiler):
         native_symbol = self._native_symbol(chain)
         try:
             async with self._pg.acquire() as conn:
+                # Keep inbound/outbound probes index-friendly; OR scans can stall token-only lookups.
                 native_exists = await conn.fetchval(
                     """
                     SELECT EXISTS(
                         SELECT 1
-                        FROM raw_transactions
-                        WHERE blockchain = $1
-                          AND (from_address = $2 OR to_address = $2)
-                          AND value_native > 0
+                        FROM (
+                            (SELECT 1
+                             FROM raw_transactions
+                             WHERE blockchain = $1
+                               AND from_address = $2
+                               AND value_native > 0
+                             LIMIT 1)
+                            UNION ALL
+                            (SELECT 1
+                             FROM raw_transactions
+                             WHERE blockchain = $1
+                               AND to_address = $2
+                               AND value_native > 0
+                             LIMIT 1)
+                        ) AS native_hits
                     )
                     """,
                     chain,
@@ -156,10 +168,19 @@ class EVMChainCompiler(_GenericTransferChainCompiler):
                         MAX(NULLIF(asset_symbol, '')) AS asset_symbol,
                         MAX(canonical_asset_id) AS canonical_asset_id,
                         MAX(timestamp) AS last_seen
-                    FROM raw_token_transfers
-                    WHERE blockchain = $1
-                      AND (from_address = $2 OR to_address = $2)
-                      AND asset_contract IS NOT NULL
+                    FROM (
+                        SELECT asset_contract, asset_symbol, canonical_asset_id, timestamp
+                        FROM raw_token_transfers
+                        WHERE blockchain = $1
+                          AND from_address = $2
+                          AND asset_contract IS NOT NULL
+                        UNION ALL
+                        SELECT asset_contract, asset_symbol, canonical_asset_id, timestamp
+                        FROM raw_token_transfers
+                        WHERE blockchain = $1
+                          AND to_address = $2
+                          AND asset_contract IS NOT NULL
+                    ) AS token_hits
                     GROUP BY asset_contract
                     ORDER BY MAX(timestamp) DESC NULLS LAST
                     LIMIT 40

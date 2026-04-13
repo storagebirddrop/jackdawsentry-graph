@@ -85,11 +85,43 @@ async def test_evm_list_asset_options_dedupes_normalized_contract_ids_and_keeps_
     assert options[2].chain_asset_id == "0xdac17f958d2ee523a2206206994597c13d831ec7"
     assert options[2].display_label == "USDT · 0xdac17f95...831ec7"
 
+    native_sql = conn.fetchval.await_args.args[0]
+    assert "UNION ALL" in native_sql
+    assert "(from_address = $2 OR to_address = $2)" not in native_sql
     assert conn.fetchval.await_args.args[1] == "ethereum"
     assert conn.fetchval.await_args.args[2] == "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd"
     token_sql = conn.fetch.await_args.args[0]
+    assert "UNION ALL" in token_sql
+    assert "(from_address = $2 OR to_address = $2)" not in token_sql
     assert "GROUP BY asset_contract" in token_sql
     assert "ORDER BY MAX(timestamp) DESC NULLS LAST" in token_sql
+
+
+@pytest.mark.asyncio
+async def test_bsc_list_asset_options_keeps_token_only_addresses_usable_without_native_activity():
+    pool, _conn = _asset_option_pool(
+        native_exists=False,
+        token_rows=[
+            {
+                "chain_asset_id": "0x55d398326f99059ff775485246999027b3197955",
+                "asset_symbol": "USDT",
+                "canonical_asset_id": "tether",
+                "last_seen": _timestamp(10),
+            },
+        ],
+    )
+    compiler = EVMChainCompiler(postgres_pool=pool)
+
+    options = await compiler.list_asset_options(
+        seed_address="0xTokenOnlyBsc0000000000000000000000000000001",
+        chain="bsc",
+    )
+
+    assert [option.mode for option in options] == ["asset"]
+    assert options[0].chain == "bsc"
+    assert options[0].asset_symbol == "USDT"
+    assert options[0].chain_asset_id == "0x55d398326f99059ff775485246999027b3197955"
+    assert options[0].display_label == "USDT · 0x55d39832...197955"
 
 
 @pytest.mark.asyncio
@@ -133,8 +165,40 @@ async def test_solana_list_asset_options_dedupes_repeated_mints_and_keeps_select
     assert options[2].display_label.startswith("Asset · DezXAZ8z7P...")
 
     token_sql = conn.fetch.await_args.args[0]
+    native_sql = conn.fetchval.await_args.args[0]
+    assert "UNION ALL" in native_sql
+    assert "(from_address = $1 OR to_address = $1)" not in native_sql
+    assert "UNION ALL" in token_sql
+    assert "(from_address = $1 OR to_address = $1)" not in token_sql
     assert "GROUP BY asset_contract" in token_sql
     assert "ORDER BY MAX(timestamp) DESC NULLS LAST" in token_sql
+
+
+@pytest.mark.asyncio
+async def test_solana_list_asset_options_keeps_token_only_addresses_usable_without_native_activity():
+    pool, _conn = _asset_option_pool(
+        native_exists=False,
+        token_rows=[
+            {
+                "chain_asset_id": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+                "asset_symbol": "USDC",
+                "canonical_asset_id": "usd-coin",
+                "last_seen": _timestamp(10),
+            },
+        ],
+    )
+    compiler = SolanaChainCompiler(postgres_pool=pool)
+
+    options = await compiler.list_asset_options(
+        seed_address="SoLTokenOnly111111111111111111111111111111111",
+        chain="solana",
+    )
+
+    assert [option.mode for option in options] == ["asset"]
+    assert options[0].chain == "solana"
+    assert options[0].asset_symbol == "USDC"
+    assert options[0].chain_asset_id == "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+    assert options[0].display_label.startswith("USDC · EPjFWdd5Au...")
 
 
 @pytest.mark.asyncio

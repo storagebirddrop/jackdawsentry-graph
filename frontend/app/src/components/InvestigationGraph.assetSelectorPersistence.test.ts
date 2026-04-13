@@ -181,6 +181,14 @@ function makeDelta(nodes: InvestigationNode[]): ExpansionResponseV2 {
   };
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+
 async function flush(): Promise<void> {
   await act(async () => {
     await Promise.resolve();
@@ -460,6 +468,116 @@ describe('InvestigationGraph asset selector persistence', () => {
       'ethereum:address:0xaaa',
       'solana:address:So11111111111111111111111111111111111111112',
     ]);
+  });
+
+  it('clears loading and enables token-only asset choices for supported EVM and Solana address nodes', async () => {
+    const evmOptionsDeferred = deferred<{
+      session_id: string;
+      seed_node_id: string;
+      seed_lineage_id: string;
+      options: AssetOption[];
+    }>();
+    const solanaOptionsDeferred = deferred<{
+      session_id: string;
+      seed_node_id: string;
+      seed_lineage_id: string;
+      options: AssetOption[];
+    }>();
+
+    getAssetOptionsMock.mockImplementation((_sessionId: string, request: { seed_node_id: string }) => {
+      if (request.seed_node_id === 'ethereum:address:0xaaa') {
+        return evmOptionsDeferred.promise;
+      }
+      if (request.seed_node_id === 'solana:address:So11111111111111111111111111111111111111112') {
+        return solanaOptionsDeferred.promise;
+      }
+      throw new Error(`Unexpected asset-options request for ${request.seed_node_id}`);
+    });
+
+    await act(async () => {
+      root.render(
+        React.createElement(InvestigationGraph, {
+          sessionId: 'sess-selector',
+          onStartNewInvestigation: () => undefined,
+        }),
+      );
+    });
+
+    await act(async () => {
+      findByTestId(container, 'rf-node-ethereum:address:0xaaa').click();
+    });
+
+    await waitFor(() => {
+      expect(container.textContent).toContain('Loading asset choices...');
+    });
+
+    await act(async () => {
+      evmOptionsDeferred.resolve({
+        session_id: 'sess-selector',
+        seed_node_id: 'ethereum:address:0xaaa',
+        seed_lineage_id: 'lineage-ethereum:address:0xaaa',
+        options: [
+          { mode: 'all', chain: 'ethereum', display_label: 'All assets' },
+          {
+            mode: 'asset',
+            chain: 'ethereum',
+            chain_asset_id: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48',
+            asset_symbol: 'USDC',
+            display_label: 'USDC · Ethereum',
+          },
+        ],
+      });
+      await Promise.resolve();
+    });
+
+    await waitFor(() => {
+      expect(container.textContent).not.toContain('Loading asset choices...');
+      expect(getAssetModeRadio(container, 'All assets').disabled).toBe(false);
+      expect(getAssetModeRadio(container, 'Specific assets').disabled).toBe(false);
+    });
+
+    await clickInput(getAssetModeRadio(container, 'Specific assets'));
+    await waitFor(() => {
+      expect(getAssetCheckbox(container, 'USDC · Ethereum').disabled).toBe(false);
+    });
+
+    await act(async () => {
+      findByTestId(container, 'rf-node-solana:address:So11111111111111111111111111111111111111112').click();
+    });
+
+    await waitFor(() => {
+      expect(container.textContent).toContain('Loading asset choices...');
+    });
+
+    await act(async () => {
+      solanaOptionsDeferred.resolve({
+        session_id: 'sess-selector',
+        seed_node_id: 'solana:address:So11111111111111111111111111111111111111112',
+        seed_lineage_id: 'lineage-solana:address:So11111111111111111111111111111111111111112',
+        options: [
+          { mode: 'all', chain: 'solana', display_label: 'All assets' },
+          {
+            mode: 'asset',
+            chain: 'solana',
+            chain_asset_id: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+            asset_symbol: 'USDC',
+            display_label: 'USDC · Solana',
+          },
+        ],
+      });
+      await Promise.resolve();
+    });
+
+    await waitFor(() => {
+      expect(container.textContent).not.toContain('Loading asset choices...');
+      expect(getAssetModeRadio(container, 'All assets').disabled).toBe(false);
+      expect(getAssetModeRadio(container, 'Specific assets').disabled).toBe(false);
+    });
+
+    await clickInput(getAssetModeRadio(container, 'Specific assets'));
+    await waitFor(() => {
+      expect(getAssetCheckbox(container, 'USDC · Solana').disabled).toBe(false);
+    });
   });
 
   it('resets the search query on node change while keeping hidden selections intact', async () => {
