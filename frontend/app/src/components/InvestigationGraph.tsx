@@ -34,7 +34,7 @@ import {
   toRfNode,
   type BranchMeta,
 } from '../store/graphStore';
-import { ApiError, expandNode, getAssetOptions, saveSessionSnapshot } from '../api/client';
+import { ApiError, expandNode, getAssetOptions, getSession, saveSessionSnapshot } from '../api/client';
 import { computeElkLayout } from '../layout/elkLayout';
 import {
   buildLocalLayoutNeighborhood,
@@ -330,6 +330,9 @@ export default function InvestigationGraph({
     initialRestoreNotice ? { ...initialRestoreNotice } : null,
   );
   const [autosavePaused, setAutosavePaused] = useState(false);
+  const [conflictRecoveryInFlight, setConflictRecoveryInFlight] = useState<
+    'force-save' | 'reload' | null
+  >(null);
   const [bridgeRouteHistory, setBridgeRouteHistory] = useState<string[]>([]);
   const [activeBranchIds, setActiveBranchIds] = useState<string[]>([]);
   const [branchHistory, setBranchHistory] = useState<string[]>([]);
@@ -449,11 +452,6 @@ export default function InvestigationGraph({
       if (error instanceof ApiError && error.status === 409) {
         backendAutosavePausedRef.current = true;
         setAutosavePaused(true);
-        showNotice(
-          'This investigation tab is working from a stale saved workspace revision. Backend autosave is paused for this mount so a newer server snapshot is not overwritten.',
-          'error',
-          { label: 'Autosave paused', sticky: true },
-        );
         return;
       }
 
@@ -474,6 +472,77 @@ export default function InvestigationGraph({
       }
     }
   }, [exportSnapshot, rfNodes.length, sessionId, showNotice]);
+
+  const handleConflictForceSave = useCallback(async () => {
+    if (!sessionId || conflictRecoveryInFlight) return;
+    setConflictRecoveryInFlight('force-save');
+    try {
+      const serverState = await getSession(sessionId);
+      if (!mountedRef.current) return;
+      workspaceRevisionRef.current = serverState.workspace.revision;
+
+      const snapshot = JSON.parse(exportSnapshot()) as Omit<WorkspaceSnapshotV1, 'revision'>;
+      const response = await saveSessionSnapshot(sessionId, {
+        ...snapshot,
+        revision: workspaceRevisionRef.current,
+      });
+      if (!mountedRef.current) return;
+      workspaceRevisionRef.current = response.revision;
+      latestSavedAtRef.current = response.saved_at ?? null;
+      backendAutosavePausedRef.current = false;
+      backendAutosaveDirtyRef.current = false;
+      setAutosavePaused(false);
+      setConflictRecoveryInFlight(null);
+      showNotice('Your version has been saved. Autosave resumed.', 'info');
+    } catch (error) {
+      if (!mountedRef.current) return;
+      setConflictRecoveryInFlight(null);
+      if (error instanceof ApiError && error.status === 409) {
+        showNotice(
+          'Another save occurred while resolving the conflict. Please try again.',
+          'error',
+        );
+        return;
+      }
+      showNotice(
+        'Unable to save your version right now. Please try again.',
+        'error',
+      );
+    }
+  }, [conflictRecoveryInFlight, exportSnapshot, sessionId, showNotice]);
+
+  const handleConflictReload = useCallback(async () => {
+    if (!sessionId || conflictRecoveryInFlight) return;
+    const confirmed = window.confirm(
+      'This will discard your current canvas and reload the last server-saved version. Any changes since your last save will be lost.\n\nContinue?',
+    );
+    if (!confirmed) return;
+    setConflictRecoveryInFlight('reload');
+    try {
+      const serverState = await getSession(sessionId);
+      if (!mountedRef.current) return;
+      const restored = importSnapshot(JSON.stringify(serverState.workspace));
+      if (!restored) {
+        setConflictRecoveryInFlight(null);
+        showNotice('Unable to restore the saved version. The snapshot may be corrupted.', 'error');
+        return;
+      }
+      workspaceRevisionRef.current = serverState.workspace.revision;
+      latestSavedAtRef.current = serverState.snapshot_saved_at ?? null;
+      backendAutosavePausedRef.current = false;
+      backendAutosaveDirtyRef.current = false;
+      setAutosavePaused(false);
+      setConflictRecoveryInFlight(null);
+      showNotice('Saved version loaded. Autosave resumed.', 'info');
+    } catch {
+      if (!mountedRef.current) return;
+      setConflictRecoveryInFlight(null);
+      showNotice(
+        'Unable to load the saved version right now. Please try again.',
+        'error',
+      );
+    }
+  }, [conflictRecoveryInFlight, importSnapshot, sessionId, showNotice]);
 
   const branchEntries = useMemo(
     () =>
@@ -2038,11 +2107,94 @@ export default function InvestigationGraph({
         </span>
       </div>
 
+      {autosavePaused && (
+        <div
+          role="alert"
+          style={{
+            position: 'absolute',
+            top: 72,
+            left: '50%',
+            transform: 'translateX(-50%)',
+            zIndex: 109,
+            width: 'min(92vw, 620px)',
+            padding: '12px 16px',
+            borderRadius: 18,
+            background: 'rgba(127,29,29,0.94)',
+            border: '1px solid rgba(252,165,165,0.34)',
+            boxShadow: '0 16px 36px rgba(15,23,42,0.16)',
+            color: '#f8fafc',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 10,
+          }}
+        >
+          <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+            <div
+              style={{
+                color: '#fecaca',
+                fontSize: 10,
+                fontWeight: 800,
+                letterSpacing: '0.08em',
+                textTransform: 'uppercase',
+                paddingTop: 3,
+                whiteSpace: 'nowrap',
+              }}
+            >
+              Autosave conflict
+            </div>
+            <div style={{ flex: 1, fontSize: 12, lineHeight: 1.55 }}>
+              Another tab or session saved a newer version of this investigation.
+              Your current canvas has unsaved changes that only exist in this browser tab.
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+            <button
+              type="button"
+              onClick={handleConflictReload}
+              disabled={conflictRecoveryInFlight !== null}
+              title="Discard local changes and reload the last server-saved version"
+              style={{
+                padding: '6px 14px',
+                borderRadius: 999,
+                background: 'transparent',
+                border: '1px solid rgba(252,165,165,0.5)',
+                color: '#fecaca',
+                fontSize: 12,
+                fontWeight: 700,
+                cursor: conflictRecoveryInFlight !== null ? 'not-allowed' : 'pointer',
+                opacity: conflictRecoveryInFlight !== null && conflictRecoveryInFlight !== 'reload' ? 0.5 : 1,
+              }}
+            >
+              {conflictRecoveryInFlight === 'reload' ? 'Loading\u2026' : 'Load saved version'}
+            </button>
+            <button
+              type="button"
+              onClick={handleConflictForceSave}
+              disabled={conflictRecoveryInFlight !== null}
+              title="Overwrite the server snapshot with your current canvas"
+              style={{
+                padding: '6px 14px',
+                borderRadius: 999,
+                background: 'rgba(252,165,165,0.18)',
+                border: '1px solid rgba(252,165,165,0.5)',
+                color: '#fff',
+                fontSize: 12,
+                fontWeight: 700,
+                cursor: conflictRecoveryInFlight !== null ? 'not-allowed' : 'pointer',
+                opacity: conflictRecoveryInFlight !== null && conflictRecoveryInFlight !== 'force-save' ? 0.5 : 1,
+              }}
+            >
+              {conflictRecoveryInFlight === 'force-save' ? 'Saving\u2026' : 'Save my version'}
+            </button>
+          </div>
+        </div>
+      )}
+
       {notice && (
         <div
           style={{
             position: 'absolute',
-            top: 72,
+            top: autosavePaused ? 168 : 72,
             left: '50%',
             transform: 'translateX(-50%)',
             zIndex: 108,

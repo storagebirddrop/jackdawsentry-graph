@@ -598,7 +598,8 @@ describe('App restore workflow integration', () => {
       }),
     );
     expect(container.textContent).toContain('Autosave paused');
-    expect(container.textContent).toContain('stale saved workspace revision');
+    expect(container.textContent).toContain('Autosave conflict');
+    expect(container.textContent).toContain('Another tab or session saved a newer version');
 
     const localHintCallsAfterConflict = saveWorkspaceMock.mock.calls.length;
 

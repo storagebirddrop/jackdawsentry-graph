@@ -12,6 +12,7 @@ const {
   MockApiError,
   expandNodeMock,
   getAssetOptionsMock,
+  getSessionMock,
   saveSessionSnapshotMock,
   saveWorkspaceMock,
 } = vi.hoisted(() => {
@@ -29,6 +30,7 @@ const {
     MockApiError,
     expandNodeMock: vi.fn(),
     getAssetOptionsMock: vi.fn(),
+    getSessionMock: vi.fn(),
     saveSessionSnapshotMock: vi.fn(),
     saveWorkspaceMock: vi.fn(),
   };
@@ -38,6 +40,7 @@ vi.mock('../api/client', () => ({
   ApiError: MockApiError,
   expandNode: expandNodeMock,
   getAssetOptions: getAssetOptionsMock,
+  getSession: getSessionMock,
   saveSessionSnapshot: saveSessionSnapshotMock,
 }));
 
@@ -193,6 +196,7 @@ describe('InvestigationGraph backend autosave', () => {
     vi.useFakeTimers();
     expandNodeMock.mockReset();
     getAssetOptionsMock.mockReset();
+    getSessionMock.mockReset();
     saveSessionSnapshotMock.mockReset();
     saveWorkspaceMock.mockReset();
 
@@ -310,7 +314,8 @@ describe('InvestigationGraph backend autosave', () => {
 
     expect(saveSessionSnapshotMock).toHaveBeenCalledTimes(1);
     expect(container.textContent).toContain('Autosave paused');
-    expect(container.textContent).toContain('stale saved workspace revision');
+    expect(container.textContent).toContain('Autosave conflict');
+    expect(container.textContent).toContain('Another tab or session saved a newer version');
 
     const localHintCallsAfterConflict = saveWorkspaceMock.mock.calls.length;
 
@@ -323,5 +328,376 @@ describe('InvestigationGraph backend autosave', () => {
 
     expect(saveSessionSnapshotMock).toHaveBeenCalledTimes(1);
     expect(saveWorkspaceMock.mock.calls.length).toBeGreaterThan(localHintCallsAfterConflict);
+  });
+
+  it('keeps autosave paused across further local edits until a recovery action succeeds, while local hint continues', async () => {
+    saveSessionSnapshotMock.mockRejectedValueOnce(
+      new MockApiError(409, 'stale'),
+    );
+
+    await act(async () => {
+      root.render(
+        React.createElement(InvestigationGraph, {
+          sessionId: 'sess-autosave',
+          onStartNewInvestigation: () => undefined,
+          initialWorkspaceRevision: 7,
+        }),
+      );
+    });
+
+    // Trigger the 409.
+    await act(async () => {
+      useGraphStore.getState().setNodeHidden('ethereum:address:0xaaa', true);
+    });
+    await advanceAutosave();
+    await flush();
+
+    expect(saveSessionSnapshotMock).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain('Autosave conflict');
+
+    const localCallsAfterConflict = saveWorkspaceMock.mock.calls.length;
+
+    // Make several more edits — backend autosave must stay paused.
+    for (let i = 0; i < 3; i++) {
+      await act(async () => {
+        useGraphStore.getState().setNodeHidden(
+          'ethereum:address:0xaaa',
+          i % 2 === 0 ? false : true,
+        );
+      });
+      await advanceAutosave();
+      await flush();
+    }
+
+    // Backend save was never called again.
+    expect(saveSessionSnapshotMock).toHaveBeenCalledTimes(1);
+    // But local hint continued updating.
+    expect(saveWorkspaceMock.mock.calls.length).toBeGreaterThan(localCallsAfterConflict);
+    // Conflict banner is still visible.
+    expect(container.textContent).toContain('Autosave conflict');
+    expect(container.textContent).toContain('Save my version');
+    expect(container.textContent).toContain('Load saved version');
+  });
+
+  it('recovers via force-save: fetches server revision, saves current state, and resumes autosave', async () => {
+    saveSessionSnapshotMock.mockRejectedValueOnce(
+      new MockApiError(409, 'stale'),
+    );
+
+    await act(async () => {
+      root.render(
+        React.createElement(InvestigationGraph, {
+          sessionId: 'sess-autosave',
+          onStartNewInvestigation: () => undefined,
+          initialWorkspaceRevision: 7,
+        }),
+      );
+    });
+
+    // Trigger conflict.
+    await act(async () => {
+      useGraphStore.getState().setNodeHidden('ethereum:address:0xaaa', true);
+    });
+    await advanceAutosave();
+    await flush();
+
+    expect(container.textContent).toContain('Autosave conflict');
+
+    // Set up mocks for force-save recovery.
+    getSessionMock.mockResolvedValueOnce({
+      session_id: 'sess-autosave',
+      workspace: {
+        schema_version: 1,
+        revision: 10,
+        sessionId: 'sess-autosave',
+        nodes: [],
+        edges: [],
+        positions: {},
+      },
+      restore_state: 'full',
+      nodes: [],
+      edges: [],
+      branch_map: {},
+      snapshot_saved_at: '2026-04-13T12:00:00Z',
+    });
+    saveSessionSnapshotMock.mockResolvedValueOnce({
+      snapshot_id: 'snap-force',
+      saved_at: '2026-04-13T12:01:00Z',
+      revision: 10,
+    });
+
+    // Click "Save my version".
+    const saveBtn = Array.from(container.querySelectorAll('button')).find(
+      (b) => b.textContent === 'Save my version',
+    );
+    expect(saveBtn).toBeDefined();
+    await act(async () => {
+      saveBtn!.click();
+    });
+    await flush();
+
+    // Conflict banner gone, success notice shown.
+    expect(container.textContent).not.toContain('Autosave conflict');
+    expect(container.textContent).not.toContain('Autosave paused');
+    expect(container.textContent).toContain('Autosave resumed');
+
+    // Autosave resumes: next edit triggers a backend save.
+    saveSessionSnapshotMock.mockResolvedValueOnce({
+      snapshot_id: 'snap-resumed',
+      saved_at: '2026-04-13T12:02:00Z',
+      revision: 11,
+    });
+    await act(async () => {
+      useGraphStore.getState().setNodeHidden('ethereum:address:0xaaa', false);
+    });
+    await advanceAutosave();
+    await flush();
+
+    // The initial 409 call + the force-save call + the resumed autosave call = 3.
+    expect(saveSessionSnapshotMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('recovers via reload: fetches server snapshot, imports it, and resumes autosave', async () => {
+    saveSessionSnapshotMock.mockRejectedValueOnce(
+      new MockApiError(409, 'stale'),
+    );
+
+    await act(async () => {
+      root.render(
+        React.createElement(InvestigationGraph, {
+          sessionId: 'sess-autosave',
+          onStartNewInvestigation: () => undefined,
+          initialWorkspaceRevision: 7,
+        }),
+      );
+    });
+
+    // Trigger conflict.
+    await act(async () => {
+      useGraphStore.getState().setNodeHidden('ethereum:address:0xaaa', true);
+    });
+    await advanceAutosave();
+    await flush();
+
+    expect(container.textContent).toContain('Autosave conflict');
+
+    // Set up mock for reload.
+    const serverNode = makeAddressNode('ethereum:address:0xbbb', 'ethereum');
+    getSessionMock.mockResolvedValueOnce({
+      session_id: 'sess-autosave',
+      workspace: {
+        schema_version: 1,
+        revision: 10,
+        sessionId: 'sess-autosave',
+        nodes: [serverNode],
+        edges: [],
+        positions: { [serverNode.node_id]: { x: 100, y: 200 } },
+      },
+      restore_state: 'full',
+      nodes: [serverNode],
+      edges: [],
+      branch_map: {},
+      snapshot_saved_at: '2026-04-13T12:00:00Z',
+    });
+
+    // Mock window.confirm to return true.
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValueOnce(true);
+
+    // Click "Load saved version".
+    const loadBtn = Array.from(container.querySelectorAll('button')).find(
+      (b) => b.textContent === 'Load saved version',
+    );
+    expect(loadBtn).toBeDefined();
+    await act(async () => {
+      loadBtn!.click();
+    });
+    await flush();
+
+    expect(confirmSpy).toHaveBeenCalledTimes(1);
+    confirmSpy.mockRestore();
+
+    // Conflict banner gone, success notice shown.
+    expect(container.textContent).not.toContain('Autosave conflict');
+    expect(container.textContent).not.toContain('Autosave paused');
+    expect(container.textContent).toContain('Autosave resumed');
+
+    // Graph state was replaced with the server snapshot.
+    expect(useGraphStore.getState().rfNodes).toHaveLength(1);
+    expect(useGraphStore.getState().rfNodes[0]!.id).toBe('ethereum:address:0xbbb');
+  });
+
+  it('does nothing when user cancels the reload confirmation dialog', async () => {
+    saveSessionSnapshotMock.mockRejectedValueOnce(
+      new MockApiError(409, 'stale'),
+    );
+
+    await act(async () => {
+      root.render(
+        React.createElement(InvestigationGraph, {
+          sessionId: 'sess-autosave',
+          onStartNewInvestigation: () => undefined,
+          initialWorkspaceRevision: 7,
+        }),
+      );
+    });
+
+    await act(async () => {
+      useGraphStore.getState().setNodeHidden('ethereum:address:0xaaa', true);
+    });
+    await advanceAutosave();
+    await flush();
+
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValueOnce(false);
+
+    const loadBtn = Array.from(container.querySelectorAll('button')).find(
+      (b) => b.textContent === 'Load saved version',
+    );
+    await act(async () => {
+      loadBtn!.click();
+    });
+    await flush();
+
+    expect(confirmSpy).toHaveBeenCalledTimes(1);
+    confirmSpy.mockRestore();
+
+    // Banner still visible, no getSession call made.
+    expect(container.textContent).toContain('Autosave conflict');
+    expect(getSessionMock).not.toHaveBeenCalled();
+  });
+
+  it('handles force-save race (second 409) gracefully and stays in conflict state', async () => {
+    saveSessionSnapshotMock.mockRejectedValueOnce(
+      new MockApiError(409, 'stale'),
+    );
+
+    await act(async () => {
+      root.render(
+        React.createElement(InvestigationGraph, {
+          sessionId: 'sess-autosave',
+          onStartNewInvestigation: () => undefined,
+          initialWorkspaceRevision: 7,
+        }),
+      );
+    });
+
+    await act(async () => {
+      useGraphStore.getState().setNodeHidden('ethereum:address:0xaaa', true);
+    });
+    await advanceAutosave();
+    await flush();
+
+    // Server fetch succeeds, but the subsequent save hits another 409.
+    getSessionMock.mockResolvedValueOnce({
+      session_id: 'sess-autosave',
+      workspace: {
+        schema_version: 1,
+        revision: 10,
+        sessionId: 'sess-autosave',
+        nodes: [],
+        edges: [],
+        positions: {},
+      },
+      restore_state: 'full',
+      nodes: [],
+      edges: [],
+      branch_map: {},
+    });
+    saveSessionSnapshotMock.mockRejectedValueOnce(
+      new MockApiError(409, 'stale again'),
+    );
+
+    const saveBtn = Array.from(container.querySelectorAll('button')).find(
+      (b) => b.textContent === 'Save my version',
+    );
+    await act(async () => {
+      saveBtn!.click();
+    });
+    await flush();
+
+    // Conflict banner stays, transient error shown.
+    expect(container.textContent).toContain('Autosave conflict');
+    expect(container.textContent).toContain('Another save occurred');
+  });
+
+  it('disables both recovery buttons while an action is in flight', async () => {
+    saveSessionSnapshotMock.mockRejectedValueOnce(
+      new MockApiError(409, 'stale'),
+    );
+
+    await act(async () => {
+      root.render(
+        React.createElement(InvestigationGraph, {
+          sessionId: 'sess-autosave',
+          onStartNewInvestigation: () => undefined,
+          initialWorkspaceRevision: 7,
+        }),
+      );
+    });
+
+    await act(async () => {
+      useGraphStore.getState().setNodeHidden('ethereum:address:0xaaa', true);
+    });
+    await advanceAutosave();
+    await flush();
+
+    // Make getSession hang (never resolve) to keep the action in flight.
+    getSessionMock.mockReturnValueOnce(new Promise(() => {}));
+
+    const saveBtn = Array.from(container.querySelectorAll('button')).find(
+      (b) => b.textContent === 'Save my version',
+    );
+    await act(async () => {
+      saveBtn!.click();
+    });
+
+    // Both buttons should now be disabled.
+    const buttons = Array.from(container.querySelectorAll('button')).filter(
+      (b) => b.textContent === 'Saving\u2026' || b.textContent === 'Load saved version',
+    );
+    expect(buttons).toHaveLength(2);
+    for (const btn of buttons) {
+      expect(btn.disabled).toBe(true);
+    }
+  });
+
+  it('shows error notice and stays in conflict state when getSession fails during force-save', async () => {
+    saveSessionSnapshotMock.mockRejectedValueOnce(
+      new MockApiError(409, 'stale'),
+    );
+
+    await act(async () => {
+      root.render(
+        React.createElement(InvestigationGraph, {
+          sessionId: 'sess-autosave',
+          onStartNewInvestigation: () => undefined,
+          initialWorkspaceRevision: 7,
+        }),
+      );
+    });
+
+    await act(async () => {
+      useGraphStore.getState().setNodeHidden('ethereum:address:0xaaa', true);
+    });
+    await advanceAutosave();
+    await flush();
+
+    getSessionMock.mockRejectedValueOnce(new Error('network error'));
+
+    const saveBtn = Array.from(container.querySelectorAll('button')).find(
+      (b) => b.textContent === 'Save my version',
+    );
+    await act(async () => {
+      saveBtn!.click();
+    });
+    await flush();
+
+    // Conflict banner stays, error notice appears, buttons re-enabled.
+    expect(container.textContent).toContain('Autosave conflict');
+    expect(container.textContent).toContain('Unable to save your version');
+    const retryBtn = Array.from(container.querySelectorAll('button')).find(
+      (b) => b.textContent === 'Save my version',
+    );
+    expect(retryBtn).toBeDefined();
+    expect(retryBtn!.disabled).toBe(false);
   });
 });
