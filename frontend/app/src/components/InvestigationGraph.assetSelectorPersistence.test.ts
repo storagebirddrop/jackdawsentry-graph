@@ -9,18 +9,26 @@ import { useGraphStore } from '../store/graphStore';
 import type { AssetOption, ExpansionResponseV2, InvestigationNode } from '../types/graph';
 
 const {
+  MockApiError,
   expandNodeMock,
   getAssetOptionsMock,
+  saveSessionSnapshotMock,
   saveWorkspaceMock,
 } = vi.hoisted(() => ({
+  MockApiError: class MockApiError extends Error {
+    status = 0;
+  },
   expandNodeMock: vi.fn(),
   getAssetOptionsMock: vi.fn(),
+  saveSessionSnapshotMock: vi.fn(),
   saveWorkspaceMock: vi.fn(),
 }));
 
 vi.mock('../api/client', () => ({
+  ApiError: MockApiError,
   expandNode: expandNodeMock,
   getAssetOptions: getAssetOptionsMock,
+  saveSessionSnapshot: saveSessionSnapshotMock,
 }));
 
 vi.mock('../workspacePersistence', () => ({
@@ -260,7 +268,12 @@ describe('InvestigationGraph asset selector persistence', () => {
   beforeEach(() => {
     expandNodeMock.mockReset();
     getAssetOptionsMock.mockReset();
+    saveSessionSnapshotMock.mockReset();
     saveWorkspaceMock.mockReset();
+    saveSessionSnapshotMock.mockResolvedValue({
+      snapshot_id: 'snap-selector',
+      revision: 1,
+    });
 
     container = document.createElement('div');
     document.body.appendChild(container);
