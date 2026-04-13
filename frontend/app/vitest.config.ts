@@ -5,6 +5,6 @@ export default defineConfig({
     // Default environment for pure-function tests.
     // Store tests override this per-file with @vitest-environment jsdom.
     environment: 'node',
-    include: ['src/**/*.test.ts'],
+    include: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
   },
 });

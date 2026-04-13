@@ -19,6 +19,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 import type {
+  AssetSelector,
   ExpandRequest,
   ExpansionResponseV2,
   InvestigationEdge,
@@ -221,7 +222,8 @@ const PREVIEW_EDGE_A: InvestigationEdge = {
   branch_id: 'branch-1',
   tx_hash: '0xtxa',
   tx_chain: 'ethereum',
-  asset_symbol: 'ETH',
+  asset_symbol: 'USDC',
+  chain_asset_id: '0xa0b8',
 };
 
 const PREVIEW_EDGE_B: InvestigationEdge = {
@@ -233,6 +235,20 @@ const PREVIEW_EDGE_B: InvestigationEdge = {
   branch_id: 'branch-1',
   tx_hash: '0xtxb',
   tx_chain: 'ethereum',
+  asset_symbol: 'ETH',
+};
+
+const ETH_USDC_SELECTOR: AssetSelector = {
+  mode: 'asset',
+  chain: 'ethereum',
+  chain_asset_id: '0xa0b8',
+  asset_symbol: 'USDC',
+  canonical_asset_id: 'usdc',
+};
+
+const ETH_NATIVE_SELECTOR: AssetSelector = {
+  mode: 'native',
+  chain: 'ethereum',
   asset_symbol: 'ETH',
 };
 
@@ -248,6 +264,7 @@ function makePreviewResponse(): ExpansionResponseV2 {
     added_edges: [PREVIEW_EDGE_A, PREVIEW_EDGE_B],
     layout_hints: { suggested_layout: 'layered' },
     chain_context: { primary_chain: 'ethereum', chains_present: ['ethereum'] },
+    asset_context: { assets_present: ['USDC', 'ETH'], canonical_asset_ids: ['usdc'] },
   } as ExpansionResponseV2;
 }
 
@@ -308,6 +325,73 @@ async function flush(): Promise<void> {
   });
 }
 
+async function waitFor<T>(assertion: () => T): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    try {
+      return assertion();
+    } catch (error) {
+      lastError = error;
+      await flush();
+    }
+  }
+  throw lastError;
+}
+
+function queryLabeledInput(text: string, inputType: 'radio' | 'checkbox'): HTMLInputElement | null {
+  const label = Array.from(document.querySelectorAll('label')).find(
+    (candidate) => candidate.textContent?.trim() === text,
+  );
+  return (label?.querySelector(`input[type="${inputType}"]`) as HTMLInputElement | null) ?? null;
+}
+
+function getLabeledInput(text: string, inputType: 'radio' | 'checkbox'): HTMLInputElement {
+  const input = queryLabeledInput(text, inputType);
+  if (!input) {
+    throw new Error(`Unable to find ${inputType} labeled "${text}"`);
+  }
+  return input;
+}
+
+async function clickInput(input: HTMLInputElement): Promise<void> {
+  await act(async () => {
+    input.click();
+    await Promise.resolve();
+  });
+}
+
+async function enableSpecificAssetScope(labels: string[]): Promise<void> {
+  await clickInput(getLabeledInput('Specific assets', 'radio'));
+  for (const label of labels) {
+    await clickInput(getLabeledInput(label, 'checkbox'));
+  }
+  await flush();
+}
+
+function getPreviewCandidateCheckbox(counterpartyText: string): HTMLInputElement {
+  const label = Array.from(document.querySelectorAll('label')).find(
+    (candidate) => candidate.textContent?.includes(counterpartyText),
+  );
+  const checkbox = label?.querySelector('input[type="checkbox"]') as HTMLInputElement | null;
+  if (!checkbox) {
+    throw new Error(`Unable to find preview candidate checkbox for "${counterpartyText}"`);
+  }
+  return checkbox;
+}
+
+async function setDateInputValue(input: HTMLInputElement, value: string): Promise<void> {
+  const nativeSetter = Object.getOwnPropertyDescriptor(
+    window.HTMLInputElement.prototype,
+    'value',
+  )?.set;
+  await act(async () => {
+    nativeSetter?.call(input, value);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    await Promise.resolve();
+  });
+}
+
 /**
  * Advance from a clean render to the preview-loaded state:
  * seed node selected → filter panel open → "Preview next" clicked → preview result rendered.
@@ -337,7 +421,11 @@ describe('InvestigationGraph preview and subset apply', () => {
       session_id: SESSION_ID,
       seed_node_id: SEED_NODE.node_id,
       seed_lineage_id: SEED_NODE.lineage_id,
-      options: [{ mode: 'all', chain: 'ethereum', display_label: 'All assets' }],
+      options: [
+        { mode: 'all', chain: 'ethereum', display_label: 'All assets' },
+        { ...ETH_USDC_SELECTOR, display_label: 'USDC' },
+        { ...ETH_NATIVE_SELECTOR, display_label: 'ETH' },
+      ],
     });
     saveWorkspaceMock.mockResolvedValue(undefined);
 
@@ -465,6 +553,50 @@ describe('InvestigationGraph preview and subset apply', () => {
     expect(edgeMap.size).toBe(1);
   });
 
+  it('multi-asset preview applies only the selected candidate subset', async () => {
+    expandNodeMock.mockResolvedValueOnce(makePreviewResponse());
+
+    await clickButton(`Select node ${SEED_NODE.node_id}`);
+    await flush();
+
+    await waitFor(() => {
+      expect(getLabeledInput('All assets', 'radio').checked).toBe(true);
+    });
+
+    await enableSpecificAssetScope(['USDC', 'ETH']);
+
+    await clickButton('Filter & Preview ▼');
+    await flush();
+    await clickButton('Preview next');
+    await flush();
+
+    expect(expandNodeMock).toHaveBeenCalledTimes(1);
+    const [, request] = expandNodeMock.mock.calls[0] as [string, ExpandRequest];
+    expect(request.options).toEqual(
+      expect.objectContaining({
+        asset_selectors: [ETH_USDC_SELECTOR, ETH_NATIVE_SELECTOR],
+        max_results: 25,
+      }),
+    );
+
+    await clickButton('None');
+    await flush();
+    expect(findButton('Apply selected (0)')?.disabled).toBe(true);
+
+    await clickInput(getPreviewCandidateCheckbox('0xnew1'));
+    await flush();
+
+    expect(findButton('Apply selected (1)')).not.toBeNull();
+    await clickButton('Apply selected (1)');
+    await flush();
+
+    const { nodeMap, edgeMap } = useGraphStore.getState();
+    expect(edgeMap.has(PREVIEW_EDGE_A.edge_id)).toBe(true);
+    expect(edgeMap.has(PREVIEW_EDGE_B.edge_id)).toBe(false);
+    expect(nodeMap.has(PREVIEW_NODE_A.node_id)).toBe(true);
+    expect(nodeMap.has(PREVIEW_NODE_B.node_id)).toBe(false);
+  });
+
   it('"Dismiss" clears the preview without modifying the canvas', async () => {
     await reachPreviewState();
 
@@ -544,6 +676,44 @@ describe('InvestigationGraph preview and subset apply', () => {
       time_to: '2024-06-30',
       max_results: 25,
     });
+  });
+
+  it('combines date-filtered preview requests with the active multi-asset scope', async () => {
+    expandNodeMock.mockResolvedValueOnce(makePreviewResponse());
+
+    await clickButton(`Select node ${SEED_NODE.node_id}`);
+    await flush();
+
+    await waitFor(() => {
+      expect(getLabeledInput('All assets', 'radio').checked).toBe(true);
+    });
+
+    await enableSpecificAssetScope(['USDC', 'ETH']);
+    await clickButton('Filter & Preview ▼');
+    await flush();
+
+    const dateInputs = Array.from(
+      document.querySelectorAll('input[type="date"]'),
+    ) as HTMLInputElement[];
+    expect(dateInputs.length).toBeGreaterThanOrEqual(2);
+    const [fromInput, toInput] = dateInputs;
+
+    await setDateInputValue(fromInput, '2024-02-01');
+    await setDateInputValue(toInput, '2024-07-15');
+
+    await clickButton('Preview next');
+    await flush();
+
+    expect(expandNodeMock).toHaveBeenCalledTimes(1);
+    const [, request] = expandNodeMock.mock.calls[0] as [string, ExpandRequest];
+    expect(request.options).toEqual(
+      expect.objectContaining({
+        asset_selectors: [ETH_USDC_SELECTOR, ETH_NATIVE_SELECTOR],
+        time_from: '2024-02-01',
+        time_to: '2024-07-15',
+        max_results: 25,
+      }),
+    );
   });
 
   it('"Apply selected" button is disabled when no edges are checked', async () => {
