@@ -76,6 +76,9 @@ This repository is intentionally narrower than the private Jackdaw Sentry platfo
 - inspector expand and preview use the currently selected asset scope; `All assets` emits no `asset_selectors`
 - quick `Prev` / `Next` reuses the stored asset scope for that node
 - `Specific assets` supports deterministic multi-asset `asset_selectors`; zero checked assets disables expand/preview until at least one asset is selected
+- manual export/import and backend session restore preserve per-node asset scope
+- backend autosave persists updated workspace snapshots, including `nodeAssetScopes`
+- stale snapshot revision conflicts pause autosave with an honest notice instead of silently overwriting newer saved state
 - edge selective trace is `tx_hash`-first and only adds at most one `asset_selector` when safe chain-local asset identity exists
 - EVM, Solana, and Tron asset-specific filtering requires chain-local identity and does not guess by symbol
 - edge selective trace does not inherit inspector multi-selection
@@ -209,6 +212,13 @@ Recent investigation restore is now backend-owned:
   `GET /api/v1/graph/sessions/{session_id}`
 - autosave writes back to
   `POST /api/v1/graph/sessions/{session_id}/snapshot`
+
+Current shipped persistence behavior:
+
+- manual export/import round-trips per-node asset scope
+- backend session restore returns saved `nodeAssetScopes` in the authoritative workspace snapshot
+- backend autosave persists updated asset-scope snapshots as part of the same workspace contract
+- stale snapshot revision conflicts pause autosave for the current mount and surface an honest notice instead of silently overwriting newer saved state
 
 Browser storage is intentionally weaker than the backend contract:
 
